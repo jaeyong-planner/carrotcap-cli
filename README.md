@@ -1,4 +1,4 @@
-# 🥕 CARROTCAP CLI
+﻿# 🥕 CARROTCAP CLI
 
 데스크톱 터미널 — **탭 + 분할(LEFT/RIGHT/UP/DOWN) + 폴더 사이드바 + 드래그앤드롭 + Quick CLI(CLAUDE/GEMINI/CODEX)**.
 
@@ -12,7 +12,7 @@
 
 ### 1. 설치 EXE 다운로드
 
-[Releases 페이지](https://github.com/carrotcap/carrotcap-cli/releases/latest)에서 `CARROTCAP-CLI-<version>-win-x64.exe` 를 다운로드합니다.
+[Releases 페이지](https://github.com/jaeyong-planner/carrotcap-cli/releases/latest)에서 `CARROTCAP-CLI-<version>-win-x64.exe` 를 다운로드합니다.
 
 ### 2. 더블클릭 → 설치
 
@@ -163,7 +163,7 @@ powershell -ExecutionPolicy Bypass -File resources\app\scripts\healthcheck.ps1 -
 ## 클론 & 실행
 
 ```powershell
-git clone https://github.com/carrotcap/carrotcap-cli.git
+git clone https://github.com/jaeyong-planner/carrotcap-cli.git
 cd carrotcap-cli
 npm install
 npm start
