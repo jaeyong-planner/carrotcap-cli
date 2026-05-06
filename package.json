@@ -1,0 +1,79 @@
+{
+  "name": "carrotcap-cli",
+  "version": "0.1.0",
+  "description": "CARROTCAP CLI terminal app with split panes, folder sidebar, and quick CLI launchers.",
+  "main": "main.js",
+  "author": "CarrotCap",
+  "license": "MIT",
+  "private": false,
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win nsis",
+    "dist:mac": "electron-builder --mac dmg pkg",
+    "rebuild": "electron-rebuild -f -w node-pty",
+    "healthcheck": "powershell -ExecutionPolicy Bypass -File scripts/healthcheck.ps1",
+    "fix-pty": "powershell -ExecutionPolicy Bypass -File scripts/fix-pty.ps1",
+    "postinstall": "electron-rebuild -f -w node-pty || node -e \"console.warn('[carrotcap] electron-rebuild skipped. If terminals show (no-PTY), run: npm run fix-pty');\""
+  },
+  "devDependencies": {
+    "@electron/rebuild": "3.6.0",
+    "electron": "28.3.3",
+    "electron-builder": "^24.13.3"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "0.10.0",
+    "@xterm/addon-web-links": "0.11.0",
+    "@xterm/xterm": "5.5.0",
+    "node-pty": "^1.0.0"
+  },
+  "build": {
+    "appId": "com.carrotcap.cli",
+    "productName": "CARROTCAP CLI",
+    "executableName": "carrotcap",
+    "artifactName": "CARROTCAP-CLI-${version}-${os}-${arch}.${ext}",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer.js",
+      "index.html",
+      "styles.css",
+      "settings.json",
+      "package.json",
+      "LICENSE",
+      "scripts/**/*"
+    ],
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "asarUnpack": [
+      "node_modules/node-pty/**/*",
+      "scripts/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "CARROTCAP CLI",
+      "include": "build/installer.nsh"
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg",
+        "pkg"
+      ]
+    },
+    "pkg": {
+      "scripts": "build/pkg-scripts"
+    }
+  }
+}

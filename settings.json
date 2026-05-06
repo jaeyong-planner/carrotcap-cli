@@ -1,0 +1,24 @@
+{
+  "cli": {
+    "claude": {
+      "command": "claude",
+      "args": []
+    },
+    "gemini": {
+      "command": "gemini",
+      "args": []
+    },
+    "codex": {
+      "command": "codex",
+      "args": []
+    },
+    "_comment": "각 CLI의 실행 명령과 인자를 자유롭게 변경하세요. 예: claude.args=[\"--dangerously-skip-permissions\"]"
+  },
+  "defaultShell": "powershell.exe",
+  "defaultProjectPath": "C:\\Users\\jaeyung\\OneDrive\\문서\\ALYac_restore",
+  "ui": {
+    "theme": "dark",
+    "fontSize": 14,
+    "fontFamily": "Cascadia Code, Consolas, monospace"
+  }
+}

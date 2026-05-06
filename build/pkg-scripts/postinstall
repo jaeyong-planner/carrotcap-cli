@@ -1,0 +1,14 @@
+#!/bin/sh
+set -e
+
+BIN_DIR="/usr/local/bin"
+COMMAND_PATH="$BIN_DIR/carrotcap"
+
+mkdir -p "$BIN_DIR"
+cat > "$COMMAND_PATH" <<'EOF'
+#!/bin/sh
+open -a "CARROTCAP CLI" --args "$@"
+EOF
+chmod 755 "$COMMAND_PATH"
+
+exit 0
