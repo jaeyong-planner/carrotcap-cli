@@ -12,7 +12,7 @@
 
 ### 1. 설치 EXE 다운로드
 
-[Releases 페이지](https://github.com/<your-username>/carrotcap-cli/releases/latest)에서 `CARROTCAP-CLI-<version>-win-x64.exe` 를 다운로드합니다.
+[Releases 페이지](https://github.com/carrotcap/carrotcap-cli/releases/latest)에서 `CARROTCAP-CLI-<version>-win-x64.exe` 를 다운로드합니다.
 
 ### 2. 더블클릭 → 설치
 
@@ -74,7 +74,7 @@ Windows 보안 경고가 뜨면 *추가 정보* → *실행*을 선택합니다 
 설치 후 정상 동작 여부를 한 번에 확인하려면:
 
 ```powershell
-cd "%LOCALAPPDATA%\Programs\CARROTCAP CLI"
+cd "$env:LOCALAPPDATA\Programs\CARROTCAP CLI"
 powershell -ExecutionPolicy Bypass -File resources\app\scripts\healthcheck.ps1 -Verbose
 ```
 
@@ -163,7 +163,7 @@ powershell -ExecutionPolicy Bypass -File resources\app\scripts\healthcheck.ps1 -
 ## 클론 & 실행
 
 ```powershell
-git clone https://github.com/<your-username>/carrotcap-cli.git
+git clone https://github.com/carrotcap/carrotcap-cli.git
 cd carrotcap-cli
 npm install
 npm start
