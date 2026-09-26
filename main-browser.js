@@ -157,7 +157,9 @@ const withTimeout = (p, ms, what) => {
 function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPathInsideRoot, userDataRoot }) {
   let sessionReady = false;
   let openGen = 0;          // bumped by every open/close; late async steps check it (review r2 M5)
-  let pageGen = 0;          // bumped by every main-frame document change; context/commit must match (review r3)
+  let pageGen = 0;          // bumped when a main-frame navigation STARTS and when it commits: pins/context/token must match (review r3, r9)
+  let docGen = 0;           // bumped only when a new document commits: which document an error belongs to (review r8, r9)
+  const requestGen = new Map(); // webRequest id -> docGen of the document that issued it
   let contextTicket = null; // { token, gen, view } of the last context handed out — one use (review r6)
   let view = null;
   let device = 'desktop';
@@ -168,7 +170,7 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
   let reportedSeq = 0;
   // Only the current document's errors are 'new' for the agent (review r8): an error is
   // tagged with the document generation it happened in.
-  const newErrorList = () => errors.filter((e) => e.seq > reportedSeq && e.gen === pageGen);
+  const newErrorList = () => errors.filter((e) => e.seq > reportedSeq && e.gen === docGen);
   let debuggerAttached = false;
 
   const send = (channel, payload) => {
@@ -191,10 +193,10 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
       pageGen
     });
   };
-  const addError = (level, message, source, line) => {
+  const addError = (level, message, source, line, gen = docGen) => {
     errors.push({
       seq: ++errorSeq,
-      gen: pageGen,
+      gen,
       at: new Date().toISOString(),
       level,
       message: cleanText(message, MAX_ERROR_LEN),
@@ -218,16 +220,28 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
       ses.setPermissionCheckHandler(() => false);
       ses.on('will-download', (e) => e.preventDefault());
       // Never touch local files, whatever the page or a redirect asks for.
-      ses.webRequest.onBeforeRequest((d, cb) => cb({ cancel: /^file:/i.test(d.url) }));
+      ses.webRequest.onBeforeRequest((d, cb) => {
+        // Remember which document issued the request: a slow request of the previous page that
+        // finishes after navigation must not be blamed on the new page. The main-frame request
+        // itself belongs to the document it is about to create.
+        if (view && d.webContentsId === view.webContents.id) {
+          requestGen.set(d.id, d.resourceType === 'mainFrame' ? docGen + 1 : docGen);
+          if (requestGen.size > 5000) requestGen.delete(requestGen.keys().next().value);
+        }
+        cb({ cancel: /^file:/i.test(d.url) });
+      });
       // Failed requests (404 script, 500 API, DNS...) never reach console-message — record
       // them from the network layer. One listener per event per session; this session is ours.
       const ours = (d) => !!view && d.webContentsId === view.webContents.id; // not a closed/older view
+      const genOf = (d) => { const g = requestGen.has(d.id) ? requestGen.get(d.id) : docGen; requestGen.delete(d.id); return g; };
       ses.webRequest.onCompleted((d) => {
-        if (ours(d) && d.statusCode >= 400) addError('network', `${d.statusCode} ${d.method} ${d.url}`, d.resourceType || '', 0);
+        const gen = genOf(d);
+        if (ours(d) && d.statusCode >= 400) addError('network', `${d.statusCode} ${d.method} ${d.url}`, d.resourceType || '', 0, gen);
       });
       ses.webRequest.onErrorOccurred((d) => {
+        const gen = genOf(d);
         if (ours(d) && d.error !== 'net::ERR_ABORTED' && d.error !== 'net::ERR_BLOCKED_BY_CLIENT') {
-          addError('network', `${d.error} ${d.method} ${d.url}`, d.resourceType || '', 0);
+          addError('network', `${d.error} ${d.method} ${d.url}`, d.resourceType || '', 0, gen);
         }
       });
     }
@@ -246,8 +260,14 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
     // anything that still lands on another scheme.
     wc.on('will-navigate', (e, url) => { if (!normalizeUrl(url)) e.preventDefault(); });
     wc.on('will-redirect', (e, url) => { if (!normalizeUrl(url)) e.preventDefault(); });
+    // Invalidate pins/context as soon as a main-frame navigation starts — not only once the
+    // new document commits — so nothing prepared for the old page can be sent in between (r9).
+    wc.on('did-start-navigation', (_e, _url, isInPlace, isMainFrame) => {
+      if (isMainFrame && !isInPlace) { pageGen++; pushState(); }
+    });
     wc.on('did-navigate', (_e, url) => {
       pageGen++; // new document: old pins/context no longer apply
+      docGen++;
       if (!normalizeUrl(url) && url !== 'about:blank') wc.loadURL('about:blank').catch(() => {});
     });
     wc.on('console-message', (_e, level, message, line, sourceId) => {
@@ -327,7 +347,8 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
   }
   function writeShot(dir, root, png) {
     if (!dirStillSafe(dir, root)) throw new Error('capture folder changed; refusing to write');
-    const file = path.join(dir, `shot-${new Date().toISOString().replace(/[:.]/g, '-')}.png`);
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const file = path.join(dir, `shot-${stamp}-${require('crypto').randomBytes(3).toString('hex')}.png`); // unique even within one ms
     fs.writeFileSync(file, png, { flag: 'wx' }); // never follows/overwrites an existing entry
     if (!isPathInsideRoot(fs.realpathSync.native(file), root)) {
       try { fs.rmSync(file, { force: true }); } catch { /* best effort */ }
@@ -339,7 +360,7 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
     if (!dirStillSafe(dir, root)) return;
     let files;
     // withFileTypes: isFile() is false for symlinks, so only real files are candidates
-    try { files = fs.readdirSync(dir, { withFileTypes: true }).filter((d) => d.isFile() && /^shot-[0-9TZ-]+\.png$/.test(d.name)); } catch { return; }
+    try { files = fs.readdirSync(dir, { withFileTypes: true }).filter((d) => d.isFile() && /^shot-[0-9TZ-]+(-[0-9a-f]{6})?\.png$/.test(d.name)); } catch { return; }
     const now = Date.now();
     const withTime = files.map((d) => {
       const p = path.join(dir, d.name);
@@ -423,7 +444,8 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
     const wc = view.webContents;
     // The renderer's pins belong to the document it saw; if that is no longer the
     // current one, this context would describe the wrong page (review r3).
-    if (p.gen !== pageGen) return { stale: true };
+    // Also refuse while the main frame is still loading (navigation in progress).
+    if (p.gen !== pageGen || wc.isLoadingMainFrame()) return { stale: true };
     const gen = pageGen;
     const capturedView = view;
     const same = () => view === capturedView && gen === pageGen;

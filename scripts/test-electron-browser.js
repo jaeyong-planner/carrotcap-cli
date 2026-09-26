@@ -244,6 +244,14 @@ const server = http.createServer((req, res) => {
   check('an error logged after the context stays new after commit', after1 && after1.errors.length === 1 && /after-mark-1/.test(after1.errors[0].message), JSON.stringify(after1 && after1.errors));
   flood.close();
 
+  console.log('-- previous document\'s late request is not blamed on the new page (review r9)');
+  await ev(`document.querySelector('#br-url').value = ${JSON.stringify(site + 'slowpage')}; document.querySelector('#br-go').click(); true`);
+  await sleep(600);
+  await ev(`document.querySelector('#br-url').value = ${JSON.stringify(site + 'flood')}; document.querySelector('#br-go').click(); true`); // same view, new document
+  await sleep(4500);
+  const sameView = await ev(`(async () => { for (let g = 0; g < 600; g++) { const c = await window.carrotcap.browserContext({ screenshot: false, includeErrors: true, gen: g }); if (c && !c.stale) return c; } return null; })()`);
+  check('new page context carries no error from the previous document', !!sameView && !sameView.errors.some((e) => /slow-fail|slowpage/.test(e.message)), JSON.stringify(sameView && sameView.errors.map((e) => e.message).slice(0, 3)));
+
   console.log('-- late network errors of a closed view are ignored (review r6)');
   await ev(`document.querySelector('#br-url').value = ${JSON.stringify(site + 'slowpage')}; document.querySelector('#br-go').click(); true`);
   await sleep(600);
