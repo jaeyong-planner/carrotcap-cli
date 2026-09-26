@@ -321,6 +321,93 @@ function isValidPtyId(id) {
   return typeof id === 'string' && PTY_ID_RE.test(id);
 }
 
+// ---- Session history (task-013) — pure helpers, file I/O lives near the IPC handlers ----
+// Stores only what is needed to resume: tab/pane layout, which CLI ran in each pane,
+// the last backlog task and timestamps. No terminal output, no keystrokes.
+const HISTORY_MAX_SESSIONS   = 5;
+const HISTORY_MAX_TABS       = 8;
+const HISTORY_MAX_PANES      = 8;
+const HISTORY_RETENTION_MS   = 30 * 24 * 60 * 60 * 1000;
+const TASK_NAME_RE           = /^task-[A-Za-z0-9._-]{1,60}$/;
+
+function sanitizeHistoryLayout(input) {
+  if (!input || typeof input !== 'object' || !Array.isArray(input.tabs)) return null;
+  const tabs = [];
+  for (const t of input.tabs.slice(0, HISTORY_MAX_TABS)) {
+    if (!t || !Array.isArray(t.panes)) continue;
+    const panes = [];
+    for (const p of t.panes.slice(0, HISTORY_MAX_PANES)) {
+      if (!p || typeof p !== 'object') continue;
+      const cli = (typeof p.cli === 'string' && CLI_KEY_RE.test(p.cli) && !RESERVED_OBJECT_KEYS.has(p.cli)) ? p.cli : null;
+      panes.push({ mode: PTY_MODES.has(p.mode) ? p.mode : 'plain', cli });
+    }
+    if (panes.length) tabs.push({ panes });
+  }
+  return tabs.length ? { tabs } : null;
+}
+
+function summarizeLayout(layout) {
+  const clis = new Set();
+  let paneCount = 0;
+  for (const t of (layout && layout.tabs) || []) {
+    for (const p of t.panes) { paneCount++; if (p.cli) clis.add(p.cli); }
+  }
+  return { tabCount: ((layout && layout.tabs) || []).length, paneCount, clis: [...clis].sort() };
+}
+
+function applyHistorySnapshot(record, { sessionId, projectRoot, layout, nowIso, lastTask }) {
+  const base = (record && Array.isArray(record.sessions)) ? record : { v: 1, sessions: [] };
+  const sessions = base.sessions.filter((s) => s && s.id !== sessionId);
+  const prev = base.sessions.find((s) => s && s.id === sessionId);
+  sessions.unshift({
+    id: sessionId,
+    startedAt: prev ? prev.startedAt : nowIso,
+    endedAt: null,
+    clean: false,
+    lastTask: (typeof lastTask === 'string' && TASK_NAME_RE.test(lastTask)) ? lastTask : (prev ? prev.lastTask || null : null),
+    ...summarizeLayout(layout),
+    layout
+  });
+  return { v: 1, projectRoot, updatedAt: nowIso, sessions: sessions.slice(0, HISTORY_MAX_SESSIONS) };
+}
+
+// Clean end of an app run: close this run's sessions, keep the layout only on the
+// newest session (the one a later resume would use), cap the list.
+function finalizeHistoryRecord(record, currentIds, nowIso) {
+  if (!record || !Array.isArray(record.sessions)) return record;
+  const sessions = record.sessions
+    .filter(Boolean)
+    .map((s) => (currentIds.has(s.id) ? { ...s, endedAt: nowIso, clean: true } : { ...s }))
+    .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))
+    .slice(0, HISTORY_MAX_SESSIONS)
+    .map((s, i) => { if (i > 0) delete s.layout; return s; });
+  return { ...record, updatedAt: nowIso, sessions };
+}
+
+function dropResumableLayouts(record, keepIds) {
+  if (!record || !Array.isArray(record.sessions)) return record;
+  return {
+    ...record,
+    sessions: record.sessions.map((s) => {
+      if (!s || keepIds.has(s.id)) return s;
+      const { layout, ...rest } = s;
+      return rest;
+    })
+  };
+}
+
+function pickResumableSession(record, excludeIds) {
+  if (!record || !Array.isArray(record.sessions)) return null;
+  const s = record.sessions.find((x) => x && !excludeIds.has(x.id) && x.layout && x.layout.tabs && x.layout.tabs.length);
+  if (!s) return null;
+  return { startedAt: s.startedAt, endedAt: s.endedAt, clean: !!s.clean, lastTask: s.lastTask || null, clis: s.clis || [], layout: s.layout };
+}
+
+function isHistoryExpired(record, nowMs) {
+  const t = Date.parse(record && record.updatedAt);
+  return !Number.isFinite(t) || nowMs - t > HISTORY_RETENTION_MS;
+}
+
 function isWithinByteCap(s, maxBytes) {
   // Cheap reject first: a UTF-8 string is never shorter in bytes than in UTF-16 units.
   return typeof s === 'string' && s.length <= maxBytes && Buffer.byteLength(s, 'utf8') <= maxBytes;
@@ -1123,6 +1210,99 @@ on('term-menu:show', (e, { id, hasSelection }) => {
   ]).popup({ window: BrowserWindow.fromWebContents(e.sender) || mainWindow });
 });
 
+// ---- Session history I/O (task-013) ----
+// %APPDATA%\carrotcap-cli\history\<hash of project path>.json, one small file per project.
+const HISTORY_DIR = path.join(USER_DATA_ROOT, 'history');
+const HISTORY_FILE_RE = /^[0-9a-f]{16}\.json$/;
+const historySessionIds = new Map(); // history file path -> session id of THIS app run
+
+function historyFileFor(realRoot) {
+  const hash = require('crypto').createHash('sha1').update(normalizePath(realRoot)).digest('hex').slice(0, 16);
+  return path.join(HISTORY_DIR, `${hash}.json`);
+}
+function readHistory(file) {
+  const rec = readJsonFile(file);
+  return rec && Array.isArray(rec.sessions) ? rec : null;
+}
+function writeHistory(file, record) {
+  try {
+    fs.mkdirSync(HISTORY_DIR, { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(record), 'utf8');
+    return true;
+  } catch (e) {
+    console.warn('[carrotcap] history write failed:', e.message);
+    return false;
+  }
+}
+function latestBacklogTask(realRoot) {
+  // The most recently edited backlog/task-*.md — a hint for "where was I".
+  try {
+    const dir = path.join(realRoot, 'backlog');
+    let best = null;
+    for (const name of fs.readdirSync(dir)) {
+      if (!/^task-.*\.md$/i.test(name)) continue;
+      const m = fs.statSync(path.join(dir, name)).mtimeMs;
+      if (!best || m > best.m) best = { name: name.replace(/\.md$/i, ''), m };
+    }
+    return best ? best.name : null;
+  } catch { return null; }
+}
+function currentHistoryIds() {
+  return new Set(historySessionIds.values());
+}
+// Boot-time cleanup: expired records, records of deleted project folders, stray files.
+function pruneHistory() {
+  let entries;
+  try { entries = fs.readdirSync(HISTORY_DIR); } catch { return; }
+  const now = Date.now();
+  for (const name of entries) {
+    const file = path.join(HISTORY_DIR, name);
+    const rec = HISTORY_FILE_RE.test(name) ? readHistory(file) : null;
+    const gone = !rec || isHistoryExpired(rec, now) || typeof rec.projectRoot !== 'string' || !fs.existsSync(rec.projectRoot);
+    if (gone) { try { fs.rmSync(file, { force: true }); } catch { /* next boot retries */ } }
+  }
+}
+function finalizeHistory() {
+  const now = new Date().toISOString();
+  const ids = currentHistoryIds();
+  for (const file of historySessionIds.keys()) {
+    const rec = readHistory(file);
+    if (rec) writeHistory(file, finalizeHistoryRecord(rec, ids, now));
+  }
+}
+
+handle('history:save', (_e, payload) => {
+  const p = (payload && typeof payload === 'object') ? payload : {};
+  const realRoot = resolveAllowedDir(p.projectRoot);
+  const layout = sanitizeHistoryLayout(p.layout);
+  if (!realRoot || !layout) return { ok: false };
+  const file = historyFileFor(realRoot);
+  if (!historySessionIds.has(file)) {
+    historySessionIds.set(file, `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
+  }
+  const record = applyHistorySnapshot(readHistory(file), {
+    sessionId: historySessionIds.get(file),
+    projectRoot: realRoot,
+    layout,
+    nowIso: new Date().toISOString(),
+    lastTask: latestBacklogTask(realRoot)
+  });
+  return { ok: writeHistory(file, record) };
+});
+handle('history:get', (_e, projectRoot) => {
+  const realRoot = resolveAllowedDir(projectRoot);
+  if (!realRoot) return null;
+  return pickResumableSession(readHistory(historyFileFor(realRoot)), currentHistoryIds());
+});
+// The user resumed or dismissed the offer: older layouts are no longer needed.
+handle('history:dismiss', (_e, projectRoot) => {
+  const realRoot = resolveAllowedDir(projectRoot);
+  if (!realRoot) return false;
+  const file = historyFileFor(realRoot);
+  const rec = readHistory(file);
+  return rec ? writeHistory(file, dropResumableLayouts(rec, currentHistoryIds())) : true;
+});
+
 // task-012: which configured CLIs are actually installed (on PATH). Cached briefly —
 // the sidebar asks on boot and whenever settings change.
 let cliStatusCache = { at: 0, value: null };
@@ -1168,12 +1348,21 @@ app.whenReady().then(() => {
   // able to escalate the allowlist via settings:set.
   {
     const state = loadWorkspaceState();
-    for (const r of state.recentWorkspaces) addAllowedWorkspace(r);
+    // task-013: forget workspaces whose folder no longer exists (keeps the file small)
+    const alive = state.recentWorkspaces.filter((r) => addAllowedWorkspace(r));
+    if (alive.length !== state.recentWorkspaces.length) saveWorkspaceState({ recentWorkspaces: alive });
   }
+  try { pruneHistory(); } catch (e) { console.warn('[carrotcap] pruneHistory failed:', e.message); }
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+// task-013: a clean exit closes this run's sessions and compacts older ones.
+// A crash skips this, so the next launch can offer "이전 세션 이어하기 (비정상 종료)".
+app.on('before-quit', () => {
+  try { finalizeHistory(); } catch (e) { console.warn('[carrotcap] finalizeHistory failed:', e.message); }
 });
 
 app.on('window-all-closed', () => {

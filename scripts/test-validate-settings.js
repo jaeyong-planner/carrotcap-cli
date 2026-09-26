@@ -64,6 +64,13 @@ module.exports = {
   isWithinByteCap,
   migrateSettings,
   SETTINGS_VERSION,
+  sanitizeHistoryLayout,
+  applyHistorySnapshot,
+  finalizeHistoryRecord,
+  dropResumableLayouts,
+  pickResumableSession,
+  isHistoryExpired,
+  HISTORY_MAX_SESSIONS,
   ensureAiopsProjectStructure,
   findMissingAiopsTemplates,
   AIOPS_CLAUDE_BLOCK_START,
@@ -84,7 +91,9 @@ const {
   clampInt, resolveAllowedDir, sanitizeSpawnPayload, isValidPtyId,
   validateClaudeMdContent, MAX_CLAUDE_MD_BYTES,
   ensureAiopsProjectStructure, AIOPS_CLAUDE_BLOCK_START, AIOPS_CLAUDE_BLOCK_END,
-  isWithinByteCap, findMissingAiopsTemplates, migrateSettings, SETTINGS_VERSION
+  isWithinByteCap, findMissingAiopsTemplates, migrateSettings, SETTINGS_VERSION,
+  sanitizeHistoryLayout, applyHistorySnapshot, finalizeHistoryRecord, dropResumableLayouts,
+  pickResumableSession, isHistoryExpired, HISTORY_MAX_SESSIONS
 } = m.exports;
 
 let pass = 0;
@@ -507,6 +516,51 @@ console.log('-- bundled settings.json (task-012)');
   const cleaned = validateSettings(bundled);
   check('bundled CLIs are claude, codex, grok', Object.keys(cleaned.cli).join(',') === 'claude,codex,grok', Object.keys(cleaned.cli).join(','));
   check('bundled settings already at current version', migrateSettings(cleaned).changed === false);
+}
+
+console.log('-- session history helpers (task-013)');
+{
+  const layout = sanitizeHistoryLayout({
+    tabs: [
+      { panes: [{ mode: 'aiops', cli: 'claude' }, { mode: 'evil', cli: 'a;b' }, { mode: 'plain', cli: '__proto__' }] },
+      { panes: [] },
+      'junk'
+    ],
+    extra: 'dropped'
+  });
+  check('sanitize keeps valid panes, drops empty tabs', layout && layout.tabs.length === 1 && layout.tabs[0].panes.length === 3);
+  check('sanitize: unknown mode -> plain, bad cli -> null',
+    layout.tabs[0].panes[1].mode === 'plain' && layout.tabs[0].panes[1].cli === null && layout.tabs[0].panes[2].cli === null);
+  check('sanitize: unknown keys dropped', !('extra' in layout));
+  check('sanitize caps tabs at 8', sanitizeHistoryLayout({ tabs: Array.from({ length: 20 }, () => ({ panes: [{ mode: 'plain' }] })) }).tabs.length === 8);
+  check('sanitize rejects garbage', sanitizeHistoryLayout(null) === null && sanitizeHistoryLayout({ tabs: 'x' }) === null);
+
+  // 7 app runs, one session each
+  let rec = null;
+  for (let i = 1; i <= 7; i++) {
+    rec = applyHistorySnapshot(rec, { sessionId: `s${i}`, projectRoot: 'C:\\p', layout, nowIso: `2026-09-2${i}T10:00:00.000Z`, lastTask: 'task-013' });
+  }
+  check(`at most ${HISTORY_MAX_SESSIONS} sessions kept`, rec.sessions.length === HISTORY_MAX_SESSIONS);
+  check('newest first', rec.sessions[0].id === 's7');
+  check('summary fields recorded', rec.sessions[0].clis.join() === 'claude' && rec.sessions[0].paneCount === 3);
+  const again = applyHistorySnapshot(rec, { sessionId: 's7', projectRoot: 'C:\\p', layout, nowIso: '2026-09-28T11:00:00.000Z', lastTask: 'bad name!' });
+  check('same session updated in place, startedAt kept', again.sessions.filter((s) => s.id === 's7').length === 1 && again.sessions[0].startedAt === '2026-09-27T10:00:00.000Z');
+  check('invalid lastTask ignored (keeps previous)', again.sessions[0].lastTask === 'task-013');
+
+  const fin = finalizeHistoryRecord(again, new Set(['s7']), '2026-09-28T12:00:00.000Z');
+  check('finalize marks this run clean', fin.sessions[0].clean === true && fin.sessions[0].endedAt === '2026-09-28T12:00:00.000Z');
+  check('finalize keeps layout only on the newest', !!fin.sessions[0].layout && fin.sessions.slice(1).every((s) => !s.layout));
+  check('older sessions stay unclean (crash evidence)', fin.sessions.slice(1).every((s) => s.clean === false));
+
+  const pick = pickResumableSession(fin, new Set());
+  check('resumable = newest with a layout', pick && pick.startedAt === '2026-09-27T10:00:00.000Z' && pick.layout);
+  check('current run excluded from resume', pickResumableSession(fin, new Set(['s7'])) === null);
+  const dropped = dropResumableLayouts(fin, new Set());
+  check('dismiss drops every layout not in keep set', dropped.sessions.every((s) => !s.layout));
+
+  check('expired after 30 days', isHistoryExpired({ updatedAt: '2026-08-01T00:00:00Z' }, Date.parse('2026-09-26T00:00:00Z')));
+  check('fresh record not expired', !isHistoryExpired({ updatedAt: '2026-09-20T00:00:00Z' }, Date.parse('2026-09-26T00:00:00Z')));
+  check('unparsable date counts as expired', isHistoryExpired({ updatedAt: 'x' }, Date.now()));
 }
 
 console.log('');

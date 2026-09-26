@@ -1,0 +1,57 @@
+// Launch the CARROTCAP app (dev tree) with a CDP port and an isolated user data dir,
+// and return small helpers to drive the renderer. Used by the Electron tests.
+const { spawn } = require('child_process');
+const path = require('path');
+
+const root = path.join(__dirname, '..', '..');
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function launchApp(userDataDir, { port = 9400 + Math.floor(Math.random() * 400) } = {}) {
+  const child = spawn(require(path.join(root, 'node_modules', 'electron')), ['.', `--remote-debugging-port=${port}`], {
+    cwd: root,
+    env: { ...process.env, CARROTCAP_USER_DATA_DIR: userDataDir },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let log = '';
+  child.stdout.on('data', (d) => (log += d));
+  child.stderr.on('data', (d) => (log += d));
+  const exited = new Promise((r) => child.on('exit', r));
+
+  let page;
+  for (let i = 0; i < 60 && !page; i++) {
+    await sleep(500);
+    try { page = (await (await fetch(`http://127.0.0.1:${port}/json`)).json()).find((t) => t.type === 'page'); } catch { /* not up yet */ }
+  }
+  if (!page) { child.kill(); throw new Error('renderer page target not found'); }
+  const ws = new WebSocket(page.webSocketDebuggerUrl);
+  await new Promise((r) => ws.addEventListener('open', r));
+  let seq = 0;
+  const pending = new Map();
+  ws.addEventListener('message', (e) => {
+    const m = JSON.parse(e.data);
+    if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
+  });
+  const send = (method, params = {}) => new Promise((r) => { const id = ++seq; pending.set(id, r); ws.send(JSON.stringify({ id, method, params })); });
+  const ev = async (expression) => {
+    const out = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+    return out.result && out.result.result ? out.result.result.value : undefined;
+  };
+  const key = async (k, code, vk, modifiers = 0) => {
+    await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: k, code, windowsVirtualKeyCode: vk, modifiers });
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk, modifiers });
+  };
+  return {
+    send, ev, key, log: () => log,
+    // Simulated crash: no before-quit handlers run.
+    kill: async () => { try { ws.close(); } catch {} child.kill(); await exited; },
+    // Normal close: the window closes, the app quits through before-quit.
+    close: async () => {
+      await ev('window.close(), true').catch(() => {});
+      const t = setTimeout(() => child.kill(), 8000);
+      await exited;
+      clearTimeout(t);
+    }
+  };
+}
+
+module.exports = { launchApp, sleep };

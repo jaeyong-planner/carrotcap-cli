@@ -137,6 +137,10 @@ html, body { margin: 0; height: 100%; background: #0f0f12; color: #e8e8ee; font-
   background: rgba(20,20,28,0.9); color: #888; font-size: 11px; z-index: 5;
 }
 .pane .head .kind { color: #ff8c42; font-weight: 600; }
+.resume-box { margin-top: 8px; padding: 8px; border: 1px solid #ff8c42; border-radius: 6px; background: #1d1712; }
+.resume-box.hidden { display: none; }
+.resume-box .resume-title { font-size: 12px; font-weight: 600; color: #ff8c42; margin-bottom: 4px; }
+.resume-box .resume-actions { display: flex; gap: 6px; margin-top: 6px; }
 .btn-cli.missing, .btn-flow.missing { opacity: 0.45; text-decoration: line-through; }
 .pane .head .select-hint { margin-left: auto; margin-right: 8px; color: #f0c060; }
 .pane .term-host { position: absolute; top: 22px; bottom: 0; left: 0; right: 0; }

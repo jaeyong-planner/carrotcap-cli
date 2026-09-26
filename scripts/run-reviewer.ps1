@@ -25,6 +25,9 @@
 .PARAMETER Model
     Optional Codex model override (passes through as -m).
 
+.PARAMETER KeepLog
+    Keep the raw Codex stdout log after a successful run (it is always kept on failure).
+
 .EXAMPLE
     .\scripts\run-reviewer.ps1 -TaskId task-003 -Slug ipc-validation `
         -PromptFile .\logs\review\_prompt_task-003.txt
@@ -40,7 +43,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string] $PromptFile,
 
-    [string] $Model = ""
+    [string] $Model = "",
+
+    [switch] $KeepLog
 )
 
 $ErrorActionPreference = "Stop"
@@ -109,5 +114,11 @@ $utf8Bom = New-Object System.Text.UTF8Encoding($true)
 [System.IO.File]::WriteAllText($outputPath, $content, $utf8Bom)
 
 Write-Host "[reviewer] saved: $outputPath" -ForegroundColor Green
-Write-Host "[reviewer] stdout log: $stdoutLogPath" -ForegroundColor DarkGray
+# The report is the durable artifact; the raw stdout (model banner, token counts) is
+# only useful for debugging a failed run.
+if ($KeepLog) {
+    Write-Host "[reviewer] stdout log: $stdoutLogPath" -ForegroundColor DarkGray
+} else {
+    Remove-Item -LiteralPath $stdoutLogPath -Force -ErrorAction SilentlyContinue
+}
 Write-Host "[reviewer] task-id: $TaskId  dispatched-at: $timestampUtc"

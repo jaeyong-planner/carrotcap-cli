@@ -99,7 +99,7 @@
   }
 
   // ---------- 탭 ----------
-  function createTab() {
+  function createTab(opts = {}) {
     const tabId = newId('tab');
     const pageEl = document.createElement('div');
     pageEl.className = 'tab-page';
@@ -116,7 +116,9 @@
     renderTabs();
     activateTab(tabId);
     activatePane(root.id);
-    spawnIntoPane(root, { mode: resolveSpawnMode(), cwd: state.folder.rootPath || undefined });
+    spawnIntoPane(root, { mode: opts.mode || resolveSpawnMode(), cwd: state.folder.rootPath || undefined });
+    scheduleHistorySave();
+    return root;
   }
 
   function activateTab(tabId) {
@@ -147,6 +149,7 @@
     });
     tab.pageEl.remove();
     state.tabs.splice(idx, 1);
+    scheduleHistorySave();
     if (state.tabs.length === 0) {
       createTab();
     } else {
@@ -237,9 +240,9 @@
   }
 
   // 활성 leaf를 dir 방향으로 분할
-  function splitActive(direction) {
+  function splitActive(direction, opts = {}) {
     const leaf = state.panes.get(state.activePaneId);
-    if (!leaf || leaf.type !== 'leaf') return;
+    if (!leaf || leaf.type !== 'leaf') return null;
     const horizontal = direction === 'left' || direction === 'right';
     const orientation = horizontal ? 'h' : 'v';
 
@@ -271,10 +274,12 @@
     enableResize(resizer, splitEl, ordered[0].paneEl, ordered[1].paneEl, orientation);
 
     // 이제 DOM에 부착됐으니 PTY 스폰 (xterm 사이즈 계산 정확)
-    spawnIntoPane(fresh, { mode: resolveSpawnMode(), cwd: state.folder.rootPath || undefined });
+    spawnIntoPane(fresh, { mode: opts.mode || resolveSpawnMode(), cwd: state.folder.rootPath || undefined });
 
     activatePane(fresh.id);
     setTimeout(() => fitAllIn(rootOfTab(state.activeTabId)), 50);
+    scheduleHistorySave();
+    return fresh;
   }
 
   // leaf를 부모의 자리에 splitNode를 끼워넣음
@@ -303,6 +308,7 @@
 
     const parent = pane.parent;
     state.panes.delete(id);
+    scheduleHistorySave();
 
     if (!parent || parent.kind === 'tab') {
       // 마지막 페인 → 탭을 닫음. 우선 parent.tabId로 찾고, 없으면 rootPaneId로 보강 탐색.
@@ -428,6 +434,7 @@
 
     leaf.term = term;
     leaf.fit = fit;
+    leaf.spawnMode = (payload && payload.mode) || 'plain';
     attachClipboard(leaf);
 
     const cols = term.cols, rows = term.rows;
@@ -458,6 +465,113 @@
     term.onResize(({ cols, rows }) => api.resizePty(leaf.ptyId, cols, rows));
 
     setTimeout(() => { try { term.focus(); } catch {} }, 50);
+  }
+
+  // ---------- 세션 이어하기 (task-013) ----------
+  // 저장: 탭/페인 배치 + 페인별 실행 CLI (터미널 출력·키 입력은 저장하지 않음).
+  // 복원: 같은 배치를 다시 만들고 각 CLI를 자기 "이어하기" 옵션으로 실행 → 대화 내용은 CLI가 복원.
+  const RESUME_ARGS = { claude: ['--continue'], codex: ['resume', '--last'], grok: ['--continue'] };
+  const resumeBox = $('#resume-box');
+  const resumeText = $('#resume-text');
+  let historyTimer = null;
+  let restoring = false;
+
+  function buildLayout() {
+    const tabs = [];
+    for (const t of state.tabs) {
+      const panes = [];
+      walkPanes(state.panes.get(t.rootPaneId), (p) => {
+        if (p.type === 'leaf') panes.push({ mode: p.spawnMode || 'plain', cli: p.cli || null });
+      });
+      if (panes.length) tabs.push({ panes });
+    }
+    return { tabs };
+  }
+  function scheduleHistorySave() {
+    if (restoring || !state.folder.rootPath) return;
+    clearTimeout(historyTimer);
+    historyTimer = setTimeout(() => {
+      api.saveHistory(state.folder.rootPath, buildLayout()).catch(() => {});
+    }, 800);
+  }
+  function formatWhen(iso) {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '';
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+  async function checkResume() {
+    resumeBox.classList.add('hidden');
+    if (!state.folder.rootPath) return;
+    let prev = null;
+    try { prev = await api.getHistory(state.folder.rootPath); } catch { prev = null; }
+    if (!prev || !prev.layout) return;
+    const paneCount = prev.layout.tabs.reduce((n, t) => n + t.panes.length, 0);
+    const parts = [
+      `${formatWhen(prev.startedAt)} 세션`,
+      prev.clean ? '정상 종료' : '비정상 종료',
+      `탭 ${prev.layout.tabs.length} · 페인 ${paneCount}`
+    ];
+    if (prev.clis && prev.clis.length) parts.push(prev.clis.join(', '));
+    if (prev.lastTask) parts.push(`마지막 ${prev.lastTask}`);
+    resumeText.textContent = parts.join(' · ');
+    resumeBox.dataset.layout = JSON.stringify(prev.layout);
+    resumeBox.classList.remove('hidden');
+  }
+  function whenPtyReady(leaf, timeoutMs = 8000) {
+    return new Promise((resolve) => {
+      const started = Date.now();
+      const tick = () => {
+        if (leaf.ptyId) return resolve(true);
+        if (Date.now() - started > timeoutMs || leaf.exited) return resolve(false);
+        setTimeout(tick, 100);
+      };
+      tick();
+    });
+  }
+  async function resumeSession() {
+    let layout;
+    try { layout = JSON.parse(resumeBox.dataset.layout || 'null'); } catch { layout = null; }
+    resumeBox.classList.add('hidden');
+    if (!layout || !Array.isArray(layout.tabs)) return;
+    // 방금 뜬 빈 탭 하나만 있으면 복원 후 닫는다 (빈 셸이 쌓이지 않게).
+    const pristine = state.tabs.length === 1 ? state.tabs[0] : null;
+    const pristineLeaf = pristine ? firstLeafIn(state.panes.get(pristine.rootPaneId)) : null;
+    const dropPristine = pristineLeaf && !pristineLeaf.cli && pristine.rootPaneId === pristineLeaf.id;
+    restoring = true;
+    const launches = [];
+    try {
+      for (const t of layout.tabs) {
+        let leaf = createTab({ mode: t.panes[0].mode });
+        launches.push([leaf, t.panes[0].cli]);
+        for (const p of t.panes.slice(1)) {
+          leaf = splitActive('right', { mode: p.mode });
+          if (leaf) launches.push([leaf, p.cli]);
+        }
+      }
+      if (dropPristine) closeTab(pristine.id);
+    } finally {
+      restoring = false;
+    }
+    for (const [leaf, cli] of launches) {
+      if (!cli || state.cliStatus[cli] === false) continue;
+      if (!(await whenPtyReady(leaf))) continue;
+      const cmd = cliCommandLine(cli, null, RESUME_ARGS[cli] || []);
+      if (!cmd) continue;
+      api.writePty(leaf.ptyId, cmd + '\r');
+      leaf.cli = cli;
+    }
+    // 복원했으니 이전 세션의 배치 정보는 더 필요 없다 — 지금 세션이 새로 기록된다.
+    api.dismissHistory(state.folder.rootPath).catch(() => {});
+    scheduleHistorySave();
+    setFlowStatus('이전 세션을 복원했습니다 — 각 CLI가 마지막 대화를 이어갑니다', 'ok');
+  }
+  function bindResume() {
+    $('#resume-go').onclick = () => resumeSession();
+    $('#resume-dismiss').onclick = () => {
+      resumeBox.classList.add('hidden');
+      if (state.folder.rootPath) api.dismissHistory(state.folder.rootPath).catch(() => {});
+    };
   }
 
   // ---------- 입력창 (task-010) ----------
@@ -695,10 +809,16 @@
   async function loadFolder(rootPath) {
     // task-005: changing the workspace invalidates the auto-setup cache so the
     // next AIOps pane in the new workspace re-runs setup if needed.
-    if (state.folder.rootPath !== rootPath) {
+    const changed = state.folder.rootPath !== rootPath;
+    if (changed) {
       state.aiopsAutoSetupDone.clear();
     }
     state.folder.rootPath = rootPath;
+    // task-013: 새 프로젝트를 열면 이 프로젝트의 이전 세션을 이어할지 묻는다.
+    if (changed) {
+      checkResume();
+      scheduleHistorySave();
+    }
     folderPathEl.textContent = rootPath;
     const tree = await api.getFolderTree(rootPath);
     state.folder.tree = tree;
@@ -760,11 +880,11 @@
   const CLI_ROLES = { claude: '코딩', codex: '코드 리뷰', grok: '이미지·영상' };
   state.cliStatus = {};
 
-  function cliCommandLine(key, prompt) {
+  function cliCommandLine(key, prompt, extraArgs = []) {
     const cli = state.settings && state.settings.cli && state.settings.cli[key];
     if (!cli) return null;
     // PowerShell: & '<cmd>' '<arg>' ... — 공백/따옴표가 든 인자도 안전하게 전달
-    const parts = [cli.command, ...(cli.args || [])];
+    const parts = [cli.command, ...(cli.args || []), ...extraArgs];
     if (prompt) parts.push(prompt);
     return '& ' + parts.map(psQuote).join(' ');
   }
@@ -798,6 +918,7 @@
     api.writePty(leaf.ptyId, cmd + '\r');
     leaf.cli = key;
     if (leaf.term) leaf.term.focus();
+    scheduleHistorySave();
   }
 
   async function refreshCliStatus() {
@@ -845,6 +966,7 @@
     api.writePty(leaf.ptyId, `Set-Location -LiteralPath ${psQuote(state.folder.rootPath)}; ${launch}\r`);
     leaf.cli = flow.cli;
     if (leaf.term) leaf.term.focus();
+    scheduleHistorySave();
     setFlowStatus(`${step.toUpperCase()}: ${flow.cli} (${CLI_ROLES[flow.cli]}) 을 활성 페인에서 시작했습니다`, 'ok');
   }
 
@@ -866,6 +988,7 @@
   // ---------- 글로벌 이벤트 ----------
   function bindGlobalEvents() {
     bindComposer();
+    bindResume();
     newTabBtn.onclick = () => createTab();
     $('#pick-folder').onclick = pickFolder;
     $('#close-pane').onclick = () => closePane(state.activePaneId);

@@ -27,6 +27,10 @@
 .PARAMETER Model
     Optional Grok model override (passes through as -m).
 
+.PARAMETER KeepLog
+    Keep Grok's raw stdout after a successful run (always kept on failure). The
+    durable record is the logs/media/*.md file the agent writes per agents/media.md.
+
 .EXAMPLE
     .\scripts\run-media.ps1 -TaskId task-012 -Slug logo-carrot `
         -Request "주황색 당근 캐릭터 앱 아이콘, 1:1, 플랫 스타일, 2장"
@@ -45,7 +49,9 @@ param(
     [Parameter(Mandatory = $true, ParameterSetName = "File")]
     [string] $RequestFile,
 
-    [string] $Model = ""
+    [string] $Model = "",
+
+    [switch] $KeepLog
 )
 
 $ErrorActionPreference = "Stop"
@@ -98,4 +104,8 @@ try {
 }
 
 Write-Host "[media] files: $(Join-Path $projectRoot 'assets\generated')" -ForegroundColor Green
-Write-Host "[media] grok output: $stdoutPath" -ForegroundColor DarkGray
+if ($KeepLog) {
+    Write-Host "[media] grok output: $stdoutPath" -ForegroundColor DarkGray
+} else {
+    Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+}

@@ -45,6 +45,11 @@ const api = {
   },
 
   cliStatus: () => ipcRenderer.invoke('cli:status'),
+
+  // 세션 이어하기 (task-013)
+  saveHistory: (projectRoot, layout) => ipcRenderer.invoke('history:save', { projectRoot, layout }),
+  getHistory: (projectRoot) => ipcRenderer.invoke('history:get', projectRoot),
+  dismissHistory: (projectRoot) => ipcRenderer.invoke('history:dismiss', projectRoot),
   platform: () => ipcRenderer.invoke('app:platform'),
   ptyAvailable: () => ipcRenderer.invoke('app:pty-available')
 };

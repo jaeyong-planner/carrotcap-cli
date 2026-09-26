@@ -24,7 +24,8 @@ npm start
 | 명령 | 설명 |
 | --- | --- |
 | `npm test` | 보안 헬퍼 + AIOps 셋업 단위 테스트 (Electron 없이 실행) |
-| `npm run test:smoke` | 실제 앱을 띄워 CDP로 점검 (sandbox · PTY · 악성 IPC · CLAUDE.md · 클립보드) |
+| `npm run test:smoke` | 실제 앱을 띄워 CDP로 점검 (sandbox · PTY · 악성 IPC · 키보드/입력창 · 복사 · CLI 구성) |
+| `npm run test:resume` | 앱을 3번 띄워 세션 기록 → 비정상 종료 → 이어하기 → 정리까지 점검 |
 | `npm run pack` | 설치 없이 `release/win-unpacked/` 생성 |
 | `npm run dist:win` | NSIS 설치 파일 생성 (`release/CARROTCAP-CLI-<ver>-win-x64.exe`) |
 
@@ -93,6 +94,23 @@ npm start
 SETUP이 만드는 문서의 원본은 `templates/aiops/`(supervisor.md · task-001.md · workflow.md · CLAUDE-block.md)와 `agents/`에 있습니다. 이 파일을 고치면 다음 SETUP부터 반영되며, 프로젝트에 이미 있는 파일은 덮어쓰지 않습니다.
 
 생성되는 워크플로우는 Claude Code를 PM/코더, Codex를 리뷰어, Grok을 미디어 담당, `logs/`를 공유 메모리로 사용합니다. 큰 요청은 `backlog/task-XXX.md` 단위로 나누고, 리뷰와 미디어 결과는 각각 `logs/review/`, `logs/media/`(파일은 `assets/generated/`)에 남깁니다.
+
+### 5-1) 이전 작업 이어하기
+
+작업 중 앱이 꺼지거나(비정상 종료 포함) 다음 날 다시 열어도, 같은 프로젝트 폴더를 열면 AI DEV FLOW 아래에 **이전 작업 이어하기** 상자가 뜹니다.
+
+- **이어하기**: 같은 탭/페인 배치로 열고, 각 페인에서 쓰던 CLI를 이어하기 옵션으로 다시 실행합니다 — `claude --continue`, `codex resume --last`, `grok --continue`. 대화 내용 자체는 각 CLI가 자기 기록에서 복원합니다.
+- **새로 시작**: 이전 배치 기록을 지웁니다.
+
+저장하는 것은 **배치·CLI 종류·마지막 backlog task·시각**뿐이고(프로젝트당 1~2KB, `사용자 데이터 폴더\history\`), 터미널 출력이나 입력한 내용은 저장하지 않습니다. 정리 규칙:
+
+| 시점 | 정리 |
+| --- | --- |
+| 앱을 정상 종료할 때 | 가장 최근 세션만 배치를 남기고, 이전 세션은 한 줄 요약(시각·CLI·task)으로 줄임. 최대 5개 |
+| 앱을 시작할 때 | 30일 넘게 안 연 프로젝트, 폴더가 사라진 프로젝트의 기록 삭제. 사라진 폴더는 최근 작업 폴더 목록에서도 제거 |
+| 이어하기/새로 시작 후 | 이전 세션의 배치 정보 삭제 |
+
+에이전트 로그도 필요한 것만 남깁니다: `run-reviewer.ps1`·`run-media.ps1`은 성공하면 원본 CLI 출력 로그를 지우고 보고서(`logs/review/*.md`, `logs/media/*.md`)만 남깁니다 (`-KeepLog`로 유지 가능, 실패 시에는 항상 유지).
 
 ### 6) 드래그앤드롭
 

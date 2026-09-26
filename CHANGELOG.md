@@ -4,6 +4,23 @@
 
 CARROTCAP CLI를 Cream CLI와 별개 제품 라인으로 유지하며 진행한 첫 개선 릴리스.
 
+### 입력·복사 (task-010, task-011)
+- **`Ctrl+W`/`Ctrl+T`를 앱이 가로채 셸을 죽이던 버그 수정** — 앱 단축키는 `Ctrl+Shift+T/W`, 분할 `Alt+Shift+화살표`
+- **AOR 폴백 경고를 xterm에 직접 쓰던 문제 제거** — ConPTY 커서가 어긋나 화면이 깨지고 입력이 헛돌던 주원인. 경고는 페인 헤더에 표시
+- 입력창 추가: `Ctrl+A` 전체 선택·`Delete`, 한글 조합, `Enter` 보내기, `Shift+Enter` 줄바꿈, 기록, `Ctrl+Shift+Space`
+- 사이드바 버튼을 누른 뒤 타이핑하면 입력창으로 (한글 IME 포함)
+- 드래그 즉시 복사, 선택 후 `Ctrl+C` 복사(타이핑하면 선택 해제 → 다음 `Ctrl+C`는 중단), 우클릭 *보이는 화면/전체 출력 복사*
+
+### CLI 구성 (task-012)
+- Gemini·Antigravity 제거, **Grok 추가 (이미지·영상)** — 역할: Claude=코딩, Codex=리뷰, Grok=미디어
+- 기존 설정 자동 마이그레이션(1회), `agents/media.md`, `scripts/run-media.ps1`, MEDIA 버튼
+- START/REVIEW 버튼이 PowerShell `<` 미지원으로 실행되지 않던 버그 수정
+- 설치되지 않은 CLI 버튼 표시
+
+### 세션 이어하기 (task-013)
+- 프로젝트별 탭/페인 배치와 CLI를 기억해 다음 실행(비정상 종료 포함)에 **이어하기** 제안 → 각 CLI의 이어하기 옵션으로 복원
+- 정상 종료 시 최신 세션만 배치 유지·최대 5개, 30일 지난/사라진 프로젝트 기록 자동 삭제, 에이전트 원본 로그는 성공 시 삭제
+
 ### 보안 (task-007)
 - 렌더러 `sandbox: true`, webview 비활성, 앱 내 이동·새 창 차단 (http(s) 링크만 외부 브라우저)
 - 모든 IPC가 메인 창의 최상위 프레임에만 응답

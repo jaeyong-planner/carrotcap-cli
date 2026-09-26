@@ -28,3 +28,9 @@
 - 입력창 Ctrl+A → Delete 전체 삭제, 한글 IME 조합, Enter 전송 후 터미널 출력 확인, 전송 후 비움
 - 버튼 포커스 상태 타이핑 → 입력창으로 들어감
 - 결과: 32/32
+
+## 리뷰 반영 (logs/review/task-010-011_input-copy.md — ⚠️ 조건부 승인, Critical 0 / Major 4)
+- 반복 입력된 앱 단축키도 소비(동작은 1회) — "Ctrl+Shift+T 길게 → 탭 1개" 스모크
+- IME 조합 시작 keydown(`Process`)도 포커스 복구 대상 — 버튼 포커스에서 한글 입력 스모크
+- 종료된 세션: ptyId 해제·"종료됨" 표시, 입력창은 내용 유지, 지연 CR은 세션 생존 확인 후 전송
+- (Optional) Alt+Shift는 Windows 입력 언어 전환 키와 겹칠 수 있음 — Windows Terminal과 같은 관례라 유지, 문제 시 재설정 기능 검토

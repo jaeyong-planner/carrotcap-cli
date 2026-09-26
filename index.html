@@ -59,6 +59,15 @@
             <button class="btn-flow" data-flow="media" title="Grok — 이미지·영상 요청 대기">MEDIA</button>
           </div>
           <div id="flow-status" class="flow-status muted small">프로젝트 폴더를 선택한 뒤 SETUP을 누르세요</div>
+          <!-- 이전 세션 이어하기 (task-013) -->
+          <div id="resume-box" class="resume-box hidden">
+            <div class="resume-title">이전 작업 이어하기</div>
+            <div id="resume-text" class="small"></div>
+            <div class="resume-actions">
+              <button id="resume-go" class="btn-primary" title="같은 탭/페인 배치로 열고 각 CLI의 마지막 대화를 이어갑니다">이어하기</button>
+              <button id="resume-dismiss" class="btn-ghost" title="이 기록을 지우고 새로 시작">새로 시작</button>
+            </div>
+          </div>
         </div>
 
         <div class="side-section">
