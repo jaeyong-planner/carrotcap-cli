@@ -127,6 +127,9 @@ function validateSettings(input) {
     out.cli = cli;
   }
 
+  if (Number.isInteger(input.settingsVersion) && input.settingsVersion > 0 && input.settingsVersion < 1000) {
+    out.settingsVersion = input.settingsVersion;
+  }
   if (typeof input.defaultShell === 'string')       out.defaultShell = clipString(input.defaultShell, 256);
   if (typeof input.defaultProjectPath === 'string') out.defaultProjectPath = clipString(input.defaultProjectPath, 1024);
   // recentWorkspaces is INTENTIONALLY NOT in this whitelist. It is workspace
@@ -143,6 +146,27 @@ function validateSettings(input) {
   }
 
   return out;
+}
+
+// task-012: Gemini/Antigravity (Google) CLIs were removed; Grok handles images/videos.
+// Runs once per settings file (settingsVersion) so a user who later deletes grok
+// does not get it back on every launch.
+const SETTINGS_VERSION = 2;
+const REMOVED_CLI_NAMES = new Set(['gemini', 'antigravity', 'agy']);
+function migrateSettings(settings) {
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return { settings, changed: false };
+  if ((settings.settingsVersion || 1) >= SETTINGS_VERSION) return { settings, changed: false };
+  const next = { ...settings, settingsVersion: SETTINGS_VERSION };
+  const cli = {};
+  const srcCli = (settings.cli && typeof settings.cli === 'object' && !Array.isArray(settings.cli)) ? settings.cli : {};
+  for (const [key, val] of Object.entries(srcCli)) {
+    const cmd = val && typeof val.command === 'string' ? val.command.toLowerCase() : '';
+    if (REMOVED_CLI_NAMES.has(key.toLowerCase()) || REMOVED_CLI_NAMES.has(cmd)) continue;
+    cli[key] = val;
+  }
+  if (!cli.grok) cli.grok = { command: 'grok', args: [] };
+  next.cli = cli;
+  return { settings: next, changed: true };
 }
 
 function pwshSingleQuote(s) {
@@ -394,6 +418,7 @@ function saveSettings(next) {
 
 function buildDefaultSettings() {
   return {
+    settingsVersion: SETTINGS_VERSION,
     aor: {
       enabled: true,
       engineRoot: '',
@@ -406,8 +431,8 @@ function buildDefaultSettings() {
     },
     cli: {
       claude: { command: 'claude', args: [] },
-      gemini: { command: 'gemini', args: [] },
-      codex: { command: 'codex', args: [] }
+      codex: { command: 'codex', args: [] },
+      grok: { command: 'grok', args: [] }
     },
     defaultShell: defaultShell(),
     defaultProjectPath: os.homedir(),
@@ -428,6 +453,13 @@ function initUserState() {
   if (!fs.existsSync(SETTINGS_PATH)) {
     const seeded = validateSettings(readJsonFile(BUNDLED_SETTINGS_PATH));
     saveSettings(seeded.cli && Object.keys(seeded.cli).length ? seeded : buildDefaultSettings());
+  }
+  {
+    const { settings, changed } = migrateSettings(loadSettings());
+    if (changed) {
+      saveSettings(settings);
+      console.log('[carrotcap] settings migrated to version', SETTINGS_VERSION);
+    }
   }
   if (!fs.existsSync(CLAUDE_MD_PATH)) {
     try { fs.copyFileSync(BUNDLED_CLAUDE_MD_PATH, CLAUDE_MD_PATH); }
@@ -599,12 +631,12 @@ function ensureAiopsProjectStructure(projectRoot) {
 
   const agentsDir = path.join(realRoot, 'agents');
   const logsDir = path.join(realRoot, 'logs');
-  const researchLogsDir = path.join(logsDir, 'research');
+  const mediaLogsDir = path.join(logsDir, 'media');
   const reviewLogsDir = path.join(logsDir, 'review');
   const backlogDir = path.join(realRoot, 'backlog');
   try {
     safeMkdir(agentsDir, realRoot);
-    safeMkdir(researchLogsDir, realRoot);
+    safeMkdir(mediaLogsDir, realRoot);
     safeMkdir(reviewLogsDir, realRoot);
     safeMkdir(backlogDir, realRoot);
   } catch (e) {
@@ -613,22 +645,22 @@ function ensureAiopsProjectStructure(projectRoot) {
   }
 
   // task-009: setup documents live in templates/aiops/ (editable, shipped via build.files);
-  // researcher/reviewer come from agents/ (task-005). writeIfMissing (inside
+  // media/reviewer contracts come from agents/ (task-005, task-012). writeIfMissing (inside
   // copyTemplateIfMissing) preserves any existing project file.
   copyTemplateIfMissing(tmpl.supervisor, path.join(agentsDir, 'supervisor.md'), realRoot);
-  copyTemplateIfMissing(tmpl.researcher, path.join(agentsDir, 'researcher.md'), realRoot);
+  copyTemplateIfMissing(tmpl.media, path.join(agentsDir, 'media.md'), realRoot);
   copyTemplateIfMissing(tmpl.reviewer, path.join(agentsDir, 'reviewer.md'), realRoot);
   copyTemplateIfMissing(tmpl.task001, path.join(backlogDir, 'task-001.md'), realRoot);
   copyTemplateIfMissing(tmpl.workflow, path.join(backlogDir, 'workflow.md'), realRoot);
 
   // task-005: deploy the helper PowerShell scripts so the project can run the
-  // researcher/reviewer cycle with the same auto-loading and output shaping the
+  // media/reviewer cycle with the same auto-loading and output shaping the
   // PM uses. The scripts are copy-only (no template variables); writeIfMissing
   // preserves any user-modified project copy.
   const projectScriptsDir = path.join(realRoot, 'scripts');
   try {
     safeMkdir(projectScriptsDir, realRoot);
-    copyTemplateIfMissing(tmpl.runResearcher, path.join(projectScriptsDir, 'run-researcher.ps1'), realRoot);
+    copyTemplateIfMissing(tmpl.runMedia, path.join(projectScriptsDir, 'run-media.ps1'), realRoot);
     copyTemplateIfMissing(tmpl.runReviewer, path.join(projectScriptsDir, 'run-reviewer.ps1'), realRoot);
   } catch (e) {
     // Non-fatal: setup continues with the agents/logs/backlog structure even if
@@ -691,9 +723,9 @@ function getAiopsTemplateSources() {
     task001:       path.join(root, 'templates', 'aiops', 'task-001.md'),
     workflow:      path.join(root, 'templates', 'aiops', 'workflow.md'),
     claudeBlock:   path.join(root, 'templates', 'aiops', 'CLAUDE-block.md'),
-    researcher:    path.join(root, 'agents', 'researcher.md'),
+    media:         path.join(root, 'agents', 'media.md'),
     reviewer:      path.join(root, 'agents', 'reviewer.md'),
-    runResearcher: path.join(root, 'scripts', 'run-researcher.ps1'),
+    runMedia:      path.join(root, 'scripts', 'run-media.ps1'),
     runReviewer:   path.join(root, 'scripts', 'run-reviewer.ps1')
   };
 }
@@ -755,7 +787,7 @@ function resolvePtyArgs(opts) {
       cwd,
       kind: isAiops ? 'aiops' : 'aor',
       warning: isAiops
-        ? `${aiopsStructure ? 'AIOps project structure is ready.' : 'Select a project folder to create the AIOps project structure.'} Claude is supervisor, Gemini is researcher, Codex is reviewer.`
+        ? `${aiopsStructure ? 'AIOps project structure is ready.' : 'Select a project folder to create the AIOps project structure.'} Claude codes, Codex reviews, Grok makes images/videos.`
         : undefined
     };
   }
@@ -1075,6 +1107,7 @@ handle('clipboard:write-text', (_e, text) => {
   catch (err) { return { ok: false, error: (err && err.message) || 'clipboard write failed' }; }
 });
 on('term-menu:show', (e, { id, hasSelection }) => {
+  if (!sessions.has(id)) return;
   const send = (command) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('term-menu:command', { id, command });
   };
@@ -1088,6 +1121,34 @@ on('term-menu:show', (e, { id, hasSelection }) => {
     { label: '모두 선택', click: () => send('selectAll') },
     { label: '화면 지우기', click: () => send('clear') }
   ]).popup({ window: BrowserWindow.fromWebContents(e.sender) || mainWindow });
+});
+
+// task-012: which configured CLIs are actually installed (on PATH). Cached briefly —
+// the sidebar asks on boot and whenever settings change.
+let cliStatusCache = { at: 0, value: null };
+function whichCommand(cmd) {
+  const { execFile } = require('child_process');
+  const [file, args] = process.platform === 'win32'
+    ? [path.join(getSystem32Path(), 'where.exe'), [cmd]]
+    : ['/usr/bin/which', [cmd]];
+  return new Promise((resolve) => {
+    execFile(file, args, { timeout: 4000, windowsHide: true }, (err, stdout) => {
+      resolve(!err && String(stdout).trim().length > 0);
+    });
+  });
+}
+handle('cli:status', async () => {
+  if (cliStatusCache.value && Date.now() - cliStatusCache.at < 30000) return cliStatusCache.value;
+  const settings = loadSettings() || {};
+  const cli = (settings.cli && typeof settings.cli === 'object') ? settings.cli : {};
+  const out = {};
+  await Promise.all(Object.entries(cli).map(async ([key, val]) => {
+    if (!CLI_KEY_RE.test(key) || RESERVED_OBJECT_KEYS.has(key)) return;
+    const cmd = val && typeof val.command === 'string' ? val.command : '';
+    out[key] = CMD_NAME_RE.test(cmd) ? await whichCommand(cmd) : false;
+  }));
+  cliStatusCache = { at: Date.now(), value: out };
+  return out;
 });
 
 handle('app:platform', () => process.platform);

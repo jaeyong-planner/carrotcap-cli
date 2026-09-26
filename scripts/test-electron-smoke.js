@@ -240,7 +240,38 @@ const PROBE = `(async () => {
   await sleep(300);
   check('Ctrl+C with a selection copies it', (await clip()).length > 0);
 
+  // Stale selection must not swallow the interrupt Ctrl+C (task-010/011 review).
+  await drag(0);
+  await ev(`document.querySelector('.tab-page.active .xterm-helper-textarea').focus(), true`);
+  await typeText('a');
+  await ev(`window.carrotcap.writeClipboard('')`);
+  await key('c', 'KeyC', 67, CTRL);
+  await sleep(300);
+  check('after typing, Ctrl+C interrupts instead of copying a stale selection', (await clip()) === '');
   if (clipSaved && clipSaved.ok) await ev(`window.carrotcap.writeClipboard(${JSON.stringify(clipSaved.text)})`);
+
+  console.log('-- review fixes (task-010/011)');
+  const tabsNow = await ev(`document.querySelectorAll('.tab').length`);
+  await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 't', code: 'KeyT', windowsVirtualKeyCode: 84, modifiers: CTRL | SHIFT });
+  for (let i = 0; i < 3; i++) {
+    await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 't', code: 'KeyT', windowsVirtualKeyCode: 84, modifiers: CTRL | SHIFT, autoRepeat: true });
+  }
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 't', code: 'KeyT', windowsVirtualKeyCode: 84, modifiers: CTRL | SHIFT });
+  await sleep(1200);
+  check('held Ctrl+Shift+T opens exactly one tab', (await ev(`document.querySelectorAll('.tab').length`)) === tabsNow + 1);
+  await ev(`document.querySelector('.btn-split').focus(), document.querySelector('#composer-input').value = '', true`);
+  await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Process', code: 'KeyG', windowsVirtualKeyCode: 229 });
+  check('IME keydown (Process) on a button moves focus to the input box',
+    (await ev(`document.activeElement.id`)) === 'composer-input');
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Process', code: 'KeyG', windowsVirtualKeyCode: 229 });
+  // Exited session: the input box keeps its text instead of silently dropping it.
+  await ev(`document.querySelector('#composer-input').value = 'exit'; document.querySelector('#composer-send').click(); true`);
+  await sleep(2500);
+  await ev(`document.querySelector('#composer-input').value = 'after-exit'; document.querySelector('#composer-send').click(); true`);
+  await sleep(300);
+  check('after the shell exits, input box keeps unsent text',
+    (await ev(`document.querySelector('#composer-input').value`)) === 'after-exit');
+  check('exited pane is labelled', /종료됨/.test(await ev(`document.querySelector('#composer-target').textContent`)));
 
   console.log('-- no out-of-band terminal writes (task-011)');
   // Warnings used to be injected into xterm behind ConPTY's back, garbling redraws.
@@ -248,6 +279,17 @@ const PROBE = `(async () => {
   check('fallback warning shown in the pane header instead',
     (await ev(`[...document.querySelectorAll('.pane .kind')].some((k) => /⚠/.test(k.textContent) && k.title.length > 0)`)) === true
     || !/FALLBACK/.test(await ev(`document.querySelector('.pane .kind').textContent`)));
+
+  console.log('-- CLI line-up (task-012)');
+  const cliKeys = await ev(`[...document.querySelectorAll('.btn-cli')].map((b) => b.dataset.cli).join(',')`);
+  check('QUICK CLI is claude,codex,grok (no gemini)', cliKeys === 'claude,codex,grok', cliKeys);
+  const flows = await ev(`[...document.querySelectorAll('.btn-flow[data-flow]')].map((b) => b.dataset.flow).join(',')`);
+  check('flow buttons are start,review,media', flows === 'start,review,media', flows);
+  const status = await ev(`window.carrotcap.cliStatus()`);
+  check('cli:status reports every configured CLI', status && ['claude', 'codex', 'grok'].every((k) => typeof status[k] === 'boolean'), JSON.stringify(status));
+  check('cli:status finds installed claude', status && status.claude === true);
+  const seededCli = await ev(`window.carrotcap.getSettings().then((s) => Object.keys(s.cli).join(','))`);
+  check('seeded settings have no gemini', !/gemini|agy|antigravity/.test(seededCli) && /grok/.test(seededCli), seededCli);
 
   console.log('-- renderer errors');
   check('no exceptions / console errors on load', logs.length === 0, logs.join(' | '));

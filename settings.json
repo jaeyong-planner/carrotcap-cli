@@ -1,4 +1,5 @@
 {
+  "settingsVersion": 2,
   "aor": {
     "enabled": true,
     "engineRoot": "",
@@ -12,9 +13,9 @@
   },
   "cli": {
     "claude": { "command": "claude", "args": [] },
-    "gemini": { "command": "gemini", "args": [] },
     "codex":  { "command": "codex",  "args": [] },
-    "_comment": "각 CLI의 실행 명령과 인자를 자유롭게 변경하세요. 예: claude.args=[\"--dangerously-skip-permissions\"]"
+    "grok":   { "command": "grok",   "args": [] },
+    "_comment": "역할: claude=코딩, codex=코드 리뷰, grok=이미지·영상 제작. 실행 명령과 인자를 자유롭게 변경하세요. 예: claude.args=[\"--dangerously-skip-permissions\"]"
   },
   "defaultShell": "powershell.exe",
   "defaultProjectPath": "",

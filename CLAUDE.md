@@ -63,38 +63,41 @@
 ## 7. Multi-Agent Supervisor Rules
 
 당신은 이 프로젝트의 **PM이자 메인 코딩 에이전트**다.
-직접 모든 것을 해결하려 하지 말고, 필요한 경우 외부 에이전트(Gemini, Codex)를 호출한다.
+코딩과 조사는 직접 하고, 리뷰는 Codex, 이미지·영상 제작은 Grok에게 맡긴다.
 
 ### 7.1 역할 분담
 
 | 역할 | 에이전트 | 담당 업무 |
 |------|----------|-----------|
-| PM / 코더 | Claude Code | 작업 분배, 코드 수정, 최종 판단 |
-| 리서처 | Gemini | 문서 조사, 변경사항 분석, 마이그레이션 조사 |
+| PM / 코더 | Claude Code | 작업 분배, 조사, 코드 수정, 테스트, 최종 판단 |
 | 리뷰어 | Codex | 코드 리뷰, 버그 탐지, 품질 검토 |
+| 미디어 | Grok | 이미지·영상 제작 (요청이 있을 때만) |
 | 공유 메모리 | `logs/` 폴더 | 각 에이전트의 작업 결과 저장 |
+
+> Gemini(리서처)·Antigravity는 v0.2.0에서 제거됐다. 과거 리서치 기록은 `logs/research/`에 그대로 남아 있다.
 
 ### 7.2 작업 순서
 
 1. **백로그 분석** — `backlog/<task-id>.md`를 읽고 작업 목적을 파악한다.
-2. **리서치 (선택)** — 외부 문서/버전/API 변경 조사가 필요하면 Gemini를 호출하고 결과는 `logs/research/`에 저장한다.
+2. **조사 (선택)** — 외부 문서/버전/API 조사가 필요하면 직접 조사하고 근거를 task 파일에 남긴다.
 3. **코드베이스 확인** — 영향 받는 파일을 읽는다.
 4. **구현** — 최소한의 변경으로 백로그 목표를 달성한다.
-5. **리뷰 (중요 변경)** — 핵심 로직/보안/IPC 변경은 Codex에게 리뷰를 요청하고 결과는 `logs/review/`에 저장한다.
-6. **리뷰 반영** — Critical / Major 이슈를 모두 처리한다.
-7. **최종 요약** — 변경사항·리스크·다음 행동을 사용자에게 보고한다.
+5. **미디어 (선택)** — 이미지·영상이 필요하면 Grok에게 요청하고 결과는 `assets/generated/`, 기록은 `logs/media/`에 남긴다.
+6. **리뷰 (중요 변경)** — 핵심 로직/보안/IPC 변경은 Codex에게 리뷰를 요청하고 결과는 `logs/review/`에 저장한다.
+7. **리뷰 반영** — Critical / Major 이슈를 모두 처리한다.
+8. **최종 요약** — 변경사항·리스크·다음 행동을 사용자에게 보고한다.
 
 ### 7.3 외부 에이전트 호출 규칙
 
 - 호출 시 항상 **task-id**, **목적**, **출력 저장 경로**를 명시한다.
-- 리서처 호출 프롬프트는 `agents/researcher.md`의 규약을 따른다.
-- 리뷰어 호출 프롬프트는 `agents/reviewer.md`의 규약을 따른다.
-- 결과 파일은 `logs/research/<task-id>_*.md`, `logs/review/<task-id>_*.md` 명명 규칙을 지킨다.
+- 리뷰어 호출: `scripts/run-reviewer.ps1` — `agents/reviewer.md` 규약.
+- 미디어 호출: `scripts/run-media.ps1` — `agents/media.md` 규약 (`grok login` 필요).
+- 결과 파일은 `logs/review/<task-id>_*.md`, `logs/media/<task-id>_*.md` 명명 규칙을 지킨다.
 
 ### 7.4 금지사항
 
-- 리서처에게 프로덕션 코드 작성을 시키지 않는다.
-- 리뷰어에게 기능 구현을 시키지 않는다.
+- 리뷰어(Codex)에게 기능 구현을 시키지 않는다.
+- 미디어 담당(Grok)에게 코드 수정을 시키지 않는다.
 - 모든 판단을 단일 세션에서 독단적으로 끝내지 않는다.
 - 큰 작업은 반드시 작은 단위로 나눠 별도 백로그로 만든다.
 - 자기 자신이 작성한 코드를 객관적으로 리뷰했다고 가정하지 않는다 — Codex 리뷰를 거친다.
@@ -105,11 +108,12 @@
 carrotcap-cli/
 ├─ CLAUDE.md          ← 이 파일 (감독 규칙)
 ├─ agents/
-│  ├─ researcher.md   ← Gemini 프롬프트 규약
-│  └─ reviewer.md     ← Codex 프롬프트 규약
+│  ├─ reviewer.md     ← Codex 프롬프트 규약
+│  └─ media.md        ← Grok 프롬프트 규약
 ├─ logs/
-│  ├─ research/       ← 리서치 결과 저장
-│  └─ review/         ← 리뷰 결과 저장
+│  ├─ review/         ← 리뷰 결과 저장
+│  ├─ media/          ← 이미지·영상 제작 기록
+│  └─ research/       ← (v0.1 기록 보관)
 ├─ backlog/
 │  └─ task-XXX.md     ← 작업 단위 백로그
 └─ (기존 소스)
@@ -120,17 +124,13 @@ carrotcap-cli/
 ```
 사용자 요청
   ↓
-Claude가 backlog/<task-id>.md 분석
+Claude가 backlog/<task-id>.md 분석 · 필요 시 직접 조사
   ↓
-필요하면 Gemini(researcher)에게 리서치 요청
+Claude가 코드 수정 · 테스트
+  ↓ (이미지·영상이 필요하면)
+Grok(media)에게 제작 요청 → assets/generated/ + logs/media/
   ↓
-Gemini 결과를 logs/research/에 저장
-  ↓
-Claude가 로그를 읽고 코드 수정
-  ↓
-Codex(reviewer)에게 리뷰 요청
-  ↓
-Codex 결과를 logs/review/에 저장
+Codex(reviewer)에게 리뷰 요청 → logs/review/
   ↓
 Claude가 Critical/Major 이슈 반영
   ↓

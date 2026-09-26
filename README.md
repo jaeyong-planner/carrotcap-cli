@@ -1,7 +1,7 @@
 # 🥕 CARROTCAP CLI
 
 AOR 라우팅이 디폴트로 적용된 데스크톱 터미널.  
-**탭 + 분할(LEFT/RIGHT/UP/DOWN) + 폴더 사이드바 + 드래그앤드롭 + CLAUDE/GEMINI/CODEX 원-클릭 호출**.
+**탭 + 분할(LEFT/RIGHT/UP/DOWN) + 폴더 사이드바 + 드래그앤드롭 + CLAUDE(코딩)/CODEX(리뷰)/GROK(이미지·영상) 원-클릭 호출**.
 
 ---
 
@@ -42,6 +42,7 @@ npm start
 
 - **상단 ＋ 버튼** 또는 `Ctrl+Shift+T` → 새 탭. `Ctrl+Shift+W` → 활성 페인 닫기.
 - 좌측 **SPLIT 패널** 또는 `Alt+Shift+→/←/↑/↓` → RIGHT/LEFT/UP/DOWN 분할.
+- 분할 사이의 회색 바를 드래그해서 비율 조절.
 - `Ctrl+W`(단어 삭제), `Ctrl+T`, `Ctrl+Shift+←/→`(단어 선택)는 터미널 편집 키라 앱이 가로채지 않습니다 (v0.2.0부터).
 
 **입력창** (터미널 아래)
@@ -49,7 +50,6 @@ npm start
 - 일반 입력칸처럼 편집한 뒤 `Enter`로 활성 터미널에 보냅니다. `Shift+Enter` 줄바꿈, `Ctrl+A` 전체 선택 → `Delete` 전체 삭제, `↑/↓` 이전 입력, `Esc` 터미널로 이동.
 - `Ctrl+Shift+Space` 입력창으로 이동, 상단 **입력창** 버튼으로 보이기/숨기기.
 - 사이드바 버튼을 누른 뒤 바로 타이핑해도 글자가 사라지지 않고 입력창으로 들어갑니다.
-- 분할 사이의 회색 바를 드래그해서 비율 조절.
 
 **복사 / 붙여넣기**
 
@@ -59,11 +59,19 @@ npm start
 | 화면/출력 전체 복사 | 우클릭 → *보이는 화면 복사* / *전체 출력 복사* (선택이 어려운 TUI 화면에서 유용) |
 | TUI가 마우스를 잡을 때 | 페인 헤더에 *Shift+드래그로 선택* 이 뜨면 `Shift`를 누른 채 드래그 |
 | 붙여넣기 | `Ctrl+Shift+V` 또는 `Shift+Insert` (`Ctrl+V`는 셸/CLI 기본 동작 유지) |
-| 메뉴 | 터미널 우클릭 → 복사 · 붙여넣기 · 모두 선택 · 화면 지우기 |
+| 메뉴 | 터미널 우클릭 → 복사 · 붙여넣기 · 화면/전체 출력 복사 · 모두 선택 · 화면 지우기 |
 
 ### 3) CLI 원-클릭
 
-좌측 **QUICK CLI** 패널에서 CLAUDE / GEMINI / CODEX 클릭 → 활성 페인에 명령이 입력되어 즉시 실행됩니다. 명령은 사용자 `settings.json`(아래 9번)의 `cli` 섹션에서 자유롭게 바꿀 수 있습니다.
+좌측 **QUICK CLI** 패널에서 클릭 → 활성 페인에 명령이 입력되어 즉시 실행됩니다.
+
+| 버튼 | CLI | 역할 |
+| --- | --- | --- |
+| CLAUDE | `claude` | 코딩 (PM · 구현 · 조사) |
+| CODEX | `codex` | 코드 리뷰 |
+| GROK | `grok` | 이미지·영상 제작 — `/imagine`, `/imagine-video` (처음 한 번 `grok login`) |
+
+설치되지 않은(PATH에 없는) CLI 버튼은 흐리게 취소선으로 표시됩니다. Gemini·Antigravity는 v0.2.0에서 제거됐고, 기존 설정에서도 자동으로 빠집니다. 명령은 사용자 `settings.json`(아래 9번)의 `cli` 섹션에서 자유롭게 바꿀 수 있습니다.
 
 ### 4) AOR 모드
 
@@ -76,13 +84,15 @@ npm start
 좌측 **AI DEV FLOW** 패널에서 에이전트 개발 프로세스를 원클릭으로 세팅하고 실행합니다.
 
 - **SETUP**: 선택한 프로젝트 폴더에 `agents/`, `logs/`, `backlog/`, `CLAUDE.md` 워크플로우를 생성합니다.
-- **START**: 선택한 프로젝트 폴더로 이동한 뒤 `claude < agents\supervisor.md`를 실행합니다.
-- **RESEARCH**: `gemini < agents\researcher.md`로 조사 절차를 실행합니다.
-- **REVIEW**: `codex < agents\reviewer.md`로 코드 리뷰 절차를 실행합니다.
+- **START**: 프로젝트 폴더로 이동한 뒤 Claude를 "agents/supervisor.md 절차대로 진행" 첫 프롬프트로 시작합니다 (코딩).
+- **REVIEW**: Codex를 "agents/reviewer.md 규약으로 최근 변경 리뷰, logs/review/에 저장" 첫 프롬프트로 시작합니다.
+- **MEDIA**: Grok을 "agents/media.md 규약으로 대기" 상태로 시작합니다. 이어서 "로고 이미지 2장 만들어줘"처럼 요청하면 `assets/generated/`에 만들고 `logs/media/`에 기록합니다. 스크립트로는 `scripts\run-media.ps1 -TaskId task-001 -Slug logo -Request "..."`.
+
+> v0.1.0의 `claude < agents\supervisor.md` 방식은 PowerShell이 `<` 리디렉션을 지원하지 않아 실행되지 않았습니다. v0.2.0부터 첫 프롬프트 인자로 전달합니다.
 
 SETUP이 만드는 문서의 원본은 `templates/aiops/`(supervisor.md · task-001.md · workflow.md · CLAUDE-block.md)와 `agents/`에 있습니다. 이 파일을 고치면 다음 SETUP부터 반영되며, 프로젝트에 이미 있는 파일은 덮어쓰지 않습니다.
 
-생성되는 워크플로우는 Claude Code를 PM/코더, Gemini를 리서처, Codex를 리뷰어, `logs/`를 공유 메모리로 사용합니다. 큰 요청은 `backlog/task-XXX.md` 단위로 나누고, 리서치와 리뷰 결과는 각각 `logs/research/`, `logs/review/`에 남기는 방식입니다.
+생성되는 워크플로우는 Claude Code를 PM/코더, Codex를 리뷰어, Grok을 미디어 담당, `logs/`를 공유 메모리로 사용합니다. 큰 요청은 `backlog/task-XXX.md` 단위로 나누고, 리뷰와 미디어 결과는 각각 `logs/review/`, `logs/media/`(파일은 `assets/generated/`)에 남깁니다.
 
 ### 6) 드래그앤드롭
 
@@ -120,11 +130,11 @@ SETUP이 만드는 문서의 원본은 `templates/aiops/`(supervisor.md · task-
 ├─ styles.css       다크 테마
 ├─ CLAUDE.md        번들 디폴트 AOR 컨텍스트 (첫 실행 시 사용자 폴더로 복사)
 ├─ settings.json    번들 디폴트 설정 (첫 실행 시 사용자 폴더로 복사)
-├─ agents/          researcher.md / reviewer.md (AIOps 템플릿 겸 이 저장소의 에이전트 규약)
+├─ agents/          reviewer.md(Codex) / media.md(Grok) — AIOps 템플릿 겸 이 저장소의 에이전트 규약
 ├─ templates/aiops/ AIOps SETUP이 프로젝트에 복사하는 문서 원본
 ├─ backlog/         task-XXX.md 작업 단위
-├─ logs/            research/ · review/ 에이전트 산출물 (공유 메모리)
-├─ scripts/         setup-dev · run-researcher · run-reviewer · 테스트
+├─ logs/            review/ · media/ 에이전트 산출물 (공유 메모리, research/는 v0.1 기록)
+├─ scripts/         setup-dev · run-reviewer · run-media · 테스트
 ├─ AOR/             번들 AOR 엔진 (extraResources)
 └─ build/           NSIS / pkg 설치 스크립트
 ```
@@ -139,7 +149,7 @@ SETUP이 만드는 문서의 원본은 `templates/aiops/`(supervisor.md · task-
 | `node_modules` 안의 파일이 일부 없음 | Google Drive 동기화 도중 손상된 경우입니다. `scripts\setup-dev.ps1`을 다시 실행하세요. |
 | 새 PowerShell에서 `carrotcap : 인식되지 않습니다` | `release\*.exe`로 **설치 단계**를 안 거친 경우입니다. 설치 후 새 셸을 열어 다시 실행. 또는 `powershell -ExecutionPolicy Bypass -File scripts\repair-cli.ps1` 로 수동 등록. 패키지된 GUI를 한 번만 실행해도 자동 자가복구됩니다. |
 | AOR 모드에서 즉시 종료 | `settings.json` → `aor.engineRoot` 경로가 실제 AOR 엔진 루트인지 확인. 그 안에 `engine\windows\_internal\shell-init.ps1`이 있어야 합니다. |
-| `claude`/`gemini`/`codex` 명령을 찾을 수 없음 | 해당 CLI가 PATH에 등록되어 있어야 합니다. 또는 `settings.json`의 `cli.<key>.command`를 절대경로로 지정. |
+| `claude`/`codex`/`grok` 명령을 찾을 수 없음 (버튼 취소선) | 해당 CLI를 설치하고 PATH에 등록한 뒤 앱을 다시 여세요. `cli.<key>.command`에는 보안상 명령 이름만 허용됩니다(경로·공백 불가). |
 | 한글 폴더 경로에서 깨짐 | PowerShell이 UTF-8을 사용하도록 `chcp 65001`이 자동 호출됩니다. 그래도 깨지면 코드페이지를 확인하세요. |
 
 ---

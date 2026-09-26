@@ -43,10 +43,10 @@
       "settings.json",
       "CLAUDE.md",
       "package.json",
-      "agents/researcher.md",
+      "agents/media.md",
       "agents/reviewer.md",
       "templates/**/*",
-      "scripts/run-researcher.ps1",
+      "scripts/run-media.ps1",
       "scripts/run-reviewer.ps1"
     ],
     "extraResources": [

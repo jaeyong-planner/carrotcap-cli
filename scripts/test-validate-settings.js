@@ -62,6 +62,8 @@ module.exports = {
   validateClaudeMdContent,
   MAX_CLAUDE_MD_BYTES,
   isWithinByteCap,
+  migrateSettings,
+  SETTINGS_VERSION,
   ensureAiopsProjectStructure,
   findMissingAiopsTemplates,
   AIOPS_CLAUDE_BLOCK_START,
@@ -82,7 +84,7 @@ const {
   clampInt, resolveAllowedDir, sanitizeSpawnPayload, isValidPtyId,
   validateClaudeMdContent, MAX_CLAUDE_MD_BYTES,
   ensureAiopsProjectStructure, AIOPS_CLAUDE_BLOCK_START, AIOPS_CLAUDE_BLOCK_END,
-  isWithinByteCap, findMissingAiopsTemplates
+  isWithinByteCap, findMissingAiopsTemplates, migrateSettings, SETTINGS_VERSION
 } = m.exports;
 
 let pass = 0;
@@ -417,8 +419,8 @@ console.log('-- ensureAiopsProjectStructure from templates/aiops (task-009)');
   check('supervisor.md from template', out('agents', 'supervisor.md') === tmpl('supervisor.md'));
   check('task-001.md from template', out('backlog', 'task-001.md') === tmpl('task-001.md'));
   check('workflow.md from template', out('backlog', 'workflow.md') === tmpl('workflow.md'));
-  check('researcher/reviewer deployed',
-    fs.existsSync(path.join(ws, 'agents', 'researcher.md')) && fs.existsSync(path.join(ws, 'agents', 'reviewer.md')));
+  check('media/reviewer deployed',
+    fs.existsSync(path.join(ws, 'agents', 'media.md')) && fs.existsSync(path.join(ws, 'agents', 'reviewer.md')));
   check('helper scripts deployed', fs.existsSync(path.join(ws, 'scripts', 'run-reviewer.ps1')));
 
   const claude = out('CLAUDE.md');
@@ -468,6 +470,43 @@ console.log('-- isWithinByteCap: UTF-8 bytes, not UTF-16 units (task-009 review)
   check('hangul counted as 3 bytes', !isWithinByteCap('가가가가', 10) && isWithinByteCap('가가가', 9));
   check('emoji counted as 4 bytes', !isWithinByteCap('😀😀😀', 10));
   check('non-string rejected', !isWithinByteCap(123, 10));
+}
+
+console.log('-- migrateSettings: drop Google CLIs, add grok, run once (task-012)');
+{
+  const old = {
+    aor: { enabled: true },
+    cli: {
+      claude: { command: 'claude', args: [] },
+      gemini: { command: 'agy', args: [] },          // real v0.1 user file: key gemini, command agy
+      antigravity: { command: 'antigravity', args: [] },
+      research: { command: 'gemini', args: ['-y'] }, // removed by command name too
+      codex: { command: 'codex', args: [] }
+    }
+  };
+  const { settings: s1, changed: c1 } = migrateSettings(old);
+  check('migration reports a change', c1 === true);
+  check('gemini / antigravity / agy removed', !s1.cli.gemini && !s1.cli.antigravity && !s1.cli.research);
+  check('claude and codex kept', s1.cli.claude && s1.cli.codex);
+  check('grok added', s1.cli.grok && s1.cli.grok.command === 'grok');
+  check('version stamped', s1.settingsVersion === SETTINGS_VERSION);
+  check('other sections untouched', s1.aor.enabled === true);
+  check('input not mutated', !!old.cli.gemini);
+
+  delete s1.cli.grok; // user removes grok on purpose
+  const { settings: s2, changed: c2 } = migrateSettings(s1);
+  check('second run is a no-op (grok not re-added)', c2 === false && !s2.cli.grok);
+  check('null settings -> no change', migrateSettings(null).changed === false);
+  check('settingsVersion survives validateSettings', validateSettings({ settingsVersion: 2 }).settingsVersion === 2);
+  check('bad settingsVersion dropped', !('settingsVersion' in validateSettings({ settingsVersion: '2' })));
+}
+
+console.log('-- bundled settings.json (task-012)');
+{
+  const bundled = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'settings.json'), 'utf8'));
+  const cleaned = validateSettings(bundled);
+  check('bundled CLIs are claude, codex, grok', Object.keys(cleaned.cli).join(',') === 'claude,codex,grok', Object.keys(cleaned.cli).join(','));
+  check('bundled settings already at current version', migrateSettings(cleaned).changed === false);
 }
 
 console.log('');

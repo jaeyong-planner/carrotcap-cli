@@ -61,6 +61,7 @@
 
     // 글로벌 이벤트
     bindGlobalEvents();
+    refreshCliStatus();
   }
 
   function refreshAorBadge() {
@@ -485,7 +486,9 @@
   }
   function updateComposerTarget() {
     const leaf = state.panes.get(state.activePaneId);
-    const label = leaf && leaf.type === 'leaf' ? String(leaf.kind || 'plain').toUpperCase() : '-';
+    const label = leaf && leaf.type === 'leaf'
+      ? String(leaf.kind || 'plain').toUpperCase() + (leaf.exited ? ' · 종료됨' : '')
+      : '-';
     composerTarget.textContent = `→ ${label}`;
   }
   function focusComposer() {
@@ -499,7 +502,8 @@
   function sendComposer() {
     const leaf = state.panes.get(state.activePaneId);
     if (!leaf || leaf.type !== 'leaf' || !leaf.ptyId || !leaf.term) {
-      composerTarget.textContent = '→ 활성 터미널 없음';
+      // 보낼 곳이 없으면 입력 내용은 지우지 않는다.
+      composerTarget.textContent = leaf && leaf.exited ? '→ 세션 종료됨 — 새 탭/페인에서 보내세요' : '→ 활성 터미널 없음';
       return;
     }
     const text = composerInput.value;
@@ -509,8 +513,9 @@
       if (composerHistory.length > COMPOSER_HISTORY_MAX) composerHistory.shift();
     }
     // Enter는 붙여넣기와 분리해 보낸다 — 붙여넣기 안의 개행으로 취급되어 제출이 안 되는 CLI가 있다.
+    // 그 사이 세션이 끝났으면 보내지 않는다.
     const ptyId = leaf.ptyId;
-    setTimeout(() => api.writePty(ptyId, '\r'), text ? 60 : 0);
+    setTimeout(() => { if (leaf.ptyId === ptyId) api.writePty(ptyId, '\r'); }, text ? 60 : 0);
     composerInput.value = '';
     composerHistoryIdx = -1;
     autoGrowComposer();
@@ -563,6 +568,9 @@
   }
   function attachClipboard(leaf) {
     const term = leaf.term;
+    // 선택은 사용자가 다시 타이핑하기 전까지만 "살아 있다" — 오래된 선택 때문에
+    // 중단용 Ctrl+C가 복사로 먹히지 않게 한다 (task-010/011 review).
+    term.onData(() => { if (term.hasSelection()) term.clearSelection(); });
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown' || e.altKey || e.metaKey) return true;
       const key = String(e.key || '').toLowerCase();
@@ -585,15 +593,19 @@
 
     // task-011: copy-on-select. Claude/Codex/Grok TUI는 화면을 계속 다시 그려서 선택이
     // Ctrl+C를 누르기 전에 풀릴 수 있다 — 드래그를 마치는 순간 클립보드에 넣어 둔다.
+    // 새로 만든 선택만 복사한다 — 클릭만 하고 선택이 그대로면 클립보드를 덮어쓰지 않는다.
     let mouseDown = false;
-    leaf.hostEl.addEventListener('mousedown', () => { mouseDown = true; });
+    let changedDuringDrag = false;
+    leaf.hostEl.addEventListener('mousedown', () => { mouseDown = true; changedDuringDrag = false; });
     leaf.hostEl.addEventListener('mouseup', () => {
       mouseDown = false;
+      if (!changedDuringDrag) return;
       setTimeout(() => { if (term.hasSelection()) copyTermSelection(term); }, 0);
     });
     term.onSelectionChange(() => {
-      // 키보드/더블클릭 선택처럼 mouseup 없이 끝나는 선택도 반영
-      if (!mouseDown && term.hasSelection()) copyTermSelection(term);
+      if (mouseDown) { changedDuringDrag = true; return; }
+      // 더블클릭(단어)·선택 API처럼 드래그 없이 끝나는 선택
+      if (term.hasSelection()) copyTermSelection(term);
     });
 
     // task-011: 마우스 모드를 켠 TUI에서는 일반 드래그가 앱으로 전달되어 선택이 안 된다.
@@ -620,10 +632,18 @@
       if (line.isWrapped && lines.length) lines[lines.length - 1] += line.translateToString(true);
       else lines.push(line.translateToString(true));
     }
-    let text = lines.join('\n').replace(/\s+$/, '');
-    // 1MB(UTF-8) 상한 — 오래된 앞부분부터 자른다
-    while (new TextEncoder().encode(text).length > MAX_COPY_BYTES) text = text.slice(Math.ceil(text.length * 0.1));
-    return text;
+    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+    // 1MB(UTF-8) 상한: 최신 줄부터 거꾸로 담고, 넘치면 오래된 줄을 통째로 버린다 (문자 중간 절단 없음).
+    const enc = new TextEncoder();
+    const kept = [];
+    let bytes = 0;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const size = enc.encode(lines[i]).length + 1;
+      if (bytes + size > MAX_COPY_BYTES) break;
+      bytes += size;
+      kept.push(lines[i]);
+    }
+    return kept.reverse().join('\n');
   }
   async function copyBuffer(term, visibleOnly) {
     const text = bufferText(term, visibleOnly);
@@ -656,6 +676,12 @@
     for (const [, p] of state.panes) {
       if (p.type === 'leaf' && p.ptyId === id && p.term) {
         p.term.write('\r\n\x1b[33m[carrotcap] session ended\x1b[0m\r\n');
+        // 끝난 세션으로는 더 이상 보내지 않는다 (입력창이 내용을 지우고 조용히 버리던 문제).
+        p.ptyId = null;
+        p.exited = true;
+        const k = p.headEl && p.headEl.querySelector('.kind');
+        if (k) k.textContent = `${String(p.kind || 'plain').toUpperCase()} · 종료됨`;
+        if (p.id === state.activePaneId) updateComposerTarget();
         return;
       }
     }
@@ -730,20 +756,60 @@
   }
 
   // ---------- CLI 버튼: 활성 페인에 명령 입력 ----------
-  function runCli(key) {
+  // task-012: 역할 — claude=코딩, codex=코드 리뷰, grok=이미지·영상
+  const CLI_ROLES = { claude: '코딩', codex: '코드 리뷰', grok: '이미지·영상' };
+  state.cliStatus = {};
+
+  function cliCommandLine(key, prompt) {
+    const cli = state.settings && state.settings.cli && state.settings.cli[key];
+    if (!cli) return null;
+    // PowerShell: & '<cmd>' '<arg>' ... — 공백/따옴표가 든 인자도 안전하게 전달
+    const parts = [cli.command, ...(cli.args || [])];
+    if (prompt) parts.push(prompt);
+    return '& ' + parts.map(psQuote).join(' ');
+  }
+
+  function activeLeafOrWarn() {
     const leaf = state.panes.get(state.activePaneId);
     if (!leaf || leaf.type !== 'leaf' || !leaf.ptyId) {
-      console.warn('[carrotcap] No active pane or ptyId for CLI:', key);
+      setFlowStatus('활성 터미널 페인이 없습니다', 'warn');
+      return null;
+    }
+    return leaf;
+  }
+
+  function cliMissing(key) {
+    if (state.cliStatus[key] === false) {
+      const cmd = state.settings && state.settings.cli && state.settings.cli[key] ? state.settings.cli[key].command : key;
+      setFlowStatus(`'${cmd}' 명령을 찾을 수 없습니다. 설치 후 PATH를 확인하세요.`, 'warn');
+      return true;
+    }
+    return false;
+  }
+
+  function runCli(key) {
+    const leaf = activeLeafOrWarn();
+    if (!leaf || cliMissing(key)) return;
+    const cmd = cliCommandLine(key);
+    if (!cmd) {
+      setFlowStatus(`settings.json에 '${key}' CLI 설정이 없습니다`, 'warn');
       return;
     }
-    const cli = state.settings && state.settings.cli && state.settings.cli[key];
-    if (!cli) {
-      console.warn('[carrotcap] CLI config not found:', key);
-      return;
-    }
-    const cmd = [cli.command, ...(cli.args || [])].join(' ');
     api.writePty(leaf.ptyId, cmd + '\r');
+    leaf.cli = key;
     if (leaf.term) leaf.term.focus();
+  }
+
+  async function refreshCliStatus() {
+    try { state.cliStatus = (await api.cliStatus()) || {}; } catch { state.cliStatus = {}; }
+    document.querySelectorAll('.btn-cli[data-cli], .btn-flow[data-flow]').forEach((b) => {
+      const key = b.dataset.cli || (FLOW_STEPS[b.dataset.flow] && FLOW_STEPS[b.dataset.flow].cli);
+      if (!key) return;
+      const missing = state.cliStatus[key] === false;
+      b.classList.toggle('missing', missing);
+      if (!b.dataset.baseTitle) b.dataset.baseTitle = b.title || '';
+      b.title = missing ? `${b.dataset.baseTitle} — 설치되지 않음 (PATH 확인)` : b.dataset.baseTitle;
+    });
   }
 
   async function setupAiopsWorkflow() {
@@ -765,24 +831,37 @@
     const setup = await setupAiopsWorkflow();
     if (!setup) return;
 
-    const projectRoot = psQuote(state.folder.rootPath);
-    const commands = {
-      start: `Set-Location -LiteralPath ${projectRoot}; claude < agents\\supervisor.md`,
-      research: `Set-Location -LiteralPath ${projectRoot}; gemini < agents\\researcher.md`,
-      review: `Set-Location -LiteralPath ${projectRoot}; codex < agents\\reviewer.md`
-    };
-    const cmd = commands[step];
-    if (!cmd) return;
-
-    const leaf = state.panes.get(state.activePaneId);
-    if (!leaf || leaf.type !== 'leaf' || !leaf.ptyId) {
-      setFlowStatus('활성 터미널 페인이 없습니다', 'warn');
+    const flow = FLOW_STEPS[step];
+    if (!flow) return;
+    const leaf = activeLeafOrWarn();
+    if (!leaf || cliMissing(flow.cli)) return;
+    // task-012: PowerShell은 `<` 입력 리디렉션을 지원하지 않아 예전 `claude < agents\x.md`는
+    // 실행 자체가 실패했다. 규약 파일을 읽으라는 첫 프롬프트로 대화형 CLI를 시작한다.
+    const launch = cliCommandLine(flow.cli, flow.prompt);
+    if (!launch) {
+      setFlowStatus(`settings.json에 '${flow.cli}' CLI 설정이 없습니다`, 'warn');
       return;
     }
-    api.writePty(leaf.ptyId, cmd + '\r');
+    api.writePty(leaf.ptyId, `Set-Location -LiteralPath ${psQuote(state.folder.rootPath)}; ${launch}\r`);
+    leaf.cli = flow.cli;
     if (leaf.term) leaf.term.focus();
-    setFlowStatus(`${step.toUpperCase()} 명령을 활성 페인에서 실행했습니다`, 'ok');
+    setFlowStatus(`${step.toUpperCase()}: ${flow.cli} (${CLI_ROLES[flow.cli]}) 을 활성 페인에서 시작했습니다`, 'ok');
   }
+
+  const FLOW_STEPS = {
+    start: {
+      cli: 'claude',
+      prompt: 'agents/supervisor.md 를 읽고 그 절차대로 backlog/ 의 작업을 진행해줘. 너는 코딩 담당이다.'
+    },
+    review: {
+      cli: 'codex',
+      prompt: 'agents/reviewer.md 규약에 따라 최근 변경(git diff, 없으면 최근 수정 파일)을 리뷰하고 결과를 logs/review/ 에 저장해줘. 코드는 수정하지 마.'
+    },
+    media: {
+      cli: 'grok',
+      prompt: 'agents/media.md 규약을 읽고 대기해줘. 내가 이미지나 영상을 요청하면 그때 만들어 assets/generated/ 에 저장하고 logs/media/ 에 기록해줘.'
+    }
+  };
 
   // ---------- 글로벌 이벤트 ----------
   function bindGlobalEvents() {
@@ -867,21 +946,26 @@
     // xterm으로 넘어가기 전에 소비한다.
     const SPLIT_KEYS = { ArrowRight: 'right', ArrowLeft: 'left', ArrowUp: 'up', ArrowDown: 'down' };
     window.addEventListener('keydown', (e) => {
-      if (e.repeat) return;
       const key = String(e.key || '').toLowerCase();
-      let handled = true;
-      if (e.ctrlKey && e.shiftKey && !e.altKey && key === 't') createTab();
-      else if (e.ctrlKey && e.shiftKey && !e.altKey && key === 'w') closePane(state.activePaneId);
-      else if (e.ctrlKey && e.shiftKey && !e.altKey && e.code === 'Space') focusComposer();
-      else if (e.altKey && e.shiftKey && !e.ctrlKey && SPLIT_KEYS[e.key]) splitActive(SPLIT_KEYS[e.key]);
-      else handled = false;
-      if (handled) { e.preventDefault(); e.stopPropagation(); }
+      const ctrlShift = e.ctrlKey && e.shiftKey && !e.altKey;
+      let action = null;
+      if (ctrlShift && key === 't') action = () => createTab();
+      else if (ctrlShift && key === 'w') action = () => closePane(state.activePaneId);
+      else if (ctrlShift && e.code === 'Space') action = () => focusComposer();
+      else if (e.altKey && e.shiftKey && !e.ctrlKey && SPLIT_KEYS[e.key]) action = () => splitActive(SPLIT_KEYS[e.key]);
+      if (!action) return;
+      // 반복 입력(키를 누르고 있을 때)도 터미널로 새지 않게 소비하되, 동작은 한 번만.
+      e.preventDefault();
+      e.stopPropagation();
+      if (!e.repeat) action();
     }, true);
 
     // 포커스 복구 (task-010): 사이드바 버튼/트리를 누른 뒤 포커스가 body·버튼에 남으면 타이핑이
     // 허공으로 사라진다. 그 상태에서 글자를 치면 입력창으로 포커스를 옮겨 글자를 받는다.
     document.addEventListener('keydown', (e) => {
-      if (e.ctrlKey || e.altKey || e.metaKey || e.key.length !== 1) return;
+      // 'Process'는 IME(한글 등) 조합이 시작될 때의 keydown — 조합도 입력창에서 시작되게 한다.
+      const isTextKey = e.key.length === 1 || e.key === 'Process';
+      if (e.ctrlKey || e.altKey || e.metaKey || !isTextKey) return;
       const el = document.activeElement;
       const tag = el ? el.tagName : 'BODY';
       if (tag === 'BUTTON' && e.key === ' ') return; // 스페이스는 버튼 누르기

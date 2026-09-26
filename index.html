@@ -41,11 +41,11 @@
             <span>QUICK CLI</span>
           </div>
           <div class="cli-buttons">
-            <button class="btn-cli" data-cli="claude">CLAUDE</button>
-            <button class="btn-cli" data-cli="gemini">GEMINI</button>
-            <button class="btn-cli" data-cli="codex">CODEX</button>
+            <button class="btn-cli" data-cli="claude" title="Claude Code — 코딩">CLAUDE</button>
+            <button class="btn-cli" data-cli="codex" title="Codex — 코드 리뷰">CODEX</button>
+            <button class="btn-cli" data-cli="grok" title="Grok — 이미지·영상 제작">GROK</button>
           </div>
-          <div class="cli-hint muted small">활성 페인에서 실행됩니다</div>
+          <div class="cli-hint muted small">코딩 · 리뷰 · 이미지/영상 — 활성 페인에서 실행</div>
         </div>
 
         <div class="side-section">
@@ -54,9 +54,9 @@
           </div>
           <div class="flow-buttons">
             <button id="aiops-setup" class="btn-flow primary" title="agents/logs/backlog 워크플로우 생성">SETUP</button>
-            <button class="btn-flow" data-flow="start" title="Claude Supervisor로 개발 절차 시작">START</button>
-            <button class="btn-flow" data-flow="research" title="Gemini Researcher 실행">RESEARCH</button>
-            <button class="btn-flow" data-flow="review" title="Codex Reviewer 실행">REVIEW</button>
+            <button class="btn-flow" data-flow="start" title="Claude — agents/supervisor.md 절차로 코딩 시작">START</button>
+            <button class="btn-flow" data-flow="review" title="Codex — 최근 변경 코드 리뷰">REVIEW</button>
+            <button class="btn-flow" data-flow="media" title="Grok — 이미지·영상 요청 대기">MEDIA</button>
           </div>
           <div id="flow-status" class="flow-status muted small">프로젝트 폴더를 선택한 뒤 SETUP을 누르세요</div>
         </div>
@@ -78,7 +78,7 @@
           <div class="side-head"><span>MODE</span></div>
           <label class="row"><input type="checkbox" id="aor-mode-toggle" /> AOR 모드</label>
           <label class="row"><input type="checkbox" id="aor-toggle" /> AIOps 모드</label>
-          <div class="mode-hint muted small">AOR: routed PowerShell. AIOps: AOR + Claude/Gemini/Codex 협업 구조 자동 세팅</div>
+          <div class="mode-hint muted small">AOR: routed PowerShell. AIOps: AOR + Claude(코딩)/Codex(리뷰)/Grok(미디어) 협업 구조 자동 세팅</div>
         </div>
       </aside>
 

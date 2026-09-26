@@ -44,6 +44,7 @@ const api = {
     return () => ipcRenderer.removeListener('term-menu:command', wrap);
   },
 
+  cliStatus: () => ipcRenderer.invoke('cli:status'),
   platform: () => ipcRenderer.invoke('app:platform'),
   ptyAvailable: () => ipcRenderer.invoke('app:pty-available')
 };
