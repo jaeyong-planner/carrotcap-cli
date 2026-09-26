@@ -846,11 +846,10 @@ function spawnSession(rawPayload) {
     sessions.delete(id);
   });
 
-  // AOR 폴백 같은 경고 메시지가 있으면 PTY 시작 직후 한 줄 출력
-  if (resolved.warning) {
-    setTimeout(() => wireData(`\r\n\x1b[33m[carrotcap] ${resolved.warning}\x1b[0m\r\n`), 100);
-  }
-  return { id, kind };
+  // task-011: warnings (e.g. AOR fallback) are returned to the renderer and shown in
+  // the pane header. Writing them into xterm out-of-band desyncs ConPTY's screen
+  // model from xterm, so the shell/TUI redraws land on the wrong lines.
+  return resolved.warning ? { id, kind, warning: resolved.warning } : { id, kind };
 }
 
 function buildFolderTree(rootPath, maxDepth = 4) {
@@ -1082,6 +1081,9 @@ on('term-menu:show', (e, { id, hasSelection }) => {
   Menu.buildFromTemplate([
     { label: '복사', accelerator: 'Ctrl+Shift+C', enabled: hasSelection === true, click: () => send('copy') },
     { label: '붙여넣기', accelerator: 'Ctrl+Shift+V', click: () => send('paste') },
+    { type: 'separator' },
+    { label: '보이는 화면 복사', click: () => send('copyScreen') },
+    { label: '전체 출력 복사', click: () => send('copyAll') },
     { type: 'separator' },
     { label: '모두 선택', click: () => send('selectAll') },
     { label: '화면 지우기', click: () => send('clear') }

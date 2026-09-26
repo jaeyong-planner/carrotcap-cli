@@ -218,6 +218,37 @@ const PROBE = `(async () => {
   check('typing on a focused button lands in the input box',
     (await ev(`document.activeElement.id + ':' + document.querySelector('#composer-input').value`)) === 'composer-input:x');
 
+  console.log('-- terminal copy (task-011)');
+  const clipSaved = await ev(`window.carrotcap.readClipboard()`);
+  const drag = async (modifiers) => {
+    const b = await ev(`(() => { const r = document.querySelector('.tab-page.active .xterm-screen').getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width }; })()`);
+    const y = b.y + 8;
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: b.x + 2, y, button: 'left', buttons: 1, clickCount: 1, modifiers });
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: b.x + b.w - 4, y, button: 'left', buttons: 1, modifiers });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: b.x + b.w - 4, y, button: 'left', buttons: 0, clickCount: 1, modifiers });
+    await sleep(400);
+  };
+  const clip = async () => ((await ev(`window.carrotcap.readClipboard()`)) || {}).text || '';
+  await ev(`window.carrotcap.writeClipboard('')`);
+  await drag(0);
+  check('drag selection is copied on mouse-up (no Ctrl+C needed)', (await clip()).length > 0);
+  await ev(`window.carrotcap.writeClipboard('')`);
+  await drag(0);
+  await ev(`window.carrotcap.writeClipboard('')`); // prove Ctrl+C copies, not copy-on-select
+  await ev(`document.querySelector('.tab-page.active .xterm-helper-textarea').focus(), true`);
+  await key('c', 'KeyC', 67, CTRL);
+  await sleep(300);
+  check('Ctrl+C with a selection copies it', (await clip()).length > 0);
+
+  if (clipSaved && clipSaved.ok) await ev(`window.carrotcap.writeClipboard(${JSON.stringify(clipSaved.text)})`);
+
+  console.log('-- no out-of-band terminal writes (task-011)');
+  // Warnings used to be injected into xterm behind ConPTY's back, garbling redraws.
+  check('fallback warning not written into the terminal', !/\[carrotcap\] AOR engineRoot/.test(await screenText()));
+  check('fallback warning shown in the pane header instead',
+    (await ev(`[...document.querySelectorAll('.pane .kind')].some((k) => /⚠/.test(k.textContent) && k.title.length > 0)`)) === true
+    || !/FALLBACK/.test(await ev(`document.querySelector('.pane .kind').textContent`)));
+
   console.log('-- renderer errors');
   check('no exceptions / console errors on load', logs.length === 0, logs.join(' | '));
   console.log(`-- user data dir (task-008, ${corruptSettings ? 'corrupt settings' : 'fresh profile'})`);

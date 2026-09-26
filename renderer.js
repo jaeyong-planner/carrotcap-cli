@@ -444,8 +444,13 @@
         k.textContent = String(leaf.kind || 'plain').toUpperCase();
         // 폴백 케이스는 색상 강조
         if (/fallback/i.test(leaf.kind)) k.style.color = '#f0c060';
+        if (result.warning) {
+          k.title = result.warning;
+          k.textContent += ' ⚠';
+        }
       }
     }
+    if (result.warning) setFlowStatus(result.warning, 'warn');
     if (leaf.id === state.activePaneId) updateComposerTarget();
 
     term.onData((data) => api.writePty(leaf.ptyId, data));
@@ -577,11 +582,59 @@
       e.preventDefault();
       if (leaf.ptyId) api.showTermMenu(leaf.ptyId, term.hasSelection());
     });
+
+    // task-011: copy-on-select. Claude/Codex/Grok TUI는 화면을 계속 다시 그려서 선택이
+    // Ctrl+C를 누르기 전에 풀릴 수 있다 — 드래그를 마치는 순간 클립보드에 넣어 둔다.
+    let mouseDown = false;
+    leaf.hostEl.addEventListener('mousedown', () => { mouseDown = true; });
+    leaf.hostEl.addEventListener('mouseup', () => {
+      mouseDown = false;
+      setTimeout(() => { if (term.hasSelection()) copyTermSelection(term); }, 0);
+    });
+    term.onSelectionChange(() => {
+      // 키보드/더블클릭 선택처럼 mouseup 없이 끝나는 선택도 반영
+      if (!mouseDown && term.hasSelection()) copyTermSelection(term);
+    });
+
+    // task-011: 마우스 모드를 켠 TUI에서는 일반 드래그가 앱으로 전달되어 선택이 안 된다.
+    // xterm은 Shift+드래그로 강제 선택할 수 있으므로 그때만 헤더에 안내를 띄운다.
+    const hint = document.createElement('span');
+    hint.className = 'select-hint';
+    hint.textContent = 'Shift+드래그로 선택';
+    hint.hidden = true;
+    if (leaf.headEl) leaf.headEl.insertBefore(hint, leaf.headEl.querySelector('.x'));
+    const refreshHint = () => { hint.hidden = !term.modes || term.modes.mouseTrackingMode === 'none'; };
+    term.onWriteParsed(refreshHint);
+  }
+
+  const MAX_COPY_BYTES = 1024 * 1024;
+  function bufferText(term, visibleOnly) {
+    const buf = term.buffer.active;
+    const start = visibleOnly ? buf.viewportY : 0;
+    const end = visibleOnly ? buf.viewportY + term.rows : buf.length;
+    const lines = [];
+    for (let y = start; y < end; y++) {
+      const line = buf.getLine(y);
+      if (!line) continue;
+      // 줄바꿈으로 이어진(wrapped) 줄은 앞 줄에 붙인다
+      if (line.isWrapped && lines.length) lines[lines.length - 1] += line.translateToString(true);
+      else lines.push(line.translateToString(true));
+    }
+    let text = lines.join('\n').replace(/\s+$/, '');
+    // 1MB(UTF-8) 상한 — 오래된 앞부분부터 자른다
+    while (new TextEncoder().encode(text).length > MAX_COPY_BYTES) text = text.slice(Math.ceil(text.length * 0.1));
+    return text;
+  }
+  async function copyBuffer(term, visibleOnly) {
+    const text = bufferText(term, visibleOnly);
+    if (text) await api.writeClipboard(text);
   }
   api.onTermMenuCommand(({ id, command }) => {
     for (const [, p] of state.panes) {
       if (p.type !== 'leaf' || p.ptyId !== id || !p.term) continue;
       if (command === 'copy') copyTermSelection(p.term);
+      else if (command === 'copyScreen') copyBuffer(p.term, true);
+      else if (command === 'copyAll') copyBuffer(p.term, false);
       else if (command === 'paste') pasteIntoTerm(p.term);
       else if (command === 'selectAll') p.term.selectAll();
       else if (command === 'clear') p.term.clear();
