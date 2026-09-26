@@ -34,6 +34,16 @@ const api = {
     return () => ipcRenderer.removeListener('pty:exit', wrap);
   },
 
+  // 클립보드 / 터미널 우클릭 메뉴 (task-009)
+  readClipboard: () => ipcRenderer.invoke('clipboard:read-text'),
+  writeClipboard: (text) => ipcRenderer.invoke('clipboard:write-text', text),
+  showTermMenu: (id, hasSelection) => ipcRenderer.send('term-menu:show', { id, hasSelection: !!hasSelection }),
+  onTermMenuCommand: (handler) => {
+    const wrap = (_e, payload) => handler(payload);
+    ipcRenderer.on('term-menu:command', wrap);
+    return () => ipcRenderer.removeListener('term-menu:command', wrap);
+  },
+
   platform: () => ipcRenderer.invoke('app:platform'),
   ptyAvailable: () => ipcRenderer.invoke('app:pty-available')
 };

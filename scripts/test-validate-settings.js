@@ -21,11 +21,21 @@ if (start < 0 || end < 0) {
   process.exit(2);
 }
 const block = source.slice(start, end + endMarker.length);
+// task-009: also pull ensureAiopsProjectStructure (reads templates/aiops/ via APP_ROOT).
+const aiopsStart = source.indexOf('function ensureAiopsProjectStructure');
+const aiopsEnd   = source.indexOf('function resolvePtyArgs');
+if (aiopsStart < 0 || aiopsEnd < 0) {
+  console.error('FATAL: ensureAiopsProjectStructure not found in main.js');
+  process.exit(2);
+}
+const aiopsBlock = source.slice(aiopsStart, aiopsEnd);
 
 // Build a sandboxed module: eval the block and export the helpers.
 const wrapper = `
 const fs = require('fs');
+const APP_ROOT = ${JSON.stringify(path.join(__dirname, '..'))};
 ${block}
+${aiopsBlock}
 module.exports = {
   validateSettings,
   pwshSingleQuote,
@@ -50,6 +60,9 @@ module.exports = {
   isValidPtyId,
   validateClaudeMdContent,
   MAX_CLAUDE_MD_BYTES,
+  ensureAiopsProjectStructure,
+  AIOPS_CLAUDE_BLOCK_START,
+  AIOPS_CLAUDE_BLOCK_END,
 };
 `;
 const m = { exports: {} };
@@ -61,7 +74,8 @@ const {
   safeRealpath, allowedWorkspaces, MAX_RECENT_WORKSPACES,
   writeIfMissing, safeMkdir, assertAncestorsClean, copyTemplateIfMissing,
   clampInt, resolveAllowedDir, sanitizeSpawnPayload, isValidPtyId,
-  validateClaudeMdContent, MAX_CLAUDE_MD_BYTES
+  validateClaudeMdContent, MAX_CLAUDE_MD_BYTES,
+  ensureAiopsProjectStructure, AIOPS_CLAUDE_BLOCK_START, AIOPS_CLAUDE_BLOCK_END
 } = m.exports;
 
 let pass = 0;
@@ -380,6 +394,40 @@ console.log('-- validateClaudeMdContent (task-007)');
   check('exact cap accepted', validateClaudeMdContent('a'.repeat(MAX_CLAUDE_MD_BYTES)));
   check('over cap rejected', !validateClaudeMdContent('a'.repeat(MAX_CLAUDE_MD_BYTES + 1)));
   check('multibyte counted as bytes', !validateClaudeMdContent('가'.repeat(Math.ceil(MAX_CLAUDE_MD_BYTES / 3) + 1)));
+}
+
+console.log('-- ensureAiopsProjectStructure from templates/aiops (task-009)');
+{
+  const os = require('os');
+  const ws = path.join(os.tmpdir(), 'carrotcap-aiops-' + Date.now());
+  fs.mkdirSync(ws, { recursive: true });
+  fs.writeFileSync(path.join(ws, 'CLAUDE.md'), '# existing project rules\n');
+
+  const res = ensureAiopsProjectStructure(ws);
+  check('setup returns paths', res && res.root === safeRealpath(ws));
+  const tmpl = (n) => fs.readFileSync(path.join(__dirname, '..', 'templates', 'aiops', n), 'utf8');
+  const out = (...p) => fs.readFileSync(path.join(ws, ...p), 'utf8');
+  check('supervisor.md from template', out('agents', 'supervisor.md') === tmpl('supervisor.md'));
+  check('task-001.md from template', out('backlog', 'task-001.md') === tmpl('task-001.md'));
+  check('workflow.md from template', out('backlog', 'workflow.md') === tmpl('workflow.md'));
+  check('researcher/reviewer deployed',
+    fs.existsSync(path.join(ws, 'agents', 'researcher.md')) && fs.existsSync(path.join(ws, 'agents', 'reviewer.md')));
+  check('helper scripts deployed', fs.existsSync(path.join(ws, 'scripts', 'run-reviewer.ps1')));
+
+  const claude = out('CLAUDE.md');
+  check('existing CLAUDE.md content preserved', claude.startsWith('# existing project rules\n'));
+  check('AIOps block appended with markers',
+    claude.includes(AIOPS_CLAUDE_BLOCK_START) && claude.trimEnd().endsWith(AIOPS_CLAUDE_BLOCK_END));
+  check('block body from template', claude.includes(tmpl('CLAUDE-block.md').trim()));
+
+  // Idempotent: second run changes nothing and keeps user edits.
+  fs.writeFileSync(path.join(ws, 'agents', 'supervisor.md'), '# user edited');
+  ensureAiopsProjectStructure(ws);
+  check('second run keeps user-edited supervisor.md', out('agents', 'supervisor.md') === '# user edited');
+  check('second run does not duplicate the block',
+    out('CLAUDE.md').split(AIOPS_CLAUDE_BLOCK_START).length === 2);
+
+  try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
 }
 
 console.log('');

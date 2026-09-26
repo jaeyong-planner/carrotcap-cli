@@ -68,6 +68,15 @@ const PROBE = `(async () => {
   r.mdRoundtrip = (await c.getClaudeMd()) === marker;
   r.mdRestore = await c.setClaudeMd(original);
   r.mdRestored = (await c.getClaudeMd()) === original;
+
+  // clipboard roundtrip (task-009) — the user's clipboard text is restored
+  const clipBefore = await c.readClipboard();
+  const probe = 'carrotcap-smoke-' + Date.now();
+  r.clipWrite = await c.writeClipboard(probe);
+  r.clipRoundtrip = ((await c.readClipboard()) || {}).text === probe;
+  r.clipBadType = await c.writeClipboard({ x: 1 });
+  if (clipBefore && clipBefore.ok) await c.writeClipboard(clipBefore.text);
+  r.termMenuApi = typeof c.showTermMenu === 'function' && typeof c.onTermMenuCommand === 'function';
   return r;
 })()`;
 
@@ -113,6 +122,11 @@ const PROBE = `(async () => {
   check('save ok', r.mdSave && r.mdSave.ok === true);
   check('reload returns saved content', r.mdRoundtrip === true);
   check('original restored', r.mdRestore && r.mdRestore.ok === true && r.mdRestored === true);
+  console.log('-- clipboard / terminal menu');
+  check('clipboard write ok', r.clipWrite && r.clipWrite.ok === true);
+  check('clipboard read returns written text', r.clipRoundtrip === true);
+  check('clipboard non-string rejected', r.clipBadType && r.clipBadType.ok === false);
+  check('terminal menu API exposed', r.termMenuApi === true);
   console.log('-- renderer errors');
   check('no exceptions / console errors on load', logs.length === 0, logs.join(' | '));
   ws.close();

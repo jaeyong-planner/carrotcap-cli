@@ -23,7 +23,8 @@ npm start
 
 | 명령 | 설명 |
 | --- | --- |
-| `npm test` | 보안 헬퍼 단위 테스트 (Electron 없이 실행) |
+| `npm test` | 보안 헬퍼 + AIOps 셋업 단위 테스트 (Electron 없이 실행) |
+| `npm run test:smoke` | 실제 앱을 띄워 CDP로 점검 (sandbox · PTY · 악성 IPC · CLAUDE.md · 클립보드) |
 | `npm run pack` | 설치 없이 `release/win-unpacked/` 생성 |
 | `npm run dist:win` | NSIS 설치 파일 생성 (`release/CARROTCAP-CLI-<ver>-win-x64.exe`) |
 
@@ -43,6 +44,14 @@ npm start
 - 좌측 **SPLIT 패널** 또는 `Ctrl+Shift+→/←/↑/↓` → RIGHT/LEFT/UP/DOWN 분할.
 - 분할 사이의 회색 바를 드래그해서 비율 조절.
 
+**복사 / 붙여넣기**
+
+| 동작 | 단축키 |
+| --- | --- |
+| 복사 | 드래그 선택 후 `Ctrl+C` (선택이 없으면 평소처럼 중단 신호) 또는 `Ctrl+Shift+C` |
+| 붙여넣기 | `Ctrl+Shift+V` 또는 `Shift+Insert` (`Ctrl+V`는 셸/CLI 기본 동작 유지) |
+| 메뉴 | 터미널 우클릭 → 복사 · 붙여넣기 · 모두 선택 · 화면 지우기 |
+
 ### 3) CLI 원-클릭
 
 좌측 **QUICK CLI** 패널에서 CLAUDE / GEMINI / CODEX 클릭 → 활성 페인에 명령이 입력되어 즉시 실행됩니다. 명령은 사용자 `settings.json`(아래 9번)의 `cli` 섹션에서 자유롭게 바꿀 수 있습니다.
@@ -61,6 +70,8 @@ npm start
 - **START**: 선택한 프로젝트 폴더로 이동한 뒤 `claude < agents\supervisor.md`를 실행합니다.
 - **RESEARCH**: `gemini < agents\researcher.md`로 조사 절차를 실행합니다.
 - **REVIEW**: `codex < agents\reviewer.md`로 코드 리뷰 절차를 실행합니다.
+
+SETUP이 만드는 문서의 원본은 `templates/aiops/`(supervisor.md · task-001.md · workflow.md · CLAUDE-block.md)와 `agents/`에 있습니다. 이 파일을 고치면 다음 SETUP부터 반영되며, 프로젝트에 이미 있는 파일은 덮어쓰지 않습니다.
 
 생성되는 워크플로우는 Claude Code를 PM/코더, Gemini를 리서처, Codex를 리뷰어, `logs/`를 공유 메모리로 사용합니다. 큰 요청은 `backlog/task-XXX.md` 단위로 나누고, 리서치와 리뷰 결과는 각각 `logs/research/`, `logs/review/`에 남기는 방식입니다.
 
@@ -101,6 +112,7 @@ npm start
 ├─ CLAUDE.md        번들 디폴트 AOR 컨텍스트 (첫 실행 시 사용자 폴더로 복사)
 ├─ settings.json    번들 디폴트 설정 (첫 실행 시 사용자 폴더로 복사)
 ├─ agents/          researcher.md / reviewer.md (AIOps 템플릿 겸 이 저장소의 에이전트 규약)
+├─ templates/aiops/ AIOps SETUP이 프로젝트에 복사하는 문서 원본
 ├─ backlog/         task-XXX.md 작업 단위
 ├─ logs/            research/ · review/ 에이전트 산출물 (공유 메모리)
 ├─ scripts/         setup-dev · run-researcher · run-reviewer · 테스트

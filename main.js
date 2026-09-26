@@ -2,7 +2,7 @@
 // 책임: BrowserWindow 띄우기, node-pty로 실제 셸 스폰, IPC로 렌더러와 통신,
 //      폴더 다이얼로그/트리/검색, AOR 엔진(routed shell) 통합 진입점.
 
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -580,33 +580,9 @@ function ensureAiopsProjectStructure(projectRoot) {
     return null;
   }
 
-  writeIfMissing(path.join(agentsDir, 'supervisor.md'), `# Claude Code Supervisor
-
-당신은 이 프로젝트의 PM이자 메인 코딩 에이전트다.
-
-## 목표
-사용자 요청을 backlog/의 작은 TASK로 나누고, 필요한 경우 Gemini 리서처와 Codex 리뷰어를 호출해 정해진 절차로 개발을 진행한다.
-
-## 진행 절차
-1. backlog/를 읽고 사용자 요청, 완료 기준, 리스크를 정리한다.
-2. 큰 작업은 backlog/task-XXX.md 단위로 쪼갠다.
-3. 외부 문서, 버전 변경, API 변경 조사가 필요하면 Gemini에게 agents/researcher.md 기준으로 리서치를 요청한다.
-4. 리서치 결과가 있으면 logs/research/의 최신 로그를 읽고 구현 범위를 조정한다.
-5. Claude Code가 직접 코드 수정과 테스트를 수행한다.
-6. 변경 규모가 크거나 위험하면 Codex에게 agents/reviewer.md 기준으로 리뷰를 요청한다.
-7. logs/review/의 최신 리뷰를 반영하고 최종 결과를 요약한다.
-
-## 금지사항
-- 리서처에게 프로덕션 코드 작성을 시키지 않는다.
-- 리뷰어에게 기능 구현을 시키지 않는다.
-- 큰 작업을 한 세션에서 뭉개서 처리하지 않는다.
-- 로그 없이 리서치/리뷰 결과를 잊어버리지 않는다.
-
-## 완료 조건
-- TASK별 완료 여부가 분명해야 한다.
-- 실행한 테스트와 실패한 테스트가 기록되어야 한다.
-- 최종 요약에는 변경 파일, 검증 결과, 남은 리스크가 포함되어야 한다.
-`, realRoot);
+  // task-009: setup documents live in templates/aiops/ (editable, shipped via build.files).
+  const aiopsTemplates = path.join(getTemplateRoot(), 'templates', 'aiops');
+  copyTemplateIfMissing(path.join(aiopsTemplates, 'supervisor.md'), path.join(agentsDir, 'supervisor.md'), realRoot);
 
   // task-005: deploy the rich researcher.md / reviewer.md from the bundled
   // app templates instead of the prior embedded short version. writeIfMissing
@@ -623,47 +599,8 @@ function ensureAiopsProjectStructure(projectRoot) {
     realRoot
   );
 
-  writeIfMissing(path.join(backlogDir, 'task-001.md'), `# task-001
-
-## 작업 목적
-- 여기에 사용자 요청과 완료 기준을 적는다.
-
-## 범위
-- 구현할 것:
-- 구현하지 않을 것:
-
-## 협업 로그
-- Research: logs/research/
-- Review: logs/review/
-`, realRoot);
-
-  writeIfMissing(path.join(backlogDir, 'workflow.md'), `# AI Agent Development Workflow
-
-## 역할
-- Claude Code: PM / 코더 / 최종 판단
-- Gemini: 리서처 / 공식 문서 조사 / 마이그레이션 조사
-- Codex: 리뷰어 / 버그 탐지 / 품질 검토
-- logs/: 공유 메모리
-
-## TASK 분해 규칙
-1. 사용자 요청을 독립적으로 검증 가능한 작업으로 나눈다.
-2. 각 TASK에는 목적, 범위, 완료 기준, 검증 방법을 적는다.
-3. 외부 정보가 필요한 TASK는 research 로그를 먼저 만든다.
-4. 코드 변경 TASK는 구현 후 review 로그를 만든다.
-
-## 실행 순서
-1. Setup: agents/, logs/, backlog/ 구조를 준비한다.
-2. Start: Claude Supervisor가 backlog/를 읽고 TASK를 분해한다.
-3. Research: 필요한 조사만 Gemini Researcher에게 맡기고 logs/research/에 저장한다.
-4. Build: Claude Code가 직접 구현한다.
-5. Review: Codex Reviewer가 변경사항을 검토하고 logs/review/에 저장한다.
-6. Reflect: Claude Code가 리뷰를 반영하고 최종 보고한다.
-
-## 버튼별 명령
-- START: claude < agents/supervisor.md
-- RESEARCH: gemini < agents/researcher.md
-- REVIEW: codex < agents/reviewer.md
-`, realRoot);
+  copyTemplateIfMissing(path.join(aiopsTemplates, 'task-001.md'), path.join(backlogDir, 'task-001.md'), realRoot);
+  copyTemplateIfMissing(path.join(aiopsTemplates, 'workflow.md'), path.join(backlogDir, 'workflow.md'), realRoot);
 
   // task-005: deploy the helper PowerShell scripts so the project can run the
   // researcher/reviewer cycle with the same auto-loading and output shaping the
@@ -690,38 +627,13 @@ function ensureAiopsProjectStructure(projectRoot) {
   }
 
   const claudePath = path.join(realRoot, 'CLAUDE.md');
-  const aiopsBlock = `${AIOPS_CLAUDE_BLOCK_START}
-# Claude Code Supervisor Rules
-
-당신은 이 프로젝트의 PM이자 메인 코딩 에이전트다.
-
-## 역할
-1. backlog/를 읽고 작업 목적과 완료 기준을 파악한다.
-2. 외부 문서, 버전 변경, API 변경 조사가 필요하면 Gemini 리서처에게 agents/researcher.md 지침으로 요청한다.
-3. 코드 수정 후 중요한 변경사항은 Codex 리뷰어에게 agents/reviewer.md 지침으로 리뷰를 요청한다.
-4. researcher/reviewer 결과는 logs/research/와 logs/review/의 작업 일지를 읽고 판단한다.
-5. 최종 수정과 최종 판단은 Claude Code가 직접 수행한다.
-
-## 금지사항
-- 리서처에게 프로덕션 코드 작성을 시키지 않는다.
-- 리뷰어에게 기능 구현을 시키지 않는다.
-- 모든 판단을 단일 세션에서 독단적으로 끝내지 않는다.
-- 큰 작업은 반드시 작은 단위로 나눈다.
-
-## 작업 순서
-1. 백로그 분석
-2. 필요 시 Gemini 리서치 요청
-3. 코드베이스 확인
-4. 구현
-5. 필요 시 Codex 코드 리뷰 요청
-6. 리뷰 반영
-7. 최종 요약
-
-## CLI 운영 예시
-- Research: gemini < agents/researcher.md
-- Review: codex < agents/reviewer.md
-${AIOPS_CLAUDE_BLOCK_END}
-`;
+  let aiopsBlockBody;
+  try { aiopsBlockBody = fs.readFileSync(path.join(aiopsTemplates, 'CLAUDE-block.md'), 'utf8'); }
+  catch (e) {
+    console.warn('[carrotcap] aiops CLAUDE block template missing:', e.message);
+    return null;
+  }
+  const aiopsBlock = `${AIOPS_CLAUDE_BLOCK_START}\n${aiopsBlockBody.replace(/\s*$/, '\n')}${AIOPS_CLAUDE_BLOCK_END}\n`;
 
   // task-004-r3 reflection: apply the same ancestor guard to CLAUDE.md write
   // since this block bypasses writeIfMissing.
@@ -1114,6 +1026,36 @@ on('pty:kill', (_e, { id }) => {
   // Keep the session if kill throws so the pane can retry; onExit removes it.
   try { s.proc.kill(); sessions.delete(id); }
   catch (err) { console.warn(`[carrotcap] pty kill fail ${id}:`, err && err.message); }
+});
+
+// Clipboard + terminal context menu (task-009). xterm renders to a canvas, so
+// the native Edit roles cannot see terminal text — the renderer copies the
+// xterm selection itself and pastes via term.paste() (bracketed-paste aware).
+handle('clipboard:read-text', () => {
+  try {
+    const text = clipboard.readText() || '';
+    if (text.length > MAX_PTY_WRITE_LEN) return { ok: false, error: '클립보드 텍스트가 1MB를 넘습니다.' };
+    return { ok: true, text };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || 'clipboard read failed' };
+  }
+});
+handle('clipboard:write-text', (_e, text) => {
+  if (typeof text !== 'string' || text.length > MAX_PTY_WRITE_LEN) return { ok: false, error: 'invalid clipboard text' };
+  try { clipboard.writeText(text); return { ok: true }; }
+  catch (err) { return { ok: false, error: (err && err.message) || 'clipboard write failed' }; }
+});
+on('term-menu:show', (e, { id, hasSelection }) => {
+  const send = (command) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('term-menu:command', { id, command });
+  };
+  Menu.buildFromTemplate([
+    { label: '복사', accelerator: 'Ctrl+Shift+C', enabled: hasSelection === true, click: () => send('copy') },
+    { label: '붙여넣기', accelerator: 'Ctrl+Shift+V', click: () => send('paste') },
+    { type: 'separator' },
+    { label: '모두 선택', click: () => send('selectAll') },
+    { label: '화면 지우기', click: () => send('clear') }
+  ]).popup({ window: BrowserWindow.fromWebContents(e.sender) || mainWindow });
 });
 
 handle('app:platform', () => process.platform);

@@ -425,6 +425,7 @@
 
     leaf.term = term;
     leaf.fit = fit;
+    attachClipboard(leaf);
 
     const cols = term.cols, rows = term.rows;
     const result = await api.spawnPty({ ...payload, cols, rows });
@@ -449,6 +450,53 @@
 
     setTimeout(() => { try { term.focus(); } catch {} }, 50);
   }
+
+  // ---------- 클립보드 (task-009) ----------
+  // Ctrl+C: 선택 영역이 있으면 복사, 없으면 그대로 SIGINT. Ctrl+Shift+C: 복사.
+  // Ctrl+Shift+V / Shift+Insert: 붙여넣기. Ctrl+V는 셸/CLI(이미지 붙여넣기 등) 동작을 위해 건드리지 않는다.
+  async function copyTermSelection(term) {
+    const text = term.getSelection();
+    if (!text) return false;
+    const r = await api.writeClipboard(text);
+    return !!(r && r.ok);
+  }
+  async function pasteIntoTerm(term) {
+    const r = await api.readClipboard();
+    if (r && r.ok && r.text) term.paste(r.text);
+  }
+  function attachClipboard(leaf) {
+    const term = leaf.term;
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== 'keydown' || e.altKey || e.metaKey) return true;
+      const key = String(e.key || '').toLowerCase();
+      if (e.ctrlKey && key === 'c' && (e.shiftKey || term.hasSelection())) {
+        e.preventDefault();
+        copyTermSelection(term).then((ok) => { if (ok && !e.shiftKey) term.clearSelection(); });
+        return false;
+      }
+      if ((e.ctrlKey && e.shiftKey && key === 'v') || (!e.ctrlKey && e.shiftKey && key === 'insert')) {
+        e.preventDefault();
+        pasteIntoTerm(term);
+        return false;
+      }
+      return true;
+    });
+    leaf.hostEl.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (leaf.ptyId) api.showTermMenu(leaf.ptyId, term.hasSelection());
+    });
+  }
+  api.onTermMenuCommand(({ id, command }) => {
+    for (const [, p] of state.panes) {
+      if (p.type !== 'leaf' || p.ptyId !== id || !p.term) continue;
+      if (command === 'copy') copyTermSelection(p.term);
+      else if (command === 'paste') pasteIntoTerm(p.term);
+      else if (command === 'selectAll') p.term.selectAll();
+      else if (command === 'clear') p.term.clear();
+      p.term.focus();
+      return;
+    }
+  });
 
   // PTY → term 데이터 라우팅
   api.onPtyData(({ id, data }) => {
