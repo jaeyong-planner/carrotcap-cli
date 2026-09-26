@@ -103,9 +103,10 @@ $Request
 # Move an existing log aside so "the agent wrote the log" means "the file exists again"
 # (timestamps alone are unreliable on coarse-resolution file systems). Restored on failure.
 $mediaLogPrev = "$mediaLogPath.prev"
-if (Test-Path -LiteralPath $mediaLogPath) { Move-Item -LiteralPath $mediaLogPath -Destination $mediaLogPrev -Force }
-$promptFile = [System.IO.Path]::GetTempFileName()
+$promptFile = $null
 try {
+    if (Test-Path -LiteralPath $mediaLogPath) { Move-Item -LiteralPath $mediaLogPath -Destination $mediaLogPrev -Force }
+    $promptFile = [System.IO.Path]::GetTempFileName()
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($promptFile, $prompt, $utf8NoBom)
     $grokArgs = @("--prompt-file", $promptFile, "--cwd", $projectRoot)
@@ -124,7 +125,7 @@ try {
     }
     throw
 } finally {
-    Remove-Item -LiteralPath $promptFile -Force -ErrorAction SilentlyContinue
+    if ($promptFile) { Remove-Item -LiteralPath $promptFile -Force -ErrorAction SilentlyContinue }
 }
 
 Write-Host "[media] files: $(Join-Path $projectRoot 'assets\generated')" -ForegroundColor Green

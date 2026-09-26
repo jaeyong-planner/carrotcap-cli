@@ -1340,9 +1340,23 @@ function finalizeHistory() {
 handle('history:save', (_e, payload) => {
   const p = (payload && typeof payload === 'object') ? payload : {};
   const realRoot = resolveAllowedDir(p.projectRoot);
-  const layout = sanitizeHistoryLayout(p.layout);
-  if (!realRoot || !layout) return { ok: false };
+  if (!realRoot) return { ok: false };
   const file = historyFileFor(realRoot);
+  // No panes left for this project (all closed): this run's session is no longer
+  // resumable — drop its layout, keep the one-line summary (review r5).
+  if (p.layout && Array.isArray(p.layout.tabs) && p.layout.tabs.length === 0) {
+    const id = historySessionIds.get(file);
+    const rec = id ? readHistory(file) : null;
+    if (!rec) return { ok: true };
+    const sessions = rec.sessions.map((s) => {
+      if (s.id !== id) return s;
+      const { layout: _drop, ...rest } = s;
+      return rest;
+    });
+    return { ok: writeHistory(file, { ...rec, updatedAt: new Date().toISOString(), sessions }) };
+  }
+  const layout = sanitizeHistoryLayout(p.layout);
+  if (!layout) return { ok: false };
   if (!historySessionIds.has(file)) {
     historySessionIds.set(file, `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
   }

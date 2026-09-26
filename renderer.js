@@ -142,6 +142,7 @@
     const idx = state.tabs.findIndex(t => t.id === tabId);
     if (idx < 0) return;
     const tab = state.tabs[idx];
+    const closedRoots = rootsUnder(state.panes.get(tab.rootPaneId));
     // 모든 페인 정리
     walkPanes(state.panes.get(tab.rootPaneId), (p) => {
       if (p.type === 'leaf' && p.ptyId) api.killPty(p.ptyId);
@@ -150,6 +151,7 @@
     });
     tab.pageEl.remove();
     state.tabs.splice(idx, 1);
+    saveHistoryForRoots(closedRoots);
     scheduleHistorySave();
     if (state.tabs.length === 0) {
       createTab();
@@ -309,7 +311,9 @@
 
     const parent = pane.parent;
     state.panes.delete(id);
-    scheduleHistorySave();
+    // 부모 split에서 떼어낸 뒤 저장해야 닫은 페인이 기록에 남지 않는다 → 아래 정리 후 저장.
+    const closedRoot = pane.projectRoot;
+    setTimeout(() => { saveHistoryForRoots([closedRoot]); scheduleHistorySave(); }, 0);
 
     if (!parent || parent.kind === 'tab') {
       // 마지막 페인 → 탭을 닫음. 우선 parent.tabId로 찾고, 없으면 rootPaneId로 보강 탐색.
@@ -498,9 +502,8 @@
     clearTimeout(historyTimer);
     const root = historyPendingRoot;
     historyPendingRoot = null;
-    const layout = buildLayout(root);
-    if (!layout.tabs.length) return; // 이 프로젝트의 페인이 없으면 기존 기록을 그대로 둔다
-    api.saveHistory(root, layout).catch(() => {});
+    // 페인이 하나도 없으면 빈 배치를 보낸다 → main이 이번 세션의 "이어하기" 배치를 지운다.
+    api.saveHistory(root, buildLayout(root)).catch(() => {});
   }
   // 첫 변경은 즉시 저장(곧바로 앱을 닫아도 세션이 남게), 이어지는 변경은 800ms로 묶는다.
   let historyLastSaveAt = 0;
@@ -515,6 +518,18 @@
       return;
     }
     historyTimer = setTimeout(() => { historyLastSaveAt = Date.now(); flushHistorySave(); }, 800);
+  }
+  // 현재 폴더가 아닌 프로젝트의 페인을 닫았을 때: 그 프로젝트 기록도 즉시 갱신 (review r5).
+  function saveHistoryForRoots(roots) {
+    for (const root of roots) {
+      if (!root || root === state.folder.rootPath) continue; // 현재 프로젝트는 scheduleHistorySave가 처리
+      api.saveHistory(root, buildLayout(root)).catch(() => {});
+    }
+  }
+  function rootsUnder(node) {
+    const roots = new Set();
+    walkPanes(node, (p) => { if (p.type === 'leaf' && p.projectRoot) roots.add(p.projectRoot); });
+    return roots;
   }
   // 창을 닫을 때 남은 예약분을 바로 보낸다.
   window.addEventListener('beforeunload', () => flushHistorySave());

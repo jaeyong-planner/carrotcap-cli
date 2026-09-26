@@ -80,6 +80,11 @@ const screen = (app) => app.ev(`[...document.querySelectorAll('.tab-page.active 
   check('claude pane got its continue command', /'where' '--continue'/.test(await screen(app)));
   check('offer hidden after resuming', await app.ev(`document.querySelector('#resume-box').classList.contains('hidden')`));
   await sleep(1200); // let the debounced snapshot land
+  const panesInRecord = () => { const s = (readRecord().sessions || [])[0]; return s && s.layout ? s.layout.tabs.reduce((n, t) => n + t.panes.length, 0) : 0; };
+  const beforeClose = panesInRecord();
+  await app.key('w', 'KeyW', 87, 2 | 8); // Ctrl+Shift+W closes the active pane
+  await sleep(1500);
+  check('closing a pane updates the record (closed pane not kept)', panesInRecord() === beforeClose - 1, `${beforeClose} -> ${panesInRecord()}`);
   await app.close();
 
   console.log('-- after a normal close: compacted');
@@ -107,6 +112,10 @@ const screen = (app) => app.ev(`[...document.querySelectorAll('.tab-page.active 
   await sleep(3000);
   check('oversized / corrupt history files pruned at boot',
     !fs.existsSync(path.join(historyDir, '0123456789abcdef.json')) && !fs.existsSync(path.join(historyDir, 'fedcba9876543210.json')));
+  // A project with no panes left: an empty layout clears this run's resumable layout.
+  await app.ev(`window.carrotcap.saveHistory(${JSON.stringify(project)}, { tabs: [] })`);
+  await sleep(300);
+  check('empty layout clears the current session layout', !((readRecord().sessions || [])[0] || {}).layout);
   await app.ev(`document.querySelector('.btn-cli[data-cli="claude"]').click(), true`);
   await app.close(); // immediately
   const rec4 = readRecord();
