@@ -313,11 +313,12 @@ console.log('-- copyTemplateIfMissing + writeIfMissing happy path (task-005)');
   check('user-modified content preserved',
     fs.readFileSync(destFile, 'utf8') === '# user-modified');
 
-  // Missing source: skip silently.
+  // Missing source: throws (task-014 r5).
   const ghost = path.join(ws, 'ghost-source.md');
   const dest2 = path.join(destDir, 'dest2.md');
-  const ok3 = copyTemplateIfMissing(ghost, dest2, ws);
-  check('missing source returns false', ok3 === false);
+  let threw3 = false;
+  try { copyTemplateIfMissing(ghost, dest2, ws); } catch { threw3 = true; }
+  check('missing source throws (never a silent partial setup)', threw3);
   check('missing source does not create dest', !fs.existsSync(dest2));
 
   try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}

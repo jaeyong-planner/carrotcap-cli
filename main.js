@@ -264,16 +264,13 @@ function getTemplateRoot() {
 function copyTemplateIfMissing(sourcePath, destPath, projectRoot) {
   // Reads a template from the bundled app and writes it to the project workspace
   // via writeIfMissing (which already enforces ancestor symlink + post-write realpath).
-  // Silently skips when the template is missing in this build (warn for diagnostics).
-  if (!fs.existsSync(sourcePath)) {
-    console.warn('[carrotcap] aiops template missing:', sourcePath);
-    return false;
-  }
+  // Returns true (written) / false (destination already exists — kept as is).
+  // A missing or unreadable template THROWS so callers never report a partial setup
+  // as success (Codex task-014 r5).
   let content;
   try { content = fs.readFileSync(sourcePath, 'utf8'); }
   catch (e) {
-    console.warn('[carrotcap] aiops template read failed:', sourcePath, e.message);
-    return false;
+    throw new Error(`aiops template unreadable: ${sourcePath} (${e.message})`);
   }
   return writeIfMissing(destPath, content, projectRoot);
 }
