@@ -16,10 +16,11 @@ CARROTCAP CLI를 Cream CLI와 별개 제품 라인으로 유지하며 진행한 
 - 설정·CLAUDE.md·허용 폴더 목록을 `%APPDATA%\carrotcap-cli`(개발: `carrotcap-cli-dev`)에 저장
   - 설치본에서 `app.asar` 안에 쓰려다 조용히 실패하던 문제 해결
   - 첫 실행 때 번들 기본값을 복사, 이후 덮어쓰지 않음
+  - 읽을 수 없는 `settings.json`은 `settings.json.corrupt-<시각>`으로 보존한 뒤 기본값으로 다시 만듦
 
 ### 추가 (task-009)
 - 터미널 복사/붙여넣기: `Ctrl+C`(선택 시) · `Ctrl+Shift+C` · `Ctrl+Shift+V` · `Shift+Insert`, 우클릭 메뉴
-- AIOps SETUP 문서를 `templates/aiops/`로 분리 — 편집 가능
+- AIOps SETUP 문서를 `templates/aiops/`로 분리 — 편집 가능. 템플릿이 하나라도 없으면 아무것도 쓰지 않고 누락 파일명을 알려줌
 
 ### 개발 환경 (task-006)
 - git 저장소 도입 (`main` = v0.1.0 기준점)
