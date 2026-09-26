@@ -65,6 +65,14 @@
           "!**/.router-output/**",
           "!.engine.lock"
         ]
+      },
+      {
+        "from": "scripts/repair-cli.ps1",
+        "to": "repair-cli.ps1"
+      },
+      {
+        "from": "INSTALLER.md",
+        "to": "INSTALLER.md"
       }
     ],
     "directories": {

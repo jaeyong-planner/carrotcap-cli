@@ -43,11 +43,15 @@ Every launch of the installed app rewrites its own launchers to the current `car
 
 ### Manual repair
 
+The script ships with the app (`resources\repair-cli.ps1`, next to this `INSTALLER.md`):
+
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\repair-cli.ps1
-# or, pointing at a custom location:
+powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\carrotcap-cli\resources\repair-cli.ps1"
+# or, from a source checkout, pointing at a custom location:
 powershell -ExecutionPolicy Bypass -File scripts\repair-cli.ps1 -ExePath 'D:\Tools\carrotcap-cli\carrotcap.exe'
 ```
+
+It exits with code 2 and names the cause if `carrotcap` would still run something else.
 
 ### Upgrade from an older install location
 

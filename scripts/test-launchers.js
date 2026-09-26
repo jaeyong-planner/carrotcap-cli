@@ -29,8 +29,8 @@ const { buildLaunchShims } = new Function('path', src.slice(start, end) + '\nret
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-launch-'));
 const shimDir = path.join(root, 'WindowsApps');
-// Space, apostrophe and %VAR% (must not be expanded by cmd — CC_X is set below).
-const appDir = path.join(root, "my app's %CC_X% dir");
+// Space, apostrophe, %VAR% and !VAR! (neither may be expanded by cmd — CC_X is set below).
+const appDir = path.join(root, "my app's %CC_X% !CC_X! dir");
 fs.mkdirSync(shimDir);
 fs.mkdirSync(appDir);
 const log = path.join(root, 'args.log');
@@ -84,6 +84,7 @@ const run = (file, args, extraEnv = {}) => {
 const expectArgs = JSON.stringify(['[C:\\my project]', '[second]']);
 const cases = [
   ['cmd', cmdExe, ['/d', '/c', 'carrotcap "C:\\my project" second']],
+  ['cmd /V:ON (delayed expansion)', cmdExe, ['/d', '/v:on', '/c', 'carrotcap "C:\\my project" second']],
   ['PowerShell 5.1', path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoProfile', '-Command', "carrotcap 'C:\\my project' second"]],
 ];
 const pwsh7 = spawnSync('where.exe', ['pwsh'], { encoding: 'utf8' });

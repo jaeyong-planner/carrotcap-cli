@@ -739,7 +739,7 @@ console.log('-- `carrotcap` launch shims (task-018)');
   check('only our own names — never Cream\'s carrotcap.cmd / aor.cmd', LAUNCH_SHIM_NAMES.join() === 'carrotcap.bat,carrotcap');
   const exe = String.raw`C:\Users\o'neil\AppData\Local\Programs\carrotcap-cli\carrotcap.exe`;
   const sh = buildLaunchShims(exe);
-  check('.bat: marker line, starts the exe detached, passing args', sh['carrotcap.bat'] === `@echo off\r\nrem CARROTCAP-CLI-LAUNCHER\r\nstart "" "${exe}" %*\r\n`);
+  check('.bat: marker line, starts the exe detached, passing args', sh['carrotcap.bat'] === `@echo off\r\nrem CARROTCAP-CLI-LAUNCHER\r\nsetlocal DisableDelayedExpansion\r\nstart "" "${exe}" %*\r\n`);
   check('sh: marker on line 2', sh.carrotcap.split('\n')[1] === '# CARROTCAP-CLI-LAUNCHER');
   check('own launchers recognized (both forms)', isOwnLaunchShim(sh['carrotcap.bat']) && isOwnLaunchShim(sh.carrotcap));
   check("Cream CLI's launcher is not ours", !isOwnLaunchShim('@echo off\r\nsetlocal\r\nset "CREAM_CLI_EXE=C:\\x\\Cream CLI.exe"\r\nstart "" "%CREAM_CLI_EXE%"\r\n'));
@@ -754,7 +754,9 @@ console.log('-- `carrotcap` launch shims (task-018)');
   for (const bad of ['carrotcap.exe', String.raw`C:\a"b\carrotcap.exe`, 'C:\\a\r\nb\\carrotcap.exe', null]) {
     check(`unsafe exe path rejected: ${JSON.stringify(bad)}`, buildLaunchShims(bad) === null);
   }
-  // Only the installed copy self-registers (review r4).
+}
+// Only the installed copy self-registers (review r4). Windows paths + junctions: Windows only.
+if (process.platform === 'win32') {
   const os = require('os');
   const lad = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-lad-'));
   const canon = path.join(lad, 'Programs', 'carrotcap-cli', 'carrotcap.exe');

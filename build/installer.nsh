@@ -126,7 +126,7 @@ FunctionEnd
       StrCpy $7 "foreign"
     ${endif}
     ${if} $7 == "foreign"
-      MessageBox MB_OK|MB_ICONSTOP "Another installation is registered under this app's ID:$\r$\n$0$\r$\n$1$\r$\n$2$\r$\n$\r$\nSetup stopped so nothing is removed. See INSTALLER.md ($\"Upgrade from an older install location$\")." /SD IDOK
+      MessageBox MB_OK|MB_ICONSTOP "Another installation is registered under this app's ID:$\r$\n$0$\r$\n$1$\r$\n$2$\r$\n$\r$\nSetup stopped so nothing is removed. If it is an old CARROTCAP CLI in a folder shared with other programs (for example next to Cream CLI), do NOT uninstall it from Settings: its uninstaller deletes the whole folder. Remove its own files and registry entry by hand (INSTALLER.md, $\"Upgrade from an older install location$\"), then run this setup again." /SD IDOK
       SetErrorLevel 2
       Quit
     ${endif}
@@ -159,7 +159,7 @@ FunctionEnd
 ; recursively. Refuse unless it is exactly our folder (review task-018 r3).
 !macro customUnInit
   ${if} $INSTDIR != "$LOCALAPPDATA\Programs\carrotcap-cli"
-    MessageBox MB_OK|MB_ICONSTOP "This uninstaller would remove$\r$\n$INSTDIR$\r$\nwhich is not the CARROTCAP CLI folder ($LOCALAPPDATA\Programs\carrotcap-cli). Nothing was removed; see INSTALLER.md." /SD IDOK
+    MessageBox MB_OK|MB_ICONSTOP "This uninstaller would remove$\r$\n$INSTDIR$\r$\nwhich is not the CARROTCAP CLI folder ($LOCALAPPDATA\Programs\carrotcap-cli). Nothing was removed; see $LOCALAPPDATA\Programs\carrotcap-cli\resources\INSTALLER.md." /SD IDOK
     SetErrorLevel 2
     Quit
   ${endif}
@@ -180,10 +180,11 @@ FunctionEnd
     FileOpen $0 "${CC_SHIMDIR}\carrotcap.bat" w
     FileWrite $0 `@echo off$\r$\n`
     FileWrite $0 `rem ${CC_MARK}$\r$\n`
+    FileWrite $0 `setlocal DisableDelayedExpansion$\r$\n`
     FileWrite $0 `start "" "$2" %*$\r$\n`
     FileClose $0
   ${Else}
-    MessageBox MB_OK|MB_ICONEXCLAMATION "CARROTCAP CLI is installed, but the `carrotcap` command was not registered: another program owns$\r$\n${CC_SHIMDIR}\carrotcap.bat$\r$\n$\r$\nCheck or remove that file, then run scripts\repair-cli.ps1 (see INSTALLER.md). Meanwhile use the Start Menu or Desktop shortcut." /SD IDOK
+    MessageBox MB_OK|MB_ICONEXCLAMATION "CARROTCAP CLI is installed, but the `carrotcap` command was not registered: another program owns$\r$\n${CC_SHIMDIR}\carrotcap.bat$\r$\n$\r$\nCheck or remove that file, then run$\r$\n$INSTDIR\resources\repair-cli.ps1$\r$\n(see $INSTDIR\resources\INSTALLER.md). Meanwhile use the Start Menu or Desktop shortcut." /SD IDOK
   ${EndIf}
 
   ; Git Bash: C:/path/carrotcap.exe in single quotes, run in the background.

@@ -483,7 +483,8 @@ function buildLaunchShims(exePath) {
   const shq = (s) => "'" + s.replace(/'/g, "'\\''") + "'";
   return {
     // cmd expands %NAME% even inside quotes: a literal % is written as %%.
-    'carrotcap.bat': `@echo off\r\nrem ${LAUNCH_SHIM_MARK}\r\nstart "" "${exePath.replace(/%/g, '%%')}" %*\r\n`,
+    // DisableDelayedExpansion: under `cmd /V:ON` a ! in the path would otherwise expand.
+    'carrotcap.bat': `@echo off\r\nrem ${LAUNCH_SHIM_MARK}\r\nsetlocal DisableDelayedExpansion\r\nstart "" "${exePath.replace(/%/g, '%%')}" %*\r\n`,
     carrotcap: `#!/bin/sh\n# ${LAUNCH_SHIM_MARK}\n${shq(exePath.replace(/\\/g, '/'))} "$@" >/dev/null 2>&1 &\n`,
   };
 }
@@ -538,7 +539,9 @@ function ensureCliRegistration() {
   } catch (err) {
     problems.push(err.message);
   }
-  cliRegistrationProblem = problems.length ? problems.join('; ') : null;
+  cliRegistrationProblem = problems.length
+    ? `${problems.join('; ')} — fix it, then run: powershell -ExecutionPolicy Bypass -File "${path.join(process.resourcesPath, 'repair-cli.ps1')}"`
+    : null;
   if (cliRegistrationProblem) console.warn('[carrotcap] carrotcap command not fully registered:', cliRegistrationProblem);
 }
 

@@ -88,3 +88,13 @@
 - 설치 폴더 `resources\cc-junction` → 카나리아 폴더 junction: 설치 종료 2, 제거(제자리) 종료 2, 카나리아·앱 보존 → junction 제거 후 업그레이드 종료 0
 - 설치본 실행 시 삭제된 Git Bash 실행기 재생성 확인 후 앱 종료
 - unit 229, test:launchers 7
+
+## r5 리뷰 반영
+- `repair-cli.ps1`·`INSTALLER.md`를 설치본 `resources\`에 포함(extraResources), 설치 메시지·앱 상태 줄이 실제 경로(`...\carrotcap-cli\resources\repair-cli.ps1`)를 안내. 설치 전에 멈추는 경우는 문서가 아직 없으므로 핵심 절차를 메시지에 직접 포함
+- `.bat`에 `setlocal DisableDelayedExpansion` — `cmd /V:ON`에서 경로의 `!` 보호 (설치·앱·복구 동일)
+- `isCanonicalInstall` 단위 테스트는 Windows에서만
+
+## 실측 (r5 빌드)
+- 업그레이드 종료 0, `resources\repair-cli.ps1`·`INSTALLER.md` 존재
+- Git Bash 실행기를 지운 뒤 **설치본 안의** repair 스크립트 실행 → 종료 0, 실행기 복원, `.bat` 내용이 설치 스크립트 결과와 동일
+- test:launchers 9 (`cmd /V:ON` + 폴더 이름에 `!CC_X!` 추가), unit 229
