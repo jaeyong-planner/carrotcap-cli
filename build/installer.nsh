@@ -57,6 +57,54 @@
   Pop $R4
 !macroend
 
+; Links inside our folder (review task-018 r4): electron-builder deletes $INSTDIR
+; recursively on upgrade/uninstall, so a junction in there (or $INSTDIR itself being one)
+; could reach someone else's files. Refuse if any is found. CC_Found = first link found.
+Var CC_Found
+!macro CC_ReparseCallback UN
+; (Defined when this file is included — before LogicLib — so plain jumps, no ${If}.)
+Function ${UN}CC_ReparseCb
+  Push $0
+  System::Call 'kernel32::GetFileAttributesW(w "$R9") i .r0'
+  IntOp $0 $0 & 0x400 ; FILE_ATTRIBUTE_REPARSE_POINT
+  IntCmp $0 0 cc_plain_${UN}
+    StrCpy $CC_Found "$R9"
+    Pop $0
+    Push "StopLocate"
+    Return
+  cc_plain_${UN}:
+    Pop $0
+    Push ""
+FunctionEnd
+!macroend
+!ifdef BUILD_UNINSTALLER
+  !insertmacro CC_ReparseCallback "un."
+!else
+  !insertmacro CC_ReparseCallback ""
+!endif
+
+!macro CC_RefuseLinks CB
+  Push $0
+  Push $1
+  StrCpy $CC_Found ""
+  System::Call 'kernel32::GetFileAttributesW(w "$INSTDIR") i .r0'
+  ${If} $0 != -1
+    IntOp $1 $0 & 0x400
+    ${If} $1 != 0
+      StrCpy $CC_Found "$INSTDIR"
+    ${Else}
+      ${Locate} "$INSTDIR" "/L=D /G=1" "${CB}"
+    ${EndIf}
+  ${EndIf}
+  Pop $1
+  Pop $0
+  ${If} $CC_Found != ""
+    MessageBox MB_OK|MB_ICONSTOP "$CC_Found$\r$\nis a link or junction inside the CARROTCAP CLI folder. Removing the folder could delete the files it points to, so nothing was changed. Remove the link, then try again." /SD IDOK
+    SetErrorLevel 2
+    Quit
+  ${EndIf}
+!macroend
+
 ; Quits unless the existing registration under ROOT (HKCU / HKLM) is absent or is a
 ; CARROTCAP CLI inside $3 (our folder). Uses $0-$2, $4-$7.
 !macro CC_GuardRoot ROOT
@@ -103,6 +151,8 @@
   ${if} $INSTDIR != "$LOCALAPPDATA\Programs\carrotcap-cli"
     StrCpy $INSTDIR "$LOCALAPPDATA\Programs\carrotcap-cli"
   ${endif}
+  ; before an existing install is removed for the upgrade
+  !insertmacro CC_RefuseLinks "CC_ReparseCb"
 !macroend
 
 ; The uninstaller re-reads InstallLocation from the registry and deletes $INSTDIR
@@ -113,6 +163,7 @@
     SetErrorLevel 2
     Quit
   ${endif}
+  !insertmacro CC_RefuseLinks "un.CC_ReparseCb"
 !macroend
 
 !macro customInstall
@@ -132,7 +183,7 @@
     FileWrite $0 `start "" "$2" %*$\r$\n`
     FileClose $0
   ${Else}
-    MessageBox MB_OK|MB_ICONEXCLAMATION "CARROTCAP CLI is installed, but the `carrotcap` command was not registered: another program owns$\r$\n${CC_SHIMDIR}\carrotcap.bat$\r$\n$\r$\nStart CARROTCAP CLI from the Start Menu or Desktop, or see INSTALLER.md." /SD IDOK
+    MessageBox MB_OK|MB_ICONEXCLAMATION "CARROTCAP CLI is installed, but the `carrotcap` command was not registered: another program owns$\r$\n${CC_SHIMDIR}\carrotcap.bat$\r$\n$\r$\nCheck or remove that file, then run scripts\repair-cli.ps1 (see INSTALLER.md). Meanwhile use the Start Menu or Desktop shortcut." /SD IDOK
   ${EndIf}
 
   ; Git Bash: C:/path/carrotcap.exe in single quotes, run in the background.

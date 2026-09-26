@@ -83,6 +83,7 @@ module.exports = {
   buildLaunchShims,
   LAUNCH_SHIM_NAMES,
   isOwnLaunchShim,
+  isCanonicalInstall,
   AOR_RAW_KEEP,
   AOR_REPORT_KEEP,
 };
@@ -104,7 +105,7 @@ const {
   isWithinByteCap, findMissingAiopsTemplates, migrateSettings, SETTINGS_VERSION,
   sanitizeHistoryLayout, applyHistorySnapshot, finalizeHistoryRecord, dropResumableLayouts,
   pickResumableSession, isHistoryExpired, HISTORY_MAX_SESSIONS, sanitizeHistoryRecord,
-  pruneAorRuntime, AOR_RAW_KEEP, AOR_REPORT_KEEP, buildCompressHookSettings, claudeArgsTakeHook, buildLaunchShims, LAUNCH_SHIM_NAMES, isOwnLaunchShim
+  pruneAorRuntime, AOR_RAW_KEEP, AOR_REPORT_KEEP, buildCompressHookSettings, claudeArgsTakeHook, buildLaunchShims, LAUNCH_SHIM_NAMES, isOwnLaunchShim, isCanonicalInstall
 } = m.exports;
 
 let pass = 0;
@@ -753,6 +754,26 @@ console.log('-- `carrotcap` launch shims (task-018)');
   for (const bad of ['carrotcap.exe', String.raw`C:\a"b\carrotcap.exe`, 'C:\\a\r\nb\\carrotcap.exe', null]) {
     check(`unsafe exe path rejected: ${JSON.stringify(bad)}`, buildLaunchShims(bad) === null);
   }
+  // Only the installed copy self-registers (review r4).
+  const os = require('os');
+  const lad = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-lad-'));
+  const canon = path.join(lad, 'Programs', 'carrotcap-cli', 'carrotcap.exe');
+  fs.mkdirSync(path.dirname(canon), { recursive: true });
+  fs.writeFileSync(canon, '');
+  const stray = path.join(lad, 'old copy', 'carrotcap.exe');
+  fs.mkdirSync(path.dirname(stray), { recursive: true });
+  fs.writeFileSync(stray, '');
+  check('installed copy may self-register', isCanonicalInstall(canon, lad));
+  check('a copy elsewhere may not', !isCanonicalInstall(stray, lad));
+  check('missing exe / bad input → no', !isCanonicalInstall(path.join(lad, 'nope.exe'), lad) && !isCanonicalInstall(canon, '') && !isCanonicalInstall(null, lad));
+  const viaLink = path.join(lad, 'linked');
+  fs.symlinkSync(path.join(lad, 'old copy'), viaLink, 'junction');
+  fs.rmSync(path.join(lad, 'Programs', 'carrotcap-cli'), { recursive: true, force: true });
+  fs.symlinkSync(path.join(lad, 'old copy'), path.join(lad, 'Programs', 'carrotcap-cli'), 'junction');
+  check('canonical path that is a junction to another copy → no', !isCanonicalInstall(canon, lad));
+  fs.rmSync(path.join(lad, 'Programs', 'carrotcap-cli'), { force: true, recursive: false });
+  fs.rmSync(viaLink, { force: true, recursive: false });
+  fs.rmSync(lad, { recursive: true, force: true });
 }
 
 console.log('');

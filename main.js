@@ -493,16 +493,29 @@ function isOwnLaunchShim(content) {
   const second = content.split('\n')[1];
   return typeof second === 'string' && ['rem ', '# '].some((p) => second.replace(/\r$/, '') === p + LAUNCH_SHIM_MARK);
 }
-// Self-heal the `carrotcap` command on every packaged launch (installer may have been
-// blocked, the app moved, a portable copy run...).
+// Only the installed copy may (re)register the command — an old copy elsewhere must not
+// repoint `carrotcap` at itself. realpath == the canonical path also rules out links on
+// the way (review task-018 r4).
+function isCanonicalInstall(exePath, localAppData) {
+  if (typeof exePath !== 'string' || typeof localAppData !== 'string' || !localAppData) return false;
+  const canonical = path.win32.join(localAppData, 'Programs', 'carrotcap-cli', 'carrotcap.exe');
+  let real;
+  try { real = fs.realpathSync.native(exePath); } catch { return false; }
+  return real.toLowerCase() === canonical.toLowerCase() && exePath.toLowerCase() === canonical.toLowerCase();
+}
+// Problem found by the last self-heal (shown by the renderer via aor:status), or null.
+let cliRegistrationProblem = null;
+// Self-heal the `carrotcap` command on every launch of the installed app (installer may
+// have been blocked, a launcher deleted...).
 function ensureCliRegistration() {
   if (process.platform !== 'win32') return;
   if (!app.isPackaged) return; // dev runs (npm start) must not touch the user's commands
   if (!process.env.LOCALAPPDATA) return;
   const exePath = process.execPath;
-  if (!/[\\/]carrotcap\.exe$/i.test(exePath)) return; // only the real binary (test copies are renamed)
+  if (!isCanonicalInstall(exePath, process.env.LOCALAPPDATA)) return;
   const shims = buildLaunchShims(exePath);
   if (!shims) return;
+  const problems = [];
   try {
     const shimDir = path.join(process.env.LOCALAPPDATA, 'Microsoft', 'WindowsApps');
     if (!fs.existsSync(shimDir)) fs.mkdirSync(shimDir, { recursive: true });
@@ -510,14 +523,12 @@ function ensureCliRegistration() {
       const shimPath = path.join(shimDir, name);
       let current = null;
       let exists = true;
-      try { if (!fs.lstatSync(shimPath).isFile()) continue; } // a link or folder: not ours
-      catch { exists = false; }
+      try {
+        if (!fs.lstatSync(shimPath).isFile()) { problems.push(`${shimPath} is a folder or link`); continue; }
+      } catch { exists = false; }
       if (exists) {
-        try { current = fs.readFileSync(shimPath, 'utf8'); } catch { continue; }
-        if (!isOwnLaunchShim(current)) {
-          console.warn('[carrotcap] not replacing another program\'s launcher:', shimPath);
-          continue;
-        }
+        try { current = fs.readFileSync(shimPath, 'utf8'); } catch (e) { problems.push(`${shimPath}: ${e.message}`); continue; }
+        if (!isOwnLaunchShim(current)) { problems.push(`${shimPath} belongs to another program`); continue; }
       }
       if (current !== shims[name]) {
         fs.writeFileSync(shimPath, shims[name], 'utf8');
@@ -525,8 +536,10 @@ function ensureCliRegistration() {
       }
     }
   } catch (err) {
-    console.warn('[carrotcap] CLI shim self-heal failed:', err.message);
+    problems.push(err.message);
   }
+  cliRegistrationProblem = problems.length ? problems.join('; ') : null;
+  if (cliRegistrationProblem) console.warn('[carrotcap] carrotcap command not fully registered:', cliRegistrationProblem);
 }
 
 function readJsonFile(p) {
@@ -1710,7 +1723,7 @@ handle('cli:status', async () => {
 // Is a usable AOR engine present? The renderer hides the AOR badge when not.
 handle('aor:status', () => {
   const settings = loadSettings() || {};
-  return { engineFound: !!resolveAorEngineRoot(settings), compressHook: resolveCompressHook(settings) };
+  return { engineFound: !!resolveAorEngineRoot(settings), compressHook: resolveCompressHook(settings), cliRegistrationProblem };
 });
 
 handle('app:platform', () => process.platform);

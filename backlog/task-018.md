@@ -78,3 +78,13 @@
 - InstallLocation을 카나리아 파일이 든 미끼 폴더로 바꾸고 제거 프로그램을 제자리 실행(`_?=`) → 종료 2, 카나리아·앱 보존, 값 복원
 - `repair-cli.ps1` → `carrotcap.BAT`로 해석, 종료 0
 - test:launchers 7/7, unit 225
+
+## r4 리뷰 반영
+- 설치 폴더 안(또는 폴더 자체)의 junction·링크 검사: 업그레이드 전(`customInit`)·제거 전(`customUnInit`) `${Locate}`로 하위 폴더 전체 순회, 발견 시 중단(종료 2)
+- 자가 복구는 설치본(`Programs\carrotcap-cli\carrotcap.exe`, realpath 일치)만 — 다른 곳의 복사본이 명령을 자기 쪽으로 돌리지 못함
+- 등록 실패는 앱 상태 줄에 표시(aor:status → 렌더러), 충돌 안내 문구를 repair 스크립트로 연결
+
+## 실측 (r4 빌드)
+- 설치 폴더 `resources\cc-junction` → 카나리아 폴더 junction: 설치 종료 2, 제거(제자리) 종료 2, 카나리아·앱 보존 → junction 제거 후 업그레이드 종료 0
+- 설치본 실행 시 삭제된 Git Bash 실행기 재생성 확인 후 앱 종료
+- unit 229, test:launchers 7

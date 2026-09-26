@@ -48,6 +48,8 @@
       const st = await api.aorStatus();
       state.aorEngineFound = !!st.engineFound;
       state.compressHook = typeof st.compressHook === 'string' ? st.compressHook : null; // task-017
+      // task-018: the `carrotcap` terminal command could not be (re)registered
+      if (st.cliRegistrationProblem) setFlowStatus(`carrotcap 명령 등록 실패 — ${st.cliRegistrationProblem}. scripts\\repair-cli.ps1 참고`, 'warn');
     } catch { state.aorEngineFound = false; state.compressHook = null; }
     // AIOps는 기본 ON — 사용자가 끈 경우(autoStart: false)만 끈다.
     state.aiopsMode = !(state.settings && state.settings.aor && state.settings.aor.autoStart === false);
