@@ -105,18 +105,31 @@
   ${endif}
 !macroend
 
+; The uninstaller re-reads InstallLocation from the registry and deletes $INSTDIR
+; recursively. Refuse unless it is exactly our folder (review task-018 r3).
+!macro customUnInit
+  ${if} $INSTDIR != "$LOCALAPPDATA\Programs\carrotcap-cli"
+    MessageBox MB_OK|MB_ICONSTOP "This uninstaller would remove$\r$\n$INSTDIR$\r$\nwhich is not the CARROTCAP CLI folder ($LOCALAPPDATA\Programs\carrotcap-cli). Nothing was removed; see INSTALLER.md." /SD IDOK
+    SetErrorLevel 2
+    Quit
+  ${endif}
+!macroend
+
 !macro customInstall
   Push $0
   Push $1
+  Push $2
   Push $R9
   CreateDirectory "${CC_SHIMDIR}"
 
+  ; cmd would expand %NAME% inside the path: escape % as %% (same as main.js).
+  ${WordReplace} "$INSTDIR\carrotcap.exe" "%" "%%" "+" $2
   !insertmacro CC_CanOwn "${CC_SHIMDIR}\carrotcap.bat"
   ${If} $R9 == "ok"
     FileOpen $0 "${CC_SHIMDIR}\carrotcap.bat" w
     FileWrite $0 `@echo off$\r$\n`
     FileWrite $0 `rem ${CC_MARK}$\r$\n`
-    FileWrite $0 `start "" "$INSTDIR\carrotcap.exe" %*$\r$\n`
+    FileWrite $0 `start "" "$2" %*$\r$\n`
     FileClose $0
   ${Else}
     MessageBox MB_OK|MB_ICONEXCLAMATION "CARROTCAP CLI is installed, but the `carrotcap` command was not registered: another program owns$\r$\n${CC_SHIMDIR}\carrotcap.bat$\r$\n$\r$\nStart CARROTCAP CLI from the Start Menu or Desktop, or see INSTALLER.md." /SD IDOK
@@ -136,6 +149,7 @@
     MessageBox MB_OK|MB_ICONEXCLAMATION "The Git Bash `carrotcap` command was not registered: another program owns$\r$\n${CC_SHIMDIR}\carrotcap" /SD IDOK
   ${EndIf}
   Pop $R9
+  Pop $2
   Pop $1
   Pop $0
 !macroend

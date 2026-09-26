@@ -29,7 +29,8 @@ const { buildLaunchShims } = new Function('path', src.slice(start, end) + '\nret
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-launch-'));
 const shimDir = path.join(root, 'WindowsApps');
-const appDir = path.join(root, "my app's dir");
+// Space, apostrophe and %VAR% (must not be expanded by cmd — CC_X is set below).
+const appDir = path.join(root, "my app's %CC_X% dir");
 fs.mkdirSync(shimDir);
 fs.mkdirSync(appDir);
 const log = path.join(root, 'args.log');
@@ -57,7 +58,7 @@ for (const [name, body] of Object.entries(shims)) fs.writeFileSync(path.join(shi
 // What Cream CLI writes (it must lose).
 fs.writeFileSync(path.join(shimDir, 'carrotcap.cmd'), `@echo off\r\n> "${log}" echo CREAM\r\n`);
 
-const env = { ...process.env, PATH: `${shimDir};${process.env.PATH}`, CC_FAKE_LOG: log };
+const env = { ...process.env, PATH: `${shimDir};${process.env.PATH}`, CC_FAKE_LOG: log, CC_X: 'EXPANDED' };
 const sleep = (ms) => spawnSync(process.execPath, ['-e', `setTimeout(()=>{},${ms})`]);
 const waitLog = () => {
   for (let i = 0; i < 60; i++) {
@@ -87,7 +88,14 @@ const cases = [
 ];
 const pwsh7 = spawnSync('where.exe', ['pwsh'], { encoding: 'utf8' });
 if (pwsh7.status === 0) cases.push(['pwsh 7', pwsh7.stdout.split(/\r?\n/)[0].trim(), ['-NoProfile', '-Command', "carrotcap 'C:\\my project' second"]]);
-const bash = ['C:\\Program Files\\Git\\bin\\bash.exe'].find((p) => fs.existsSync(p));
+// Git Bash = <git>\bin\bash.exe next to git's cmd\git.exe (`where bash` may find WSL's).
+let bash = null;
+const gitWhere = spawnSync('where.exe', ['git'], { encoding: 'utf8' });
+for (const g of (gitWhere.status === 0 ? gitWhere.stdout.split(/\r?\n/) : []).map((l) => l.trim()).filter(Boolean)) {
+  const cand = path.join(path.dirname(path.dirname(g)), 'bin', 'bash.exe');
+  if (fs.existsSync(cand)) { bash = cand; break; }
+}
+let skipped = 0;
 
 console.log("-- default PATHEXT: our launcher wins over Cream's carrotcap.cmd, arguments intact");
 for (const [label, file, args] of cases) {
@@ -98,15 +106,19 @@ if (bash) {
   const got = run(bash, ['-c', "carrotcap 'C:\\my project' second"]);
   check('Git Bash: extensionless launcher, path with space + apostrophe, arguments intact', JSON.stringify(got) === expectArgs, JSON.stringify(got));
 } else {
-  console.log('  (Git Bash not installed — its launcher is covered by the unit tests only)');
+  console.log('  SKIP  Git Bash: not installed (no git.exe with bin\\bash.exe on PATH)');
+  skipped++;
 }
 
 console.log('-- changed PATHEXT (.CMD before .BAT): documented limitation');
-const swapped = run(cmdExe, ['/d', '/c', 'carrotcap'], { PATHEXT: '.COM;.EXE;.CMD;.BAT' });
-check('cmd with .CMD first picks carrotcap.cmd (why INSTALLER.md requires the default order)', JSON.stringify(swapped) === '["CREAM"]', JSON.stringify(swapped));
+const swappedExt = { PATHEXT: '.COM;.EXE;.CMD;.BAT' };
+for (const [label, file] of cases) {
+  const got = run(file, file === cmdExe ? ['/d', '/c', 'carrotcap'] : ['-NoProfile', '-Command', 'carrotcap'], swappedExt);
+  check(`${label} with .CMD first picks carrotcap.cmd (why INSTALLER.md requires the default order)`, JSON.stringify(got) === '["CREAM"]', JSON.stringify(got));
+}
 
 sleep(300);
 fs.rmSync(root, { recursive: true, force: true });
 console.log('');
-console.log(`Summary: ${pass} passed, ${fail} failed`);
+console.log(`Summary: ${pass} passed, ${fail} failed${skipped ? `, ${skipped} skipped` : ""}`);
 process.exit(fail === 0 ? 0 : 1);

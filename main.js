@@ -479,10 +479,11 @@ function validateClaudeMdContent(content) {
 const LAUNCH_SHIM_NAMES = ['carrotcap.bat', 'carrotcap'];
 const LAUNCH_SHIM_MARK = 'CARROTCAP-CLI-LAUNCHER';
 function buildLaunchShims(exePath) {
-  if (typeof exePath !== 'string' || !path.win32.isAbsolute(exePath) || /["%\r\n]/.test(exePath)) return null;
+  if (typeof exePath !== 'string' || !path.win32.isAbsolute(exePath) || /["\r\n]/.test(exePath)) return null;
   const shq = (s) => "'" + s.replace(/'/g, "'\\''") + "'";
   return {
-    'carrotcap.bat': `@echo off\r\nrem ${LAUNCH_SHIM_MARK}\r\nstart "" "${exePath}" %*\r\n`,
+    // cmd expands %NAME% even inside quotes: a literal % is written as %%.
+    'carrotcap.bat': `@echo off\r\nrem ${LAUNCH_SHIM_MARK}\r\nstart "" "${exePath.replace(/%/g, '%%')}" %*\r\n`,
     carrotcap: `#!/bin/sh\n# ${LAUNCH_SHIM_MARK}\n${shq(exePath.replace(/\\/g, '/'))} "$@" >/dev/null 2>&1 &\n`,
   };
 }

@@ -39,7 +39,7 @@ if (-not $resolvedExe) {
     Write-Err "Could not locate carrotcap.exe. Install the setup first, or pass -ExePath '<full\path\to\carrotcap.exe>'."
     exit 1
 }
-if ($resolvedExe -match '["%\r\n]') { Write-Err "Unsupported characters in the exe path: $resolvedExe"; exit 1 }
+if ($resolvedExe -match '["\r\n]') { Write-Err "Unsupported characters in the exe path: $resolvedExe"; exit 1 }
 Write-Info "Using carrotcap.exe at: $resolvedExe"
 
 # 2) Launchers (byte-identical to build/installer.nsh and main.js buildLaunchShims)
@@ -47,7 +47,8 @@ $shimDir = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps'
 if (-not (Test-Path -LiteralPath $shimDir)) { New-Item -ItemType Directory -Force -Path $shimDir | Out-Null }
 $bashPath = $resolvedExe.Replace('\', '/').Replace("'", "'\''")
 $shims = [ordered]@{
-    'carrotcap.bat' = "@echo off`r`nrem $Mark`r`nstart `"`" `"$resolvedExe`" %*`r`n"
+    # cmd expands %NAME% inside the path: a literal % is written as %% (same as installer/app)
+    'carrotcap.bat' = "@echo off`r`nrem $Mark`r`nstart `"`" `"$($resolvedExe.Replace('%', '%%'))`" %*`r`n"
     'carrotcap'     = "#!/bin/sh`n# $Mark`n'$bashPath' `"`$@`" >/dev/null 2>&1 &`n"
 }
 $utf8 = New-Object System.Text.UTF8Encoding($false)
@@ -70,7 +71,27 @@ $merged = ([Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Env
 Write-Host ''
 Write-Host '--- verification ---'
 Write-Host "WindowsApps on PATH: $((@($merged | Where-Object { $_ -match 'WindowsApps' })).Count -gt 0)"
-$where = & (Join-Path $env:SystemRoot 'System32\where.exe') carrotcap 2>$null | Select-Object -First 1
-Write-Host "carrotcap resolves to: $where"
-if ($where -and $where -notlike '*\carrotcap.bat') { Write-WarnX 'Another carrotcap comes first (non-default PATHEXT or a carrotcap.exe/.com on PATH).' }
+# What cmd / PowerShell would run: the first PATH folder holding carrotcap + a PATHEXT
+# extension (where.exe also lists the extensionless Git Bash launcher, which they skip).
+$expected = Join-Path $shimDir 'carrotcap.bat'
+$exts = ($env:PATHEXT -split ';') | Where-Object { $_ }
+$resolved = $null
+foreach ($dir in ($env:PATH -split ';' | Where-Object { $_ })) {
+    foreach ($ext in $exts) {
+        $cand = Join-Path $dir ("carrotcap" + $ext)
+        if (Test-Path -LiteralPath $cand -PathType Leaf) { $resolved = $cand; break }
+    }
+    if ($resolved) { break }
+}
+Write-Host "carrotcap resolves to: $resolved"
+if (-not $resolved -or ((Resolve-Path -LiteralPath $resolved).Path -ne (Resolve-Path -LiteralPath $expected -ErrorAction SilentlyContinue).Path)) {
+    if (-not ((@($merged | Where-Object { $_ -match 'WindowsApps' })).Count)) {
+        Write-Err "WindowsApps is not on PATH. Add '$shimDir' to your PATH (Settings > System > About > Advanced system settings > Environment Variables)."
+    } elseif (-not $resolved) {
+        Write-Err "The launcher could not be written (see the warnings above)."
+    } else {
+        Write-Err "'$resolved' is run instead of ours. Put .BAT before .CMD in PATHEXT, or remove the earlier carrotcap from PATH."
+    }
+    exit 2
+}
 Write-Ok 'Done. `carrotcap` works in new and already-open terminals.'

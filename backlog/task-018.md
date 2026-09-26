@@ -66,3 +66,15 @@
 - b) `Software\<GUID>\InstallLocation`을 다른 경로로 → 설치 중단(종료 2), 기존 설치 무변경, 값 복원
 - c) 제거 항목 이름을 "Cream CLI 0.3.2"로 → 설치 중단(종료 2), 값 복원
 - d) 제거: 앱 폴더·우리 `.bat` 삭제, 표시 없는 같은 이름 파일은 보존 → 테스트 파일 정리 후 재설치, `carrotcap` → `carrotcap.bat`
+
+## r3 리뷰 반영
+- `customUnInit`: 제거 프로그램이 레지스트리에서 다시 읽은 `$INSTDIR`이 전용 폴더가 아니면 중단(종료 2) — 변조된 InstallLocation으로 외부 폴더를 지우지 않음
+- `%` 포함 경로 허용: 배치 파일에는 `%%`로 기록(설치 스크립트·앱·복구 스크립트 동일), Git Bash는 그대로
+- `repair-cli.ps1`: cmd/PowerShell이 실제로 고를 파일(PATH × PATHEXT)을 계산해 우리 실행기가 아니면 원인별 안내 + 종료 2
+- `test:launchers`: Git Bash는 `git.exe` 옆 `bin\bash.exe`로 탐색, 없으면 SKIP을 요약에 표시; PATHEXT 변경 사례를 PowerShell 5.1·pwsh 7에도 추가; 폴더 이름에 `%CC_X%` 포함(확장되지 않음 확인)
+
+## 실측 (r3 빌드)
+- 업그레이드 종료 0
+- InstallLocation을 카나리아 파일이 든 미끼 폴더로 바꾸고 제거 프로그램을 제자리 실행(`_?=`) → 종료 2, 카나리아·앱 보존, 값 복원
+- `repair-cli.ps1` → `carrotcap.BAT`로 해석, 종료 0
+- test:launchers 7/7, unit 225

@@ -748,7 +748,9 @@ console.log('-- `carrotcap` launch shims (task-018)');
   const r = require('child_process').spawnSync('bash', ['-c', probe, 'carrotcap', 'C:/my project'], { encoding: 'utf8' });
   check('Git Bash shim: exe path (with apostrophe) + args survive quoting', !r.error && r.stdout === "[C:/Users/o'neil/AppData/Local/Programs/carrotcap-cli/carrotcap.exe][C:/my project]", r.stdout || String(r.error));
   check('Git Bash shim runs in the background (terminal not blocked)', /&\n$/.test(sh.carrotcap));
-  for (const bad of ['carrotcap.exe', String.raw`C:\a"b\carrotcap.exe`, String.raw`C:\%PATH%\carrotcap.exe`, 'C:\\a\r\nb\\carrotcap.exe', null]) {
+  const pct = buildLaunchShims(String.raw`C:\Users\a%PATH%b\carrotcap.exe`);
+  check('% in the path is escaped as %% for cmd (review r3), kept as-is for Git Bash', !!pct && pct['carrotcap.bat'].includes(String.raw`"C:\Users\a%%PATH%%b\carrotcap.exe"`) && pct.carrotcap.includes("'C:/Users/a%PATH%b/carrotcap.exe'"));
+  for (const bad of ['carrotcap.exe', String.raw`C:\a"b\carrotcap.exe`, 'C:\\a\r\nb\\carrotcap.exe', null]) {
     check(`unsafe exe path rejected: ${JSON.stringify(bad)}`, buildLaunchShims(bad) === null);
   }
 }
