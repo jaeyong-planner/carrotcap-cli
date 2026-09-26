@@ -56,16 +56,13 @@ const sessions = new Map(); // ptyId -> { proc, kind }
 // Hardens IPC inputs and shell invocations against a compromised renderer.
 //   validateSettings: whitelist-based settings sanitizer (Critical #2)
 //   pwshSingleQuote / posixShellQuote: shell-safe argument escaping (Critical #3)
-//   getRegExePath / getPowerShellExePath: PATH-poisoning resistant launchers (Major M1)
+//   getPowerShellExePath: PATH-poisoning resistant launcher (Major M1)
 function getSystem32Path() {
   // Defense in depth: even if SystemRoot is poisoned with a relative or empty
   // value, fall back to the canonical absolute path.
   const envRoot = process.env.SystemRoot;
   const root = (typeof envRoot === 'string' && path.isAbsolute(envRoot)) ? envRoot : 'C:\\Windows';
   return path.join(root, 'System32');
-}
-function getRegExePath() {
-  return path.join(getSystem32Path(), 'reg.exe');
 }
 function getPowerShellExePath() {
   return path.join(getSystem32Path(), 'WindowsPowerShell', 'v1.0', 'powershell.exe');
@@ -467,73 +464,51 @@ function validateClaudeMdContent(content) {
 }
 // ---------- end security helpers ----------
 
-// Self-heal the global `carrotcap` / `aor` CLI registration on every packaged launch.
-// Why: NSIS installer can fail to create the shim (antivirus quarantine, locked
-// WindowsApps folder, sysadmin running a portable copy, manual exe copy, etc.).
-// A user who can launch the GUI from Start Menu must always end up with a
-// working command afterwards in any new shell.
+// `carrotcap` in any terminal opens THIS app (task-018).
+// Cream CLI (a separate product) rewrites WindowsApps\carrotcap.cmd + aor.cmd on every
+// launch, and WindowsApps sits in the machine PATH before anything we could add to the
+// user PATH. Within one folder Windows tries PATHEXT in order (.COM;.EXE;.BAT;.CMD), so
+// our carrotcap.bat wins over Cream's carrotcap.cmd in cmd / PowerShell 5.1 / pwsh 7,
+// and an extensionless `carrotcap` covers Git Bash. Cream's files (and `aor`) are never
+// touched. The user PATH is not edited: it is long on this kind of machine and a
+// truncating write would be destructive.
+const LAUNCH_SHIM_NAMES = ['carrotcap.bat', 'carrotcap'];
+function buildLaunchShims(exePath) {
+  if (typeof exePath !== 'string' || !path.win32.isAbsolute(exePath) || /["%\r\n]/.test(exePath)) return null;
+  const posix = exePath.replace(/^([A-Za-z]):[\\/]/, (_, d) => `/${d.toLowerCase()}/`).replace(/\\/g, '/');
+  const shq = (s) => "'" + s.replace(/'/g, "'\\''") + "'";
+  return {
+    'carrotcap.bat': `@echo off\r\nstart "" "${exePath}" %*\r\n`,
+    carrotcap: `#!/bin/sh\n# CARROTCAP CLI launcher (Git Bash)\n${shq(posix)} "$@" >/dev/null 2>&1 &\n`,
+  };
+}
+// Self-heal the `carrotcap` command on every packaged launch (installer may have been
+// blocked, the app moved, a portable copy run...).
 function ensureCliRegistration() {
   if (process.platform !== 'win32') return;
-  if (!app.isPackaged) return; // dev runs (npm start) shouldn't poke registry/PATH
+  if (!app.isPackaged) return; // dev runs (npm start) must not touch the user's commands
   if (!process.env.LOCALAPPDATA) return;
   const exePath = process.execPath;
-  if (!/carrotcap\.exe$/i.test(exePath)) return; // safety: only when running the real binary
-
-  const { execFileSync } = require('child_process');
-
-  // 1) Shim: %LOCALAPPDATA%\Microsoft\WindowsApps\carrotcap.cmd and aor.cmd
-  //    This folder is on the per-user PATH by default on Windows 10/11.
+  if (!/[\\/]carrotcap\.exe$/i.test(exePath)) return; // only the real binary (test copies are renamed)
+  const shims = buildLaunchShims(exePath);
+  if (!shims) return;
   try {
     const shimDir = path.join(process.env.LOCALAPPDATA, 'Microsoft', 'WindowsApps');
-    const expected = `@echo off\r\nstart "" "${exePath}" %*\r\n`;
     if (!fs.existsSync(shimDir)) fs.mkdirSync(shimDir, { recursive: true });
-    for (const name of ['carrotcap.cmd', 'aor.cmd']) {
+    for (const name of LAUNCH_SHIM_NAMES) {
       const shimPath = path.join(shimDir, name);
-      let needWrite = true;
-      if (fs.existsSync(shimPath)) {
-        try {
-          const current = fs.readFileSync(shimPath, 'utf8');
-          if (current === expected) needWrite = false;
-        } catch (_) { /* unreadable -> rewrite */ }
-      }
-      if (needWrite) {
-        fs.writeFileSync(shimPath, expected, 'utf8');
+      let current = null;
+      try {
+        if (!fs.lstatSync(shimPath).isFile()) continue; // a link or folder there is not ours to replace
+        current = fs.readFileSync(shimPath, 'utf8');
+      } catch { /* missing → write */ }
+      if (current !== shims[name]) {
+        fs.writeFileSync(shimPath, shims[name], 'utf8');
         console.log('[carrotcap] CLI shim ensured:', shimPath);
       }
     }
   } catch (err) {
     console.warn('[carrotcap] CLI shim self-heal failed:', err.message);
-  }
-
-  // 2) PATH fallback: append install dir to HKCU\Environment\Path if missing.
-  //    Belt-and-suspenders for environments where WindowsApps is not on PATH.
-  try {
-    const installDir = path.dirname(exePath);
-    const regExe  = getRegExePath();
-    const pwshExe = getPowerShellExePath();
-    let current = '';
-    try {
-      const out = execFileSync(regExe, ['query', 'HKCU\\Environment', '/v', 'Path'], { encoding: 'utf8' });
-      const m = out.match(/Path\s+REG_(?:EXPAND_)?SZ\s+(.*)/);
-      if (m) current = m[1].trim();
-    } catch (_) { /* Path value may not exist yet */ }
-    const norm = (s) => s.replace(/[\\/]+$/, '').toLowerCase();
-    const parts = current.split(';').map((s) => s.trim()).filter(Boolean);
-    const already = parts.some((p) => norm(p) === norm(installDir));
-    if (!already) {
-      const next = current ? `${current};${installDir}` : installDir;
-      execFileSync(regExe, ['add', 'HKCU\\Environment', '/v', 'Path', '/t', 'REG_EXPAND_SZ', '/d', next, '/f'], { stdio: 'ignore' });
-      console.log('[carrotcap] added install dir to user PATH:', installDir);
-      // Notify shells/Explorer of env change. Best-effort; do not fail launch on error.
-      try {
-        execFileSync(pwshExe, [
-          '-NoProfile', '-NonInteractive', '-Command',
-          "$sig='[DllImport(\"user32.dll\", SetLastError=true, CharSet=CharSet.Auto)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);'; $t=Add-Type -MemberDefinition $sig -Name Win32SendMessageTimeout -Namespace Win32Functions -PassThru; [UIntPtr]$out=[UIntPtr]::Zero; [void]$t::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 3000, [ref]$out)"
-        ], { stdio: 'ignore' });
-      } catch (_) { /* broadcast is best-effort */ }
-    }
-  } catch (err) {
-    console.warn('[carrotcap] PATH self-heal failed:', err.message);
   }
 }
 

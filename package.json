@@ -37,7 +37,7 @@
     "appId": "com.carrotcap.cli",
     "productName": "CARROTCAP CLI",
     "executableName": "carrotcap",
-    "artifactName": "CARROTCAP-CLI-${version}-${os}-${arch}.${ext}",
+    "artifactName": "CARROTCAP-CLI-Setup-${version}.${ext}",
     "files": [
       "main.js",
       "preload.js",
@@ -78,9 +78,12 @@
       "signAndEditExecutable": false
     },
     "nsis": {
-      "oneClick": false,
+      "oneClick": true,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
+      "runAfterFinish": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "CARROTCAP CLI",
       "include": "build/installer.nsh"
     },
     "mac": {

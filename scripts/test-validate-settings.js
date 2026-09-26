@@ -80,6 +80,8 @@ module.exports = {
   buildCompressHookSettings,
   claudeArgsTakeHook,
   resolveAorEngineRoot,
+  buildLaunchShims,
+  LAUNCH_SHIM_NAMES,
   AOR_RAW_KEEP,
   AOR_REPORT_KEEP,
 };
@@ -101,7 +103,7 @@ const {
   isWithinByteCap, findMissingAiopsTemplates, migrateSettings, SETTINGS_VERSION,
   sanitizeHistoryLayout, applyHistorySnapshot, finalizeHistoryRecord, dropResumableLayouts,
   pickResumableSession, isHistoryExpired, HISTORY_MAX_SESSIONS, sanitizeHistoryRecord,
-  pruneAorRuntime, AOR_RAW_KEEP, AOR_REPORT_KEEP, buildCompressHookSettings, claudeArgsTakeHook
+  pruneAorRuntime, AOR_RAW_KEEP, AOR_REPORT_KEEP, buildCompressHookSettings, claudeArgsTakeHook, buildLaunchShims, LAUNCH_SHIM_NAMES
 } = m.exports;
 
 let pass = 0;
@@ -728,6 +730,22 @@ console.log('-- which claude calls get the hook (review task-016 r1)');
   check('non-string args ignored', claudeArgsTakeHook([null, 3, '--continue']) && claudeArgsTakeHook(undefined));
   const mac = loadHelpers(path.join(__dirname, '..'), { ...process, platform: 'darwin', env: process.env });
   check('no AOR engine outside Windows (PowerShell scripts)', mac.resolveAorEngineRoot({ aor: { engineRoot: __dirname } }) === null);
+}
+
+console.log('-- `carrotcap` launch shims (task-018)');
+{
+  check('only our own names — never Cream\'s carrotcap.cmd / aor.cmd', LAUNCH_SHIM_NAMES.join() === 'carrotcap.bat,carrotcap');
+  const exe = String.raw`C:\Users\o'neil\AppData\Local\Programs\carrotcap-cli\carrotcap.exe`;
+  const sh = buildLaunchShims(exe);
+  check('.bat starts the exe detached, passing args', sh['carrotcap.bat'] === `@echo off\r\nstart "" "${exe}" %*\r\n`);
+  // Replace the exe with echo to see exactly what Git Bash would run.
+  const probe = sh.carrotcap.replace(/ >\/dev\/null 2>&1 &\n$/, '\n').replace(/^'[^\n]*carrotcap\.exe' /m, (m) => `printf '[%s]' ${m.trim()} `);
+  const r = require('child_process').spawnSync('bash', ['-c', probe, 'carrotcap', 'C:/my project'], { encoding: 'utf8' });
+  check('Git Bash shim: exe path (with apostrophe) + args survive quoting', !r.error && r.stdout === "[/c/Users/o'neil/AppData/Local/Programs/carrotcap-cli/carrotcap.exe][C:/my project]", r.stdout || String(r.error));
+  check('Git Bash shim runs in the background (terminal not blocked)', /&\n$/.test(sh.carrotcap));
+  for (const bad of ['carrotcap.exe', String.raw`C:\a"b\carrotcap.exe`, String.raw`C:\%PATH%\carrotcap.exe`, 'C:\\a\r\nb\\carrotcap.exe', null]) {
+    check(`unsafe exe path rejected: ${JSON.stringify(bad)}`, buildLaunchShims(bad) === null);
+  }
 }
 
 console.log('');
