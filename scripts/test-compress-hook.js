@@ -55,7 +55,10 @@ for (const c of ['npm test', 'npm run build', 'npm run test:unit', 'pnpm install
   check(`noisy: ${c}`, hook.isNoisyCommand(c));
 }
 for (const c of ['npm run dev', 'npm start', 'git diff', 'cat package.json', 'npm test | tail -20', 'npm test > out.txt',
-  'npm test; rm -rf x', 'echo $(npm test)', 'vitest', 'ls', '', 'npm test\nrm x', 'x'.repeat(3000)]) {
+  'npm test; rm -rf x', 'echo $(npm test)', 'vitest', 'ls', '', 'npm test\nrm x', 'x'.repeat(3000),
+  // watch / long-running (review r4)
+  'npm test -- --watch', 'npm run test:unit -- --watch', 'npm run build:watch', 'npx jest --watchAll', 'jest --watch',
+  'tsc -w', 'tsc --watch', 'pytest --looponfail', 'pytest -f', 'npm run build -- --watch=true']) {
   check(`left alone: ${JSON.stringify(c.slice(0, 30))}`, !hook.isNoisyCommand(c));
 }
 
