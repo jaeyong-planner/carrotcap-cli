@@ -1262,18 +1262,38 @@ function historyFileFor(realRoot) {
 }
 const HISTORY_MAX_FILE_BYTES = 64 * 1024; // real records are 1-2KB
 function readHistory(file) {
+  if (!historyDirIsSafe()) return null;
   try {
-    if (fs.statSync(file).size > HISTORY_MAX_FILE_BYTES) return null; // pruned at next boot
+    const lst = fs.lstatSync(file);
+    if (!lst.isFile() || lst.size > HISTORY_MAX_FILE_BYTES) return null; // pruned at next boot
   } catch { return null; }
   return sanitizeHistoryRecord(readJsonFile(file));
 }
 let historyQuitting = false;
-function writeHistory(file, record) {
+// The history dir must be a real directory inside the user data dir — never a
+// symlink/junction that would point prune/write somewhere else (review r4).
+function historyDirIsSafe() {
   try {
-    fs.mkdirSync(HISTORY_DIR, { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(record), 'utf8');
+    const lst = fs.lstatSync(HISTORY_DIR);
+    if (lst.isSymbolicLink() || !lst.isDirectory()) return false;
+    return isPathInsideRoot(fs.realpathSync.native(HISTORY_DIR), USER_DATA_ROOT);
+  } catch { return false; }
+}
+function ensureHistoryDir() {
+  if (!fs.existsSync(HISTORY_DIR)) fs.mkdirSync(HISTORY_DIR, { recursive: true });
+  return historyDirIsSafe();
+}
+function writeHistory(file, record) {
+  // Write to a temp file and rename over the target: a crash mid-write must not
+  // corrupt the record that "resume after a crash" depends on.
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    if (!ensureHistoryDir()) throw new Error('history dir is not a plain directory inside userData');
+    fs.writeFileSync(tmp, JSON.stringify(record), 'utf8');
+    fs.renameSync(tmp, file);
     return true;
   } catch (e) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
     console.warn('[carrotcap] history write failed:', e.message);
     return false;
   }
@@ -1296,12 +1316,14 @@ function currentHistoryIds() {
 }
 // Boot-time cleanup: expired records, records of deleted project folders, stray files.
 function pruneHistory() {
+  if (!historyDirIsSafe()) return; // missing, or a link we refuse to follow
   let entries;
-  try { entries = fs.readdirSync(HISTORY_DIR); } catch { return; }
+  try { entries = fs.readdirSync(HISTORY_DIR, { withFileTypes: true }); } catch { return; }
   const now = Date.now();
-  for (const name of entries) {
-    const file = path.join(HISTORY_DIR, name);
-    const rec = HISTORY_FILE_RE.test(name) ? readHistory(file) : null;
+  for (const ent of entries) {
+    if (!ent.isFile()) continue; // never delete directories or links
+    const file = path.join(HISTORY_DIR, ent.name);
+    const rec = HISTORY_FILE_RE.test(ent.name) ? readHistory(file) : null;
     const gone = !rec || isHistoryExpired(rec, now) || typeof rec.projectRoot !== 'string' || !fs.existsSync(rec.projectRoot);
     if (gone) { try { fs.rmSync(file, { force: true }); } catch { /* next boot retries */ } }
   }

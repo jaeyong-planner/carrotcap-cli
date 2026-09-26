@@ -51,3 +51,12 @@
 ## 리뷰 반영 r3 (logs/review/task-012-013-r3_review-reflection.md — ⚠️ 조건부 승인, 이전 항목 전부 RESOLVED, 신규 Major 1)
 - `run-media.ps1`: exit 0이어도 이번 실행에서 `logs/media/<TaskId>_<Slug>.md`가 새로 생기거나 갱신되지 않으면 실패 처리하고 stdout 보존. 프롬프트에 로그 경로를 정확히 지정
 - `npm run test:media` (가짜 grok): 성공/로그 없음/오래된 로그/exit 1/경로형 TaskId 8/8
+
+## 리뷰 반영 r4 (logs/review/task-012-013-r4_review-reflection.md — ❌ 반려, Critical 1 / Major 4 / Minor 1)
+- **Critical**: 이어하기가 "CLI를 안 띄운 첫 탭"을 빈 탭으로 보고 닫아, 사용 중인 셸(편집기 등)을 죽일 수 있었음 → 이어하기는 기존 탭을 절대 닫지 않음 (위 "동작" 표의 "빈 시작 탭은 닫음"은 폐기)
+- Major: 페인마다 생성 당시 프로젝트를 기록하고 그 프로젝트 페인만 그 프로젝트 이력에 저장 → 프로젝트 전환·복원 도중 전환 시 섞임 해결 (r3의 PARTIAL 2건)
+- Major: 이어하기 중복 클릭 방지 (진행 중 플래그 + 버튼 비활성)
+- Major: 이력 파일 원자적 쓰기 (임시 파일 → rename)
+- Major: `history` 폴더가 심볼릭 링크/정션이거나 userData 밖이면 읽기·쓰기·정리 모두 거부, 정리는 일반 파일만
+- Minor: run-media 로그 판정을 "기존 로그를 옆으로 옮기고 새 파일이 생겼는가"로 (실패 시 기존 로그 복원)
+- 결과: unit 163/163, smoke 46/46, resume 25/25 (사용 중 탭 생존·중복 클릭·정션 폴더), media 10/10

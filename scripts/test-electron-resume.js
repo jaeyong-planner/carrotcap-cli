@@ -67,9 +67,15 @@ const screen = (app) => app.ev(`[...document.querySelectorAll('.tab-page.active 
   check('resume offer shown', offer.length > 0, offer);
   check('offer says it was not a clean exit', /비정상 종료/.test(offer), offer);
   check('offer shows layout, CLI and last task', /페인 2/.test(offer) && /claude/.test(offer) && /task-042/.test(offer), offer);
-  await app.ev(`document.querySelector('#resume-go').click(), true`);
+  // The start tab may already be in use: type something there first.
+  await app.ev(`document.querySelector('#composer-input').value = 'echo still-alive'; document.querySelector('#composer-send').click(); true`);
+  await sleep(800);
+  const startTabText = () => app.ev(`document.querySelectorAll('.tab-page')[0].querySelector('.xterm-rows').innerText`);
+  await app.ev(`(() => { const b = document.querySelector('#resume-go'); b.click(); b.click(); return true; })()`); // double click
   await sleep(4000);
-  check('restored into one tab (empty start tab closed)', (await app.ev(`document.querySelectorAll('.tab').length`)) === 1);
+  check('existing start tab is kept (never killed by resume)', (await app.ev(`document.querySelectorAll('.tab').length`)) === 2);
+  check('its shell is still alive', /still-alive/.test(await startTabText()) && !/session ended/.test(await startTabText()));
+  check('double click restores only once', (await app.ev(`document.querySelectorAll('.pane').length`)) === 3);
   check('restored tab has 2 panes', (await app.ev(`document.querySelectorAll('.tab-page.active .pane').length`)) === 2);
   check('claude pane got its continue command', /'where' '--continue'/.test(await screen(app)));
   check('offer hidden after resuming', await app.ev(`document.querySelector('#resume-box').classList.contains('hidden')`));
@@ -107,6 +113,19 @@ const screen = (app) => app.ev(`[...document.querySelectorAll('.tab-page.active 
   const newest = (rec4.sessions || [])[0] || {};
   check('CLI started just before closing is recorded', Array.isArray(newest.clis) && newest.clis.includes('claude'), JSON.stringify(newest));
   check('and it is marked as a clean exit', newest.clean === true);
+
+  console.log('-- run 5: a junctioned history folder is never followed');
+  const outside = path.join(tmp, 'outside');
+  fs.mkdirSync(outside, { recursive: true });
+  const victim = path.join(outside, 'aaaaaaaaaaaaaaaa.json');
+  fs.writeFileSync(victim, 'not a history record');
+  fs.rmSync(historyDir, { recursive: true, force: true });
+  fs.symlinkSync(outside, historyDir, 'junction');
+  app = await launchApp(userData);
+  await sleep(3000);
+  await app.close();
+  check('file behind the junction not deleted by prune', fs.existsSync(victim));
+  check('nothing written through the junction', fs.readdirSync(outside).length === 1, fs.readdirSync(outside).join(','));
 })()
   .catch((e) => { console.log('  FAIL  harness ::', e.message); fail++; })
   .finally(() => {

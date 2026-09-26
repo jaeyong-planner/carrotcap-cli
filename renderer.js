@@ -436,6 +436,7 @@
     leaf.term = term;
     leaf.fit = fit;
     leaf.spawnMode = (payload && payload.mode) || 'plain';
+    leaf.projectRoot = (payload && payload.cwd) || null;
     attachClipboard(leaf);
 
     const cols = term.cols, rows = term.rows;
@@ -477,12 +478,14 @@
   let historyTimer = null;
   let restoring = false;
 
-  function buildLayout() {
+  // 페인은 만들어질 때의 프로젝트에 속한다 — 다른 프로젝트로 바꿔도 이전 프로젝트의 페인이
+  // 새 프로젝트 기록에 섞이지 않는다 (task-012/013 review r4).
+  function buildLayout(root) {
     const tabs = [];
     for (const t of state.tabs) {
       const panes = [];
       walkPanes(state.panes.get(t.rootPaneId), (p) => {
-        if (p.type === 'leaf') panes.push({ mode: p.spawnMode || 'plain', cli: p.cli || null });
+        if (p.type === 'leaf' && p.projectRoot === root) panes.push({ mode: p.spawnMode || 'plain', cli: p.cli || null });
       });
       if (panes.length) tabs.push({ panes });
     }
@@ -495,7 +498,9 @@
     clearTimeout(historyTimer);
     const root = historyPendingRoot;
     historyPendingRoot = null;
-    api.saveHistory(root, buildLayout()).catch(() => {});
+    const layout = buildLayout(root);
+    if (!layout.tabs.length) return; // 이 프로젝트의 페인이 없으면 기존 기록을 그대로 둔다
+    api.saveHistory(root, layout).catch(() => {});
   }
   // 첫 변경은 즉시 저장(곧바로 앱을 닫아도 세션이 남게), 이어지는 변경은 800ms로 묶는다.
   let historyLastSaveAt = 0;
@@ -552,17 +557,26 @@
       tick();
     });
   }
+  let resumeInProgress = false;
   async function resumeSession() {
+    if (resumeInProgress) return; // 두 번 눌러도 한 번만 복원
     let layout;
     try { layout = JSON.parse(resumeBox.dataset.layout || 'null'); } catch { layout = null; }
     const root = resumeBox.dataset.root;
     resumeBox.classList.add('hidden');
     // 제안이 뜬 뒤 다른 프로젝트로 바꿨다면 복원하지 않는다.
     if (!layout || !Array.isArray(layout.tabs) || root !== state.folder.rootPath) return;
-    // 방금 뜬 빈 탭 하나만 있으면 복원 후 닫는다 (빈 셸이 쌓이지 않게).
-    const pristine = state.tabs.length === 1 ? state.tabs[0] : null;
-    const pristineLeaf = pristine ? firstLeafIn(state.panes.get(pristine.rootPaneId)) : null;
-    const dropPristine = pristineLeaf && !pristineLeaf.cli && pristine.rootPaneId === pristineLeaf.id;
+    resumeInProgress = true;
+    $('#resume-go').disabled = true;
+    try {
+      await restoreLayout(root, layout);
+    } finally {
+      resumeInProgress = false;
+      $('#resume-go').disabled = false;
+    }
+  }
+  async function restoreLayout(root, layout) {
+    // 기존 탭은 절대 닫지 않는다 — 사용자가 이미 쓰고 있는 셸(편집기 등)을 죽일 수 있다.
     restoring = true;
     const launches = [];
     try {
@@ -574,7 +588,6 @@
           if (leaf) launches.push([leaf, p.cli]);
         }
       }
-      if (dropPristine) closeTab(pristine.id);
     } finally {
       restoring = false;
     }

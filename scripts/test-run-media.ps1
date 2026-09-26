@@ -55,8 +55,9 @@ try {
     Check "2. raw stdout kept on failure" (Test-Path (Join-Path $logDir "t2_nolog.grok-stdout.log"))
 
     "# old" | Set-Content (Join-Path $logDir "t3_stale.md")
-    (Get-Item (Join-Path $logDir "t3_stale.md")).LastWriteTimeUtc = (Get-Date).ToUniversalTime().AddHours(-1)
     Check "3. stale existing log -> failure" (-not (Run "t3" "stale" "silent"))
+    Check "3. previous log restored after the failed run" ((Get-Content (Join-Path $logDir "t3_stale.md") -Raw).Trim() -eq "# old")
+    Check "3. re-run that writes the log -> success, no .prev left" ((Run "t3" "stale" "write") -and -not (Test-Path (Join-Path $logDir "t3_stale.md.prev")))
 
     Check "4. grok exit 1 -> failure" (-not (Run "t4" "exit" "fail"))
     Check "4. raw stdout kept" (Test-Path (Join-Path $logDir "t4_exit.grok-stdout.log"))

@@ -100,7 +100,10 @@ $Request
 
 # The prompt goes through a temp file: long multi-line Korean text is not safe as a
 # native-exe argument in Windows PowerShell 5.1.
-$logBefore = if (Test-Path -LiteralPath $mediaLogPath) { (Get-Item -LiteralPath $mediaLogPath).LastWriteTimeUtc } else { $null }
+# Move an existing log aside so "the agent wrote the log" means "the file exists again"
+# (timestamps alone are unreliable on coarse-resolution file systems). Restored on failure.
+$mediaLogPrev = "$mediaLogPath.prev"
+if (Test-Path -LiteralPath $mediaLogPath) { Move-Item -LiteralPath $mediaLogPath -Destination $mediaLogPrev -Force }
 $promptFile = [System.IO.Path]::GetTempFileName()
 try {
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -109,15 +112,19 @@ try {
     if ($Model) { $grokArgs += @("-m", $Model) }
     & grok @grokArgs 2>&1 | Tee-Object -FilePath $stdoutPath
     if ($LASTEXITCODE -ne 0) { throw "grok exited with code $LASTEXITCODE. See $stdoutPath." }
+    # Exit code 0 is not enough: THIS run must have written the media log.
+    if (-not (Test-Path -LiteralPath $mediaLogPath)) {
+        throw "Grok finished but did not write $mediaLogPath. See $stdoutPath."
+    }
+    Remove-Item -LiteralPath $mediaLogPrev -Force -ErrorAction SilentlyContinue
+} catch {
+    # Keep the previous record instead of losing it together with the failed run.
+    if ((Test-Path -LiteralPath $mediaLogPrev) -and -not (Test-Path -LiteralPath $mediaLogPath)) {
+        Move-Item -LiteralPath $mediaLogPrev -Destination $mediaLogPath -Force
+    }
+    throw
 } finally {
     Remove-Item -LiteralPath $promptFile -Force -ErrorAction SilentlyContinue
-}
-
-# Exit code 0 is not enough: the media log must exist and be new or updated by THIS run,
-# otherwise keep grok's stdout for diagnosis and fail.
-$logAfter = if (Test-Path -LiteralPath $mediaLogPath) { (Get-Item -LiteralPath $mediaLogPath).LastWriteTimeUtc } else { $null }
-if ($null -eq $logAfter -or ($null -ne $logBefore -and $logAfter -le $logBefore)) {
-    throw "Grok finished but did not write $mediaLogPath for this run. See $stdoutPath."
 }
 
 Write-Host "[media] files: $(Join-Path $projectRoot 'assets\generated')" -ForegroundColor Green
