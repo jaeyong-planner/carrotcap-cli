@@ -1,0 +1,17 @@
+node_modules/
+dist/
+out/
+release/
+.cache/
+*.log
+.DS_Store
+
+# runtime state (main-process only, per machine)
+workspace-state.json
+AOR/.engine.lock
+
+# AOR engine binaries (85MB, shipped via extraResources — place manually, see README)
+AOR/engine/**/bin/
+
+# agent intermediate artifacts — keep only final reports (*.md) in logs/
+logs/**/_prompt_*.txt

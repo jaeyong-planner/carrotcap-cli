@@ -1,0 +1,26 @@
+{
+  "aor": {
+    "enabled": true,
+    "engineRoot": "",
+    "engineRootCandidates": [
+      "%USERPROFILE%\\Desktop\\WINDOWS\\WINDOWS",
+      "%USERPROFILE%\\WINDOWS",
+      "C:\\WINDOWS\\carrotcap"
+    ],
+    "autoStart": false,
+    "_comment": "engineRoot가 비어 있거나 존재하지 않으면 engineRootCandidates를 순서대로 검사. 모두 실패하면 plain 셸로 폴백하고 헤더에 'AOR-FALLBACK(PLAIN)' 표시. 첫 실행 시에는 사용자가 직접 engineRoot를 채워도 됨."
+  },
+  "cli": {
+    "claude": { "command": "claude", "args": [] },
+    "gemini": { "command": "gemini", "args": [] },
+    "codex":  { "command": "codex",  "args": [] },
+    "_comment": "각 CLI의 실행 명령과 인자를 자유롭게 변경하세요. 예: claude.args=[\"--dangerously-skip-permissions\"]"
+  },
+  "defaultShell": "powershell.exe",
+  "defaultProjectPath": "",
+  "ui": {
+    "theme": "dark",
+    "fontSize": 14,
+    "fontFamily": "Cascadia Code, Consolas, monospace"
+  }
+}

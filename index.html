@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>CARROTCAP CLI</title>
+  <link rel="stylesheet" href="node_modules/@xterm/xterm/css/xterm.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+
+    <!-- 상단 탭 바 -->
+    <header id="tabbar">
+      <div class="brand">🥕 CARROTCAP</div>
+      <div id="tabs"></div>
+      <button id="new-tab" title="새 탭 (Ctrl+T)">＋</button>
+      <div class="spacer"></div>
+      <button id="open-aor-editor" class="btn-ghost" title="CLAUDE.md(AOR) 편집">AOR</button>
+      <span id="aor-status" class="badge"></span>
+    </header>
+
+    <div id="body">
+      <!-- 좌측 사이드바 -->
+      <aside id="sidebar">
+        <div class="side-section">
+          <div class="side-head">
+            <span>FOLDER</span>
+            <button id="pick-folder" class="btn-ghost" title="폴더 열기">📁</button>
+          </div>
+          <div id="folder-path" class="muted small">폴더가 선택되지 않았습니다</div>
+          <input id="search" type="text" placeholder="파일 검색..." />
+          <div id="tree" class="tree"></div>
+        </div>
+
+        <div class="side-section">
+          <div class="side-head">
+            <span>QUICK CLI</span>
+          </div>
+          <div class="cli-buttons">
+            <button class="btn-cli" data-cli="claude">CLAUDE</button>
+            <button class="btn-cli" data-cli="gemini">GEMINI</button>
+            <button class="btn-cli" data-cli="codex">CODEX</button>
+          </div>
+          <div class="cli-hint muted small">활성 페인에서 실행됩니다</div>
+        </div>
+
+        <div class="side-section">
+          <div class="side-head">
+            <span>AI DEV FLOW</span>
+          </div>
+          <div class="flow-buttons">
+            <button id="aiops-setup" class="btn-flow primary" title="agents/logs/backlog 워크플로우 생성">SETUP</button>
+            <button class="btn-flow" data-flow="start" title="Claude Supervisor로 개발 절차 시작">START</button>
+            <button class="btn-flow" data-flow="research" title="Gemini Researcher 실행">RESEARCH</button>
+            <button class="btn-flow" data-flow="review" title="Codex Reviewer 실행">REVIEW</button>
+          </div>
+          <div id="flow-status" class="flow-status muted small">프로젝트 폴더를 선택한 뒤 SETUP을 누르세요</div>
+        </div>
+
+        <div class="side-section">
+          <div class="side-head">
+            <span>SPLIT</span>
+          </div>
+          <div class="split-buttons">
+            <button class="btn-split" data-dir="left" title="좌측 분할">◧ LEFT</button>
+            <button class="btn-split" data-dir="right" title="우측 분할">◨ RIGHT</button>
+            <button class="btn-split" data-dir="up" title="상단 분할">⬒ UP</button>
+            <button class="btn-split" data-dir="down" title="하단 분할">⬓ DOWN</button>
+          </div>
+          <button id="close-pane" class="btn-ghost full" title="활성 페인 닫기">✕ 활성 페인 닫기</button>
+        </div>
+
+        <div class="side-section">
+          <div class="side-head"><span>MODE</span></div>
+          <label class="row"><input type="checkbox" id="aor-mode-toggle" /> AOR 모드</label>
+          <label class="row"><input type="checkbox" id="aor-toggle" /> AIOps 모드</label>
+          <div class="mode-hint muted small">AOR: routed PowerShell. AIOps: AOR + Claude/Gemini/Codex 협업 구조 자동 세팅</div>
+        </div>
+      </aside>
+
+      <!-- 우측 페인 영역 (탭 컨테이너) -->
+      <main id="pane-area"></main>
+    </div>
+  </div>
+
+  <!-- AOR/CLAUDE.md 편집 모달 -->
+  <div id="modal" class="hidden">
+    <div class="modal-card">
+      <div class="modal-head">
+        <strong>CLAUDE.md (AOR 컨텍스트)</strong>
+        <div>
+          <button id="modal-save" class="btn-primary">저장</button>
+          <button id="modal-close" class="btn-ghost">닫기</button>
+        </div>
+      </div>
+      <textarea id="modal-text" spellcheck="false"></textarea>
+      <div class="muted small">이 파일은 CARROTCAP 루트의 CLAUDE.md입니다. 새 AOR 페인이 시작될 때 프로젝트 루트로 이동하므로, 프로젝트 폴더에 별도 CLAUDE.md를 두면 그것이 우선 적용됩니다.</div>
+    </div>
+  </div>
+
+  <script src="node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

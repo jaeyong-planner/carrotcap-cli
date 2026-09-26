@@ -1,0 +1,84 @@
+{
+  "name": "carrotcap-cli",
+  "version": "0.1.0",
+  "description": "CARROTCAP CLI terminal app with split panes, folder sidebar, and quick CLI launchers.",
+  "main": "main.js",
+  "author": "CarrotCap",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "prebuild-check": "node -e \"const p=require.resolve('@homebridge/node-pty-prebuilt-multiarch');const fs=require('fs');const path=require('path');const root=path.join(path.dirname(p),'..');const candidates=[path.join(root,'build','Release'),path.join(root,'prebuilds')];const found=candidates.find(d=>fs.existsSync(d)&&listFiles(d).some(f=>f.endsWith('.node')));function listFiles(d){const out=[];function walk(x){for(const e of fs.readdirSync(x,{withFileTypes:true})){const f=path.join(x,e.name);if(e.isDirectory())walk(f);else out.push(f)}}walk(d);return out}if(!found){console.error('[carrotcap] FATAL: pty native binary missing under '+root+'. Reinstall: npm install');process.exit(1)}console.log('[carrotcap] pty native OK: '+found)\"",
+    "dist": "npm run prebuild-check && electron-builder",
+    "dist:win": "npm run prebuild-check && electron-builder --win nsis",
+    "dist:mac": "npm run prebuild-check && electron-builder --mac dmg pkg",
+    "rebuild": "electron-rebuild -f -w @homebridge/node-pty-prebuilt-multiarch",
+    "postinstall": "echo [carrotcap] Using @homebridge/node-pty-prebuilt-multiarch (prebuilt binaries, no compile needed)."
+  },
+  "devDependencies": {
+    "@electron/rebuild": "3.6.0",
+    "electron": "27.3.11",
+    "electron-builder": "^24.13.3"
+  },
+  "dependencies": {
+    "@homebridge/node-pty-prebuilt-multiarch": "^0.11.14",
+    "@xterm/addon-fit": "0.10.0",
+    "@xterm/addon-web-links": "0.11.0",
+    "@xterm/xterm": "5.5.0"
+  },
+  "build": {
+    "appId": "com.carrotcap.cli",
+    "productName": "CARROTCAP CLI",
+    "executableName": "carrotcap",
+    "artifactName": "CARROTCAP-CLI-${version}-${os}-${arch}.${ext}",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer.js",
+      "index.html",
+      "styles.css",
+      "settings.json",
+      "CLAUDE.md",
+      "package.json",
+      "agents/researcher.md",
+      "agents/reviewer.md",
+      "scripts/run-researcher.ps1",
+      "scripts/run-reviewer.ps1"
+    ],
+    "extraResources": [
+      {
+        "from": "AOR",
+        "to": "AOR",
+        "filter": ["**/*"]
+      }
+    ],
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "asarUnpack": [
+      "node_modules/@homebridge/node-pty-prebuilt-multiarch/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "include": "build/installer.nsh"
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg",
+        "pkg"
+      ]
+    },
+    "pkg": {
+      "scripts": "build/pkg-scripts"
+    }
+  }
+}
