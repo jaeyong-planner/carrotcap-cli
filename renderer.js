@@ -676,26 +676,40 @@
     }
     composerInput.focus();
   }
-  function sendComposer() {
+  let composerSending = false;
+  async function sendComposer() {
+    if (composerSending) return;
     const leaf = state.panes.get(state.activePaneId);
     if (!leaf || leaf.type !== 'leaf' || !leaf.ptyId || !leaf.term) {
       // 보낼 곳이 없으면 입력 내용은 지우지 않는다.
       composerTarget.textContent = leaf && leaf.exited ? '→ 세션 종료됨 — 새 탭/페인에서 보내세요' : '→ 활성 터미널 없음';
       return;
     }
-    const text = composerInput.value;
-    if (text) {
-      leaf.term.paste(text);
-      if (composerHistory[composerHistory.length - 1] !== text) composerHistory.push(text);
-      if (composerHistory.length > COMPOSER_HISTORY_MAX) composerHistory.shift();
-    }
-    // Enter는 붙여넣기와 분리해 보낸다 — 붙여넣기 안의 개행으로 취급되어 제출이 안 되는 CLI가 있다.
-    // 그 사이 세션이 끝났으면 보내지 않는다.
-    const ptyId = leaf.ptyId;
-    setTimeout(() => { if (leaf.ptyId === ptyId) api.writePty(ptyId, '\r'); }, text ? 60 : 0);
+    const typed = composerInput.value;
     composerInput.value = '';
     composerHistoryIdx = -1;
     autoGrowComposer();
+    if (typed) {
+      if (composerHistory[composerHistory.length - 1] !== typed) composerHistory.push(typed);
+      if (composerHistory.length > COMPOSER_HISTORY_MAX) composerHistory.shift();
+    }
+    // task-015: 브라우저 모드면 주석·콘솔 에러·캡처 경로를 [브라우저 컨텍스트]로 앞에 붙인다.
+    let text = typed;
+    composerSending = true;
+    try {
+      if (window.CarrotcapBrowser) text = await window.CarrotcapBrowser.decorate(typed, state.folder.rootPath || null);
+    } catch (err) {
+      console.warn('[carrotcap] browser context failed:', err && err.message);
+    } finally {
+      composerSending = false;
+    }
+    const ptyId = leaf.ptyId;
+    if (!ptyId) { composerInput.value = typed; autoGrowComposer(); return; } // 그 사이 세션 종료
+    if (text) leaf.term.paste(text);
+    // Enter는 붙여넣기와 분리해 보낸다 — 붙여넣기 안의 개행으로 취급되어 제출이 안 되는 CLI가 있다.
+    // 긴 붙여넣기(브라우저 컨텍스트)는 CLI가 받아들이는 시간을 조금 더 준다. 그 사이 세션이 끝났으면 보내지 않는다.
+    const delay = text ? Math.min(600, 60 + Math.floor(text.length / 20)) : 0;
+    setTimeout(() => { if (leaf.ptyId === ptyId) api.writePty(ptyId, '\r'); }, delay);
   }
   function bindComposer() {
     setComposerHidden(readComposerHidden());

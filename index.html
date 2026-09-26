@@ -18,6 +18,7 @@
       <div id="tabs"></div>
       <button id="new-tab" title="새 탭 (Ctrl+Shift+T)">＋</button>
       <div class="spacer"></div>
+      <button id="toggle-browser" class="btn-ghost" title="브라우저 모드: 가운데 브라우저 + 오른쪽 에이전트 터미널">브라우저</button>
       <button id="toggle-composer" class="btn-ghost" title="입력창 보이기/숨기기 (Ctrl+Shift+Space: 입력창으로 이동)">입력창</button>
       <button id="open-aor-editor" class="btn-ghost" title="CLAUDE.md(AOR) 편집">AOR</button>
       <span id="aor-status" class="badge"></span>
@@ -91,6 +92,30 @@
         </div>
       </aside>
 
+      <!-- 브라우저 모드 (task-015): 가운데 브라우저, 오른쪽(#work)은 에이전트 터미널 -->
+      <section id="browser-area" class="hidden">
+        <div class="browser-bar">
+          <button id="br-back" class="btn-ghost" title="뒤로">←</button>
+          <button id="br-forward" class="btn-ghost" title="앞으로">→</button>
+          <button id="br-reload" class="btn-ghost" title="새로고침">⟳</button>
+          <input id="br-url" type="text" spellcheck="false" placeholder="http://localhost:3000" />
+          <button id="br-go" class="btn-primary" title="열기 (Enter)">열기</button>
+          <div class="br-seg" role="group" aria-label="보기 모드">
+            <button id="br-desktop" class="btn-ghost active" title="PC 화면">PC</button>
+            <button id="br-mobile" class="btn-ghost" title="모바일 화면 (390×844)">모바일</button>
+          </div>
+          <button id="br-annotate" class="btn-ghost" title="요소를 클릭해 번호 주석 달기 (Esc 종료)">📍 주석</button>
+          <button id="br-clear" class="btn-ghost" title="주석 모두 지우기">지우기</button>
+          <button id="br-console" class="btn-ghost" title="콘솔 에러 보기">콘솔 <span id="br-err-count" class="br-count">0</span></button>
+        </div>
+        <div id="browser-viewport"><div id="browser-frame"></div><div id="browser-empty" class="muted small">주소를 입력하고 열기를 누르세요 — 개발 서버(예: http://localhost:3000)를 띄워 보면서 오른쪽 에이전트와 코딩합니다.</div></div>
+        <div class="browser-notes">
+          <div id="br-pins" class="br-pins"></div>
+          <label class="row small"><input type="checkbox" id="br-include-errors" checked /> 새 콘솔 에러를 채팅에 첨부</label>
+        </div>
+        <div id="browser-console" class="hidden"></div>
+      </section>
+
       <div id="work">
         <!-- 우측 페인 영역 (탭 컨테이너) -->
         <main id="pane-area"></main>
@@ -125,6 +150,7 @@
   <script src="node_modules/@xterm/xterm/lib/xterm.js"></script>
   <script src="node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
   <script src="node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
+  <script src="renderer-browser.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

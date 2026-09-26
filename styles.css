@@ -98,6 +98,33 @@ html, body { margin: 0; height: 100%; background: #0f0f12; color: #e8e8ee; font-
 
 /* ---------- 페인 영역 ---------- */
 #work { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+/* 브라우저 모드 (task-015) */
+#browser-area { flex: 3 1 0; display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid #25252e; background: #0f0f12; }
+#browser-area.hidden { display: none; }
+body.browser-mode #work { flex: 2 1 0; min-width: 360px; } /* 브라우저 : 터미널 = 3 : 2 */
+.browser-bar { display: flex; align-items: center; gap: 4px; padding: 6px 8px; background: #15151a; border-bottom: 1px solid #25252e; flex-wrap: wrap; }
+.browser-bar .btn-ghost, .browser-bar .btn-primary { height: 28px; padding: 0 8px; }
+#br-url { flex: 1; min-width: 160px; height: 28px; padding: 0 8px; background: #0f0f12; color: #e8e8ee; border: 1px solid #2a2a35; border-radius: 6px; font: 12px 'Cascadia Code', Consolas, monospace; outline: none; }
+#br-url:focus { border-color: #ff8c42; }
+.br-seg { display: inline-flex; }
+.br-seg .btn-ghost { border-radius: 0; }
+.br-seg .btn-ghost:first-child { border-radius: 6px 0 0 6px; }
+.br-seg .btn-ghost:last-child { border-radius: 0 6px 6px 0; }
+.browser-bar .btn-ghost.active { border-color: #ff8c42; color: #ff8c42; }
+.br-count { display: inline-block; min-width: 16px; padding: 0 4px; border-radius: 8px; background: #2a2a35; color: #aaa; font-size: 11px; text-align: center; }
+.br-count.has { background: #ff6b6b; color: #15151a; font-weight: 700; }
+#browser-viewport { position: relative; flex: 1; min-height: 0; display: flex; align-items: flex-start; justify-content: center; background: #0a0a0d; overflow: hidden; }
+#browser-frame { width: 100%; height: 100%; }
+#browser-viewport.mobile #browser-frame { width: 390px; height: min(844px, 100%); margin-top: 8px; box-shadow: 0 0 0 1px #2a2a35; }
+#browser-empty { position: absolute; top: 40%; left: 0; right: 0; text-align: center; padding: 0 24px; pointer-events: none; }
+.browser-notes { display: flex; align-items: center; gap: 8px; padding: 4px 8px; background: #15151a; border-top: 1px solid #25252e; min-height: 30px; }
+.br-pins { flex: 1; display: flex; gap: 4px; flex-wrap: wrap; overflow: hidden; }
+.br-pin { font-size: 11px; padding: 2px 6px; border-radius: 10px; background: #2a1d12; color: #ffb27a; border: 1px solid #5a3a20; white-space: nowrap; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+#browser-console { max-height: 160px; overflow: auto; padding: 4px 8px; background: #120f10; border-top: 1px solid #3a2525; font: 11px 'Cascadia Code', Consolas, monospace; }
+#browser-console.hidden { display: none; }
+#browser-console .br-err { color: #ff9b9b; padding: 2px 0; border-bottom: 1px solid #231a1b; white-space: pre-wrap; word-break: break-all; }
+#browser-console .br-err .src { color: #888; }
 #pane-area { flex: 1; position: relative; background: #0a0a0d; min-width: 0; min-height: 0; }
 
 /* 입력창 (task-010) */

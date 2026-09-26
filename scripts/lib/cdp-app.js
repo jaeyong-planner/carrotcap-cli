@@ -15,24 +15,9 @@ async function waitFor(pred, { timeoutMs = 15000, intervalMs = 250 } = {}) {
   return false;
 }
 
-async function launchApp(userDataDir, { port = 9400 + Math.floor(Math.random() * 400) } = {}) {
-  const child = spawn(require(path.join(root, 'node_modules', 'electron')), ['.', `--remote-debugging-port=${port}`], {
-    cwd: root,
-    env: { ...process.env, CARROTCAP_USER_DATA_DIR: userDataDir },
-    stdio: ['ignore', 'pipe', 'pipe']
-  });
-  let log = '';
-  child.stdout.on('data', (d) => (log += d));
-  child.stderr.on('data', (d) => (log += d));
-  const exited = new Promise((r) => child.on('exit', r));
-
-  let page;
-  for (let i = 0; i < 60 && !page; i++) {
-    await sleep(500);
-    try { page = (await (await fetch(`http://127.0.0.1:${port}/json`)).json()).find((t) => t.type === 'page'); } catch { /* not up yet */ }
-  }
-  if (!page) { child.kill(); throw new Error('renderer page target not found'); }
-  const ws = new WebSocket(page.webSocketDebuggerUrl);
+// Open a CDP session to one target and return { send, ev, close }.
+async function connectTarget(target) {
+  const ws = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((r) => ws.addEventListener('open', r));
   let seq = 0;
   const pending = new Map();
@@ -45,17 +30,50 @@ async function launchApp(userDataDir, { port = 9400 + Math.floor(Math.random() *
     const out = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
     return out.result && out.result.result ? out.result.result.value : undefined;
   };
+  return { send, ev, close: () => { try { ws.close(); } catch {} } };
+}
+
+async function listTargets(port) {
+  try { return await (await fetch(`http://127.0.0.1:${port}/json`)).json(); } catch { return []; }
+}
+
+async function launchApp(userDataDir, { port = 9400 + Math.floor(Math.random() * 400) } = {}) {
+  const child = spawn(require(path.join(root, 'node_modules', 'electron')), ['.', `--remote-debugging-port=${port}`], {
+    cwd: root,
+    env: { ...process.env, CARROTCAP_USER_DATA_DIR: userDataDir },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let log = '';
+  child.stdout.on('data', (d) => (log += d));
+  child.stderr.on('data', (d) => (log += d));
+  const exited = new Promise((r) => child.on('exit', r));
+
+  // The app page is the local index.html (a BrowserView target may appear later).
+  let page;
+  for (let i = 0; i < 60 && !page; i++) {
+    await sleep(500);
+    page = (await listTargets(port)).find((t) => t.type === 'page' && /^file:/.test(t.url));
+  }
+  if (!page) { child.kill(); throw new Error('renderer page target not found'); }
+  const app = await connectTarget(page);
   const key = async (k, code, vk, modifiers = 0) => {
-    await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: k, code, windowsVirtualKeyCode: vk, modifiers });
-    await send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk, modifiers });
+    await app.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: k, code, windowsVirtualKeyCode: vk, modifiers });
+    await app.send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk, modifiers });
   };
   return {
-    send, ev, key, log: () => log,
+    send: app.send, ev: app.ev, key, port, log: () => log,
+    // Connect to another target (e.g. the browser-mode BrowserView) matching pred(target).
+    connect: async (pred, timeoutMs = 15000) => {
+      let t;
+      await waitFor(async () => (t = (await listTargets(port)).find(pred)), { timeoutMs });
+      return t ? connectTarget(t) : null;
+    },
+    targets: () => listTargets(port),
     // Simulated crash: no before-quit handlers run.
-    kill: async () => { try { ws.close(); } catch {} child.kill(); await exited; },
+    kill: async () => { app.close(); child.kill(); await exited; },
     // Normal close: the window closes, the app quits through before-quit.
     close: async () => {
-      await ev('window.close(), true').catch(() => {});
+      await app.ev('window.close(), true').catch(() => {});
       const t = setTimeout(() => child.kill(), 8000);
       await exited;
       clearTimeout(t);

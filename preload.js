@@ -45,6 +45,23 @@ const api = {
   },
 
   cliStatus: () => ipcRenderer.invoke('cli:status'),
+
+  // 브라우저 모드 (task-015)
+  browserOpen: (url) => ipcRenderer.invoke('browser:open', url),
+  browserClose: () => ipcRenderer.invoke('browser:close'),
+  browserBounds: (rect) => ipcRenderer.invoke('browser:bounds', rect),
+  browserNav: (action) => ipcRenderer.invoke('browser:nav', action),
+  browserDevice: (mode) => ipcRenderer.invoke('browser:device', mode),
+  browserPick: () => ipcRenderer.invoke('browser:pick'),
+  browserPickCancel: () => ipcRenderer.invoke('browser:pick-cancel'),
+  browserClearPins: () => ipcRenderer.invoke('browser:clear-pins'),
+  browserErrors: () => ipcRenderer.invoke('browser:errors'),
+  browserContext: (opts) => ipcRenderer.invoke('browser:context', opts),
+  onBrowserState: (handler) => {
+    const wrap = (_e, payload) => handler(payload);
+    ipcRenderer.on('browser:state', wrap);
+    return () => ipcRenderer.removeListener('browser:state', wrap);
+  },
   aorStatus: () => ipcRenderer.invoke('aor:status'),
 
   // 세션 이어하기 (task-013)

@@ -1511,6 +1511,14 @@ handle('aor:status', () => ({ engineFound: !!resolveAorEngineRoot(loadSettings()
 handle('app:platform', () => process.platform);
 handle('app:pty-available', () => ptyAvailable);
 
+// Browser mode (task-015): BrowserView + annotations + console errors, see main-browser.js.
+require('./main-browser').setupBrowser({
+  handle,
+  getWindow: () => mainWindow,
+  resolveAllowedDir,
+  userDataRoot: USER_DATA_ROOT
+});
+
 app.whenReady().then(() => {
   // Self-heal the `carrotcap` CLI registration. Runs only when packaged.
   // This makes a single GUI launch sufficient to repair a broken CLI install

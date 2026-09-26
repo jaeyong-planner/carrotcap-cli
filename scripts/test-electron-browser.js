@@ -1,0 +1,129 @@
+// Browser mode E2E (task-015): a local test site with console errors and a button.
+// Checks layout, URL validation, console error capture, PC/mobile emulation, element
+// annotation, and that a chat message carries the browser context + a screenshot.
+//
+// Usage: node scripts/test-electron-browser.js   (npm run test:browser)
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const http = require('http');
+const { launchApp, sleep, waitFor } = require('./lib/cdp-app');
+
+let pass = 0;
+let fail = 0;
+function check(name, cond, detail = '') {
+  if (cond) { console.log(`  PASS  ${name}`); pass++; }
+  else      { console.log(`  FAIL  ${name}${detail ? ' :: ' + detail : ''}`); fail++; }
+}
+
+const PAGE = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CC Test Shop</title></head><body style="margin:0;font-family:sans-serif">
+<h1 id="hello">Hello</h1>
+<button id="buy" class="btn primary" style="margin:40px;width:160px;height:48px" onclick="window.boom()">구매하기</button>
+<script>console.error('boom-on-load: price is undefined');</script>
+<script src="/missing.js"></script>
+</body></html>`;
+
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'carrotcap-browser-'));
+const userData = path.join(tmp, 'userData');
+const project = path.join(tmp, 'project');
+fs.mkdirSync(userData, { recursive: true });
+fs.mkdirSync(project, { recursive: true });
+fs.writeFileSync(path.join(userData, 'workspace-state.json'), JSON.stringify({ recentWorkspaces: [fs.realpathSync(project)] }));
+fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({
+  settingsVersion: 3,
+  aor: { enabled: false, autoStart: false },
+  cli: { claude: { command: 'where', args: [] } },
+  defaultShell: 'powershell.exe',
+  defaultProjectPath: project,
+  ui: {}
+}));
+
+const server = http.createServer((req, res) => {
+  if (req.url === '/' || req.url.startsWith('/?')) { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(PAGE); return; }
+  res.writeHead(404); res.end('nope');
+});
+
+(async () => {
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const site = `http://127.0.0.1:${server.address().port}/`;
+  const app = await launchApp(userData);
+  const ev = app.ev;
+  await waitFor(() => ev(`!!document.querySelector('.tab-page .xterm-rows') && /PS /.test(document.querySelector('.tab-page .xterm-rows').innerText)`));
+
+  console.log('-- layout');
+  await ev(`document.querySelector('#toggle-browser').click(), true`);
+  await sleep(300);
+  check('browser mode on: body.browser-mode', await ev(`document.body.classList.contains('browser-mode')`));
+  const widths = await ev(`(() => ({ br: document.querySelector('#browser-area').getBoundingClientRect().width, work: document.querySelector('#work').getBoundingClientRect().width }))()`);
+  check('browser in the middle is wider than the terminal on the right', widths.br > widths.work && widths.work >= 300, JSON.stringify(widths));
+
+  console.log('-- URL validation');
+  await ev(`document.querySelector('#br-url').value = 'javascript:alert(1)'; document.querySelector('#br-go').click(); true`);
+  await sleep(500);
+  check('javascript: URL refused', /http/.test(await ev(`document.querySelector('#browser-empty').textContent`)) && !(await app.targets()).some((t) => /^javascript:/.test(t.url)));
+
+  console.log('-- open page + console errors');
+  await ev(`document.querySelector('#br-url').value = ${JSON.stringify(site)}; document.querySelector('#br-go').click(); true`);
+  const view = await app.connect((t) => t.type === 'page' && t.url.startsWith(site));
+  check('BrowserView loaded the site', !!view);
+  if (!view) throw new Error('no view');
+  await waitFor(async () => (await view.ev(`document.readyState`)) === 'complete');
+  check('page script cannot see the app bridge', (await view.ev(`typeof window.carrotcap`)) === 'undefined');
+  check('console errors captured (console.error + missing script)', await waitFor(async () => Number(await ev(`document.querySelector('#br-err-count').textContent`)) >= 2),
+    await ev(`document.querySelector('#br-err-count').textContent`));
+  check('new-error badge highlighted', await ev(`document.querySelector('#br-err-count').classList.contains('has')`));
+  await ev(`document.querySelector('#br-console').click(), true`);
+  await sleep(400);
+  check('console panel lists the error text', /boom-on-load/.test(await ev(`document.querySelector('#browser-console').innerText`)));
+  await ev(`document.querySelector('#br-console').click(), true`);
+
+  console.log('-- PC / mobile');
+  const pcWidth = await view.ev(`innerWidth`);
+  await ev(`document.querySelector('#br-mobile').click(), true`);
+  check('mobile: viewport 390 wide', await waitFor(async () => (await view.ev(`innerWidth`)) === 390), String(await view.ev(`innerWidth`)));
+  check('mobile: mobile user agent', /iPhone/.test(await view.ev(`navigator.userAgent`)));
+  check('mobile: touch enabled', (await view.ev(`navigator.maxTouchPoints`)) > 0);
+  await ev(`document.querySelector('#br-desktop').click(), true`);
+  check('back to PC width', await waitFor(async () => (await view.ev(`innerWidth`)) === pcWidth), `${pcWidth} vs ${await view.ev(`innerWidth`)}`);
+
+  console.log('-- annotation');
+  await ev(`document.querySelector('#br-annotate').click(), true`);
+  await sleep(500);
+  const r = await view.ev(`(() => { const b = document.querySelector('#buy').getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; })()`);
+  for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
+    await view.send('Input.dispatchMouseEvent', { type, x: r.x, y: r.y, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1 });
+  }
+  check('pin chip for the clicked button', await waitFor(async () => /button/.test(await ev(`[...document.querySelectorAll('#br-pins .br-pin')].map((p) => p.textContent + ' ' + p.title).join('|')`))),
+    await ev(`document.querySelector('#br-pins').innerText`));
+  check('pin selector names the element', /#buy/.test(await ev(`(document.querySelector('#br-pins .br-pin') || {}).title || ''`)));
+  check('numbered pin drawn in the page', (await view.ev(`document.querySelectorAll('[data-cc-pin]').length`)) === 1);
+  check('clicking while annotating did not trigger the page handler', !(await view.ev(`window.__boomed === true`)));
+  check('annotation mode stays on for the next pin', await ev(`document.querySelector('#br-annotate').classList.contains('active')`));
+
+  console.log('-- chat carries the browser context');
+  await ev(`document.querySelector('#composer-input').value = '1번 버튼 눌러도 결제가 안 돼'; document.querySelector('#composer-send').click(); true`);
+  const screen = () => ev(`(document.querySelector('.tab-page.active .xterm-rows') || {}).innerText || ''`);
+  check('terminal received the [브라우저 컨텍스트] block', await waitFor(async () => /브라우저 컨텍스트/.test(await screen())));
+  const shots = fs.existsSync(path.join(project, '.carrotcap', 'browser')) ? fs.readdirSync(path.join(project, '.carrotcap', 'browser')) : [];
+  check('screenshot with pins saved in <project>/.carrotcap/browser', shots.some((f) => /^shot-.*\.png$/.test(f)), shots.join(','));
+  check('.carrotcap ignores itself in git', fs.existsSync(path.join(project, '.carrotcap', '.gitignore')));
+  check('sent pins are consumed (list and page cleared)', await waitFor(async () => (await ev(`document.querySelectorAll('#br-pins .br-pin').length`)) === 0 && (await view.ev(`document.querySelectorAll('[data-cc-pin]').length`)) === 0));
+  check('sent errors no longer flagged as new', !(await ev(`document.querySelector('#br-err-count').classList.contains('has')`)));
+
+  console.log('-- close');
+  await ev(`document.querySelector('#toggle-browser').click(), true`);
+  check('browser view destroyed on close', await waitFor(async () => !(await app.targets()).some((t) => t.url.startsWith(site))));
+  check('layout back to terminal only', !(await ev(`document.body.classList.contains('browser-mode')`)));
+  view.close();
+  await app.close();
+})()
+  .catch((e) => { console.log('  FAIL  harness ::', e.message); fail++; })
+  .finally(() => {
+    server.close();
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* locked temp files */ }
+    console.log('');
+    console.log(`Summary: ${pass} passed, ${fail} failed`);
+    process.exit(fail === 0 ? 0 : 1);
+  });
