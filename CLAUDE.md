@@ -49,9 +49,10 @@
 - 사이드바 트리/검색 결과를 페인으로 **드래그앤드롭**하면 경로가 자동 입력된다.
 - AOR 토글이 ON이면 새 페인은 routed PowerShell로 부팅되고, `claude` 호출이 자동으로 토큰 메트릭/Workspace Trust를 처리한다.
 - 단축키:
-  - `Ctrl+T` — 새 탭
-  - `Ctrl+W` — 활성 페인 닫기
-  - `Ctrl+Shift+→/←/↑/↓` — RIGHT/LEFT/UP/DOWN 분할
+  - `Ctrl+Shift+T` — 새 탭
+  - `Ctrl+Shift+W` — 활성 페인 닫기
+  - `Alt+Shift+→/←/↑/↓` — RIGHT/LEFT/UP/DOWN 분할
+  - `Ctrl+Shift+Space` — 입력창으로 이동 (Enter 보내기 · Ctrl+A 전체 선택)
 
 ---
 

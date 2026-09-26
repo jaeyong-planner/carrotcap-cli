@@ -16,8 +16,9 @@
     <header id="tabbar">
       <div class="brand">🥕 CARROTCAP</div>
       <div id="tabs"></div>
-      <button id="new-tab" title="새 탭 (Ctrl+T)">＋</button>
+      <button id="new-tab" title="새 탭 (Ctrl+Shift+T)">＋</button>
       <div class="spacer"></div>
+      <button id="toggle-composer" class="btn-ghost" title="입력창 보이기/숨기기 (Ctrl+Shift+Space: 입력창으로 이동)">입력창</button>
       <button id="open-aor-editor" class="btn-ghost" title="CLAUDE.md(AOR) 편집">AOR</button>
       <span id="aor-status" class="badge"></span>
     </header>
@@ -81,8 +82,19 @@
         </div>
       </aside>
 
-      <!-- 우측 페인 영역 (탭 컨테이너) -->
-      <main id="pane-area"></main>
+      <div id="work">
+        <!-- 우측 페인 영역 (탭 컨테이너) -->
+        <main id="pane-area"></main>
+
+        <!-- 입력창 (task-010): 활성 페인으로 보낼 텍스트를 일반 입력칸처럼 편집 -->
+        <div id="composer">
+          <span id="composer-target" class="composer-target" title="보낼 대상 페인">→ PLAIN</span>
+          <textarea id="composer-input" rows="1" spellcheck="false"
+                    placeholder="여기에 입력하고 Enter로 활성 터미널에 보내기 · Shift+Enter 줄바꿈 · Ctrl+A 전체 선택 · Esc 터미널로"></textarea>
+          <button id="composer-clear" class="btn-ghost" title="입력창 비우기">지우기</button>
+          <button id="composer-send" class="btn-primary" title="활성 터미널로 보내기 (Enter)">보내기</button>
+        </div>
+      </div>
     </div>
   </div>
 

@@ -158,6 +158,66 @@ const PROBE = `(async () => {
   check('clipboard read returns written text', r.clipRoundtrip === true);
   check('clipboard non-string rejected', r.clipBadType && r.clipBadType.ok === false);
   check('terminal menu API exposed', r.termMenuApi === true);
+  // ---- real keyboard input (task-010) ----
+  const ev = async (expression) => {
+    const out = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+    return out.result && out.result.result ? out.result.result.value : undefined;
+  };
+  const key = async (k, code, vk, modifiers = 0, text) => {
+    await send('Input.dispatchKeyEvent', { type: text ? 'keyDown' : 'rawKeyDown', key: k, code, windowsVirtualKeyCode: vk, modifiers, text });
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk, modifiers });
+  };
+  const typeText = async (s) => { for (const ch of s) await key(ch, '', ch.toUpperCase().charCodeAt(0), 0, ch); };
+  const screenText = () => ev(`(document.querySelector('.tab-page.active .xterm-rows') || {}).innerText || ''`);
+  const paneState = () => ev(`JSON.stringify([...document.querySelectorAll('.tab-page.active .pane')].length)`);
+  const CTRL = 2, SHIFT = 8, ALT = 1;
+
+  console.log('-- keyboard: terminal keys are not hijacked (task-010)');
+  await ev(`document.querySelector('.tab-page.active .xterm-helper-textarea').focus(), true`);
+  const tabsBefore = await ev(`document.querySelectorAll('.tab').length`);
+  const panesBefore = await paneState();
+  await typeText('echo keep');
+  await key('w', 'KeyW', 87, CTRL);            // readline: delete previous word
+  await key('t', 'KeyT', 84, CTRL);            // readline: transpose — must not open a tab
+  await sleep(800);
+  check('Ctrl+W keeps the pane', (await paneState()) === panesBefore);
+  check('Ctrl+T does not open a tab', (await ev(`document.querySelectorAll('.tab').length`)) === tabsBefore);
+  await key('Escape', 'Escape', 27);
+  await key('t', 'KeyT', 84, CTRL | SHIFT);    // app: new tab
+  await sleep(1200);
+  check('Ctrl+Shift+T opens a tab', (await ev(`document.querySelectorAll('.tab').length`)) === tabsBefore + 1);
+  await key('ArrowRight', 'ArrowRight', 39, ALT | SHIFT); // app: split right
+  await sleep(1200);
+  check('Alt+Shift+→ splits the pane', (await paneState()) === '2');
+  await key('w', 'KeyW', 87, CTRL | SHIFT);    // app: close active pane
+  await sleep(800);
+  check('Ctrl+Shift+W closes the active pane', (await paneState()) === '1');
+
+  console.log('-- input box (task-010)');
+  await ev(`document.querySelector('#composer-input').focus(), true`);
+  await typeText('garbage text');
+  await key('a', 'KeyA', 65, CTRL);            // select all
+  await key('Delete', 'Delete', 46);
+  check('Ctrl+A + Delete empties the input box', (await ev(`document.querySelector('#composer-input').value`)) === '');
+  for (const [steps, commit] of [[['ㅎ', '하', '한'], '한'], [['ㄱ', '그', '글'], '글']]) {
+    for (const c of steps) await send('Input.imeSetComposition', { text: c, selectionStart: c.length, selectionEnd: c.length });
+    await send('Input.insertText', { text: commit });
+  }
+  check('Korean IME composes in the input box', (await ev(`document.querySelector('#composer-input').value`)) === '한글');
+  await key('a', 'KeyA', 65, CTRL);
+  await key('Backspace', 'Backspace', 8);
+  await typeText('echo composer-ok');
+  await key('Enter', 'Enter', 13, 0, '\r');
+  await sleep(1500);
+  check('Enter sends the text to the active terminal', /composer-ok[\s\S]*composer-ok/.test(await screenText()));
+  check('input box cleared after send', (await ev(`document.querySelector('#composer-input').value`)) === '');
+
+  console.log('-- focus recovery (task-010)');
+  await ev(`document.querySelector('#new-tab').blur(), document.querySelector('.btn-split').focus(), true`);
+  await typeText('x');
+  check('typing on a focused button lands in the input box',
+    (await ev(`document.activeElement.id + ':' + document.querySelector('#composer-input').value`)) === 'composer-input:x');
+
   console.log('-- renderer errors');
   check('no exceptions / console errors on load', logs.length === 0, logs.join(' | '));
   console.log(`-- user data dir (task-008, ${corruptSettings ? 'corrupt settings' : 'fresh profile'})`);

@@ -97,7 +97,26 @@ html, body { margin: 0; height: 100%; background: #0f0f12; color: #e8e8ee; font-
 .mode-hint { margin-top: 6px; line-height: 1.4; }
 
 /* ---------- 페인 영역 ---------- */
-#pane-area { flex: 1; position: relative; background: #0a0a0d; min-width: 0; }
+#work { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+#pane-area { flex: 1; position: relative; background: #0a0a0d; min-width: 0; min-height: 0; }
+
+/* 입력창 (task-010) */
+#composer {
+  display: flex; align-items: flex-end; gap: 6px;
+  padding: 6px 8px; background: #15151a; border-top: 1px solid #25252e;
+}
+#composer.hidden { display: none; }
+.composer-target {
+  flex: 0 0 auto; align-self: center; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11px; font-weight: 600; color: #ff8c42;
+}
+#composer-input {
+  flex: 1; resize: none; min-height: 30px; max-height: 160px; padding: 6px 8px;
+  background: #0f0f12; color: #e8e8ee; border: 1px solid #2a2a35; border-radius: 6px;
+  font: 13px 'Cascadia Code', Consolas, monospace; line-height: 1.4; outline: none;
+}
+#composer-input:focus { border-color: #ff8c42; }
+#composer .btn-primary, #composer .btn-ghost { flex: 0 0 auto; height: 30px; }
 .tab-page { position: absolute; inset: 0; display: none; }
 .tab-page.active { display: flex; }
 

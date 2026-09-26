@@ -230,7 +230,9 @@
       if (p.type === 'leaf') p.paneEl.classList.toggle('active', p.id === id);
     }
     const pane = state.panes.get(id);
-    if (pane && pane.term) setTimeout(() => pane.term.focus(), 10);
+    updateComposerTarget();
+    // 입력창에 쓰는 중이면 포커스를 빼앗지 않는다.
+    if (pane && pane.term && document.activeElement !== composerInput) setTimeout(() => pane.term.focus(), 10);
   }
 
   // 활성 leaf를 dir 방향으로 분할
@@ -444,11 +446,101 @@
         if (/fallback/i.test(leaf.kind)) k.style.color = '#f0c060';
       }
     }
+    if (leaf.id === state.activePaneId) updateComposerTarget();
 
     term.onData((data) => api.writePty(leaf.ptyId, data));
     term.onResize(({ cols, rows }) => api.resizePty(leaf.ptyId, cols, rows));
 
     setTimeout(() => { try { term.focus(); } catch {} }, 50);
+  }
+
+  // ---------- 입력창 (task-010) ----------
+  // 터미널 줄 편집은 프로그램마다 규칙이 달라 전체 선택/삭제가 안 되는 경우가 많다.
+  // 입력창은 일반 textarea라 Ctrl+A·Delete·한글 조합이 항상 같은 방식으로 동작하고,
+  // Enter를 누르면 활성 페인에 붙여넣기(term.paste: bracketed paste 지원) 후 Enter를 보낸다.
+  const composer = $('#composer');
+  const composerInput = $('#composer-input');
+  const composerTarget = $('#composer-target');
+  const COMPOSER_HISTORY_MAX = 50;
+  const composerHistory = [];
+  let composerHistoryIdx = -1;
+  const COMPOSER_HIDDEN_KEY = 'carrotcap.composerHidden';
+
+  function readComposerHidden() {
+    try { return localStorage.getItem(COMPOSER_HIDDEN_KEY) === '1'; } catch { return false; }
+  }
+  function setComposerHidden(hidden) {
+    composer.classList.toggle('hidden', hidden);
+    try { localStorage.setItem(COMPOSER_HIDDEN_KEY, hidden ? '1' : '0'); } catch { /* per-viewer convenience only */ }
+    setTimeout(() => fitAllIn(rootOfTab(state.activeTabId)), 30);
+  }
+  function autoGrowComposer() {
+    composerInput.style.height = 'auto';
+    composerInput.style.height = Math.min(composerInput.scrollHeight + 2, 160) + 'px';
+  }
+  function updateComposerTarget() {
+    const leaf = state.panes.get(state.activePaneId);
+    const label = leaf && leaf.type === 'leaf' ? String(leaf.kind || 'plain').toUpperCase() : '-';
+    composerTarget.textContent = `→ ${label}`;
+  }
+  function focusComposer() {
+    if (composer.classList.contains('hidden')) {
+      const leaf = state.panes.get(state.activePaneId);
+      if (leaf && leaf.term) leaf.term.focus();
+      return;
+    }
+    composerInput.focus();
+  }
+  function sendComposer() {
+    const leaf = state.panes.get(state.activePaneId);
+    if (!leaf || leaf.type !== 'leaf' || !leaf.ptyId || !leaf.term) {
+      composerTarget.textContent = '→ 활성 터미널 없음';
+      return;
+    }
+    const text = composerInput.value;
+    if (text) {
+      leaf.term.paste(text);
+      if (composerHistory[composerHistory.length - 1] !== text) composerHistory.push(text);
+      if (composerHistory.length > COMPOSER_HISTORY_MAX) composerHistory.shift();
+    }
+    // Enter는 붙여넣기와 분리해 보낸다 — 붙여넣기 안의 개행으로 취급되어 제출이 안 되는 CLI가 있다.
+    const ptyId = leaf.ptyId;
+    setTimeout(() => api.writePty(ptyId, '\r'), text ? 60 : 0);
+    composerInput.value = '';
+    composerHistoryIdx = -1;
+    autoGrowComposer();
+  }
+  function bindComposer() {
+    setComposerHidden(readComposerHidden());
+    $('#toggle-composer').onclick = () => {
+      setComposerHidden(!composer.classList.contains('hidden'));
+      if (!composer.classList.contains('hidden')) composerInput.focus();
+    };
+    $('#composer-send').onclick = () => { sendComposer(); composerInput.focus(); };
+    $('#composer-clear').onclick = () => { composerInput.value = ''; autoGrowComposer(); composerInput.focus(); };
+    composerInput.addEventListener('input', autoGrowComposer);
+    composerInput.addEventListener('keydown', (e) => {
+      if (e.isComposing) return; // 한글 조합 중 Enter는 조합 확정용
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendComposer(); return; }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        const leaf = state.panes.get(state.activePaneId);
+        if (leaf && leaf.term) leaf.term.focus();
+        return;
+      }
+      // 입력창이 비었거나 기록을 탐색 중일 때만 ↑/↓로 이전 입력 불러오기
+      const browsing = composerHistoryIdx !== -1 || composerInput.value === '';
+      if (browsing && composerHistory.length && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+        e.preventDefault();
+        if (e.key === 'ArrowUp') {
+          composerHistoryIdx = composerHistoryIdx === -1 ? composerHistory.length - 1 : Math.max(0, composerHistoryIdx - 1);
+        } else if (composerHistoryIdx !== -1) {
+          composerHistoryIdx = composerHistoryIdx + 1 >= composerHistory.length ? -1 : composerHistoryIdx + 1;
+        }
+        composerInput.value = composerHistoryIdx === -1 ? '' : composerHistory[composerHistoryIdx];
+        autoGrowComposer();
+      }
+    });
   }
 
   // ---------- 클립보드 (task-009) ----------
@@ -641,6 +733,7 @@
 
   // ---------- 글로벌 이벤트 ----------
   function bindGlobalEvents() {
+    bindComposer();
     newTabBtn.onclick = () => createTab();
     $('#pick-folder').onclick = pickFolder;
     $('#close-pane').onclick = () => closePane(state.activePaneId);
@@ -716,17 +809,34 @@
       modal.classList.add('hidden');
     };
 
-    // 단축키
+    // 단축키 (task-010): 터미널 편집 키(Ctrl+W 단어 삭제, Ctrl+T, Ctrl+Shift+화살표 단어 선택)를
+    // 가로채지 않도록 앱 단축키는 Ctrl+Shift / Alt+Shift 조합만 쓴다. 캡처 단계에서 처리해
+    // xterm으로 넘어가기 전에 소비한다.
+    const SPLIT_KEYS = { ArrowRight: 'right', ArrowLeft: 'left', ArrowUp: 'up', ArrowDown: 'down' };
     window.addEventListener('keydown', (e) => {
-      if (e.ctrlKey && e.key.toLowerCase() === 't') { e.preventDefault(); createTab(); }
-      if (e.ctrlKey && e.key.toLowerCase() === 'w') { e.preventDefault(); closePane(state.activePaneId); }
-      if (e.ctrlKey && e.shiftKey) {
-        if (e.key === 'ArrowRight') { e.preventDefault(); splitActive('right'); }
-        if (e.key === 'ArrowLeft')  { e.preventDefault(); splitActive('left'); }
-        if (e.key === 'ArrowUp')    { e.preventDefault(); splitActive('up'); }
-        if (e.key === 'ArrowDown')  { e.preventDefault(); splitActive('down'); }
+      if (e.repeat) return;
+      const key = String(e.key || '').toLowerCase();
+      let handled = true;
+      if (e.ctrlKey && e.shiftKey && !e.altKey && key === 't') createTab();
+      else if (e.ctrlKey && e.shiftKey && !e.altKey && key === 'w') closePane(state.activePaneId);
+      else if (e.ctrlKey && e.shiftKey && !e.altKey && e.code === 'Space') focusComposer();
+      else if (e.altKey && e.shiftKey && !e.ctrlKey && SPLIT_KEYS[e.key]) splitActive(SPLIT_KEYS[e.key]);
+      else handled = false;
+      if (handled) { e.preventDefault(); e.stopPropagation(); }
+    }, true);
+
+    // 포커스 복구 (task-010): 사이드바 버튼/트리를 누른 뒤 포커스가 body·버튼에 남으면 타이핑이
+    // 허공으로 사라진다. 그 상태에서 글자를 치면 입력창으로 포커스를 옮겨 글자를 받는다.
+    document.addEventListener('keydown', (e) => {
+      if (e.ctrlKey || e.altKey || e.metaKey || e.key.length !== 1) return;
+      const el = document.activeElement;
+      const tag = el ? el.tagName : 'BODY';
+      if (tag === 'BUTTON' && e.key === ' ') return; // 스페이스는 버튼 누르기
+      if (tag === 'BODY' || tag === 'BUTTON' || (el && el.classList && el.classList.contains('node'))) {
+        if (!modal.classList.contains('hidden')) return;
+        focusComposer();
       }
-    });
+    }, true);
 
     window.addEventListener('resize', () => {
       const root = rootOfTab(state.activeTabId);
