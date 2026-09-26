@@ -29,7 +29,11 @@ const APP_ROOT = __dirname;
 // Packaged builds cannot write into app.asar, and dev runs must not dirty the
 // tracked settings.json / CLAUDE.md. A fixed dir name keeps CARROTCAP separate
 // from other Electron apps (e.g. Cream CLI uses %APPDATA%\cream-cli).
-app.setPath('userData', path.join(app.getPath('appData'), app.isPackaged ? 'carrotcap-cli' : 'carrotcap-cli-dev'));
+// CARROTCAP_USER_DATA_DIR (absolute path) isolates test runs (scripts/test-electron-smoke.js).
+const userDataOverride = process.env.CARROTCAP_USER_DATA_DIR;
+app.setPath('userData', (userDataOverride && path.isAbsolute(userDataOverride))
+  ? userDataOverride
+  : path.join(app.getPath('appData'), app.isPackaged ? 'carrotcap-cli' : 'carrotcap-cli-dev'));
 const USER_DATA_ROOT = app.getPath('userData');
 try { fs.mkdirSync(USER_DATA_ROOT, { recursive: true }); } catch { /* initUserState retries and logs */ }
 // Bundled, read-only defaults shipped with the app.

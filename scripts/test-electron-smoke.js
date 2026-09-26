@@ -5,15 +5,24 @@
 //   - hostile IPC payloads are rejected or neutralised
 //   - CLAUDE.md save -> reload roundtrip (user data dir, restored afterwards)
 //
-// Usage: node scripts/test-electron-smoke.js     (npm run test:smoke)
+// Usage: node scripts/test-electron-smoke.js                (npm run test:smoke — dev app)
+//        node scripts/test-electron-smoke.js <path-to-exe>  (packaged build)
+// The app runs with a throwaway user data dir (CARROTCAP_USER_DATA_DIR), so real
+// user settings are never touched.
+// For a packaged build, rename carrotcap.exe first: ensureCliRegistration only runs
+// for a binary named carrotcap.exe and would otherwise edit the user's PATH.
 // Exits 0 on all pass, 1 on any failure.
 
 const { spawn } = require('child_process');
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const root = path.join(__dirname, '..');
-const electronBin = require(path.join(root, 'node_modules', 'electron'));
+const packagedExe = process.argv[2] ? path.resolve(process.argv[2]) : null;
 const port = 9333 + Math.floor(Math.random() * 500);
+const appData = fs.mkdtempSync(path.join(os.tmpdir(), 'carrotcap-smoke-'));
+const userDataDir = path.join(appData, 'userData');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0;
@@ -23,7 +32,18 @@ function check(name, cond, detail = '') {
   else      { console.log(`  FAIL  ${name}${detail ? ' :: ' + detail : ''}`); fail++; }
 }
 
-const child = spawn(electronBin, ['.', `--remote-debugging-port=${port}`], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+if (packagedExe && /(^|[\\/])carrotcap\.exe$/i.test(packagedExe)) {
+  console.error('Refusing to run carrotcap.exe directly (it would register itself on PATH). Copy/rename it first.');
+  process.exit(2);
+}
+const [cmd, args] = packagedExe
+  ? [packagedExe, [`--remote-debugging-port=${port}`]]
+  : [require(path.join(root, 'node_modules', 'electron')), ['.', `--remote-debugging-port=${port}`]];
+const child = spawn(cmd, args, {
+  cwd: packagedExe ? path.dirname(packagedExe) : root,
+  env: { ...process.env, CARROTCAP_USER_DATA_DIR: userDataDir },
+  stdio: ['ignore', 'pipe', 'pipe']
+});
 let mainLog = '';
 child.stdout.on('data', (d) => (mainLog += d));
 child.stderr.on('data', (d) => (mainLog += d));
@@ -129,12 +149,16 @@ const PROBE = `(async () => {
   check('terminal menu API exposed', r.termMenuApi === true);
   console.log('-- renderer errors');
   check('no exceptions / console errors on load', logs.length === 0, logs.join(' | '));
+  console.log('-- user data dir (task-008)');
+  check('settings.json seeded in userData', fs.existsSync(path.join(userDataDir, 'settings.json')), userDataDir);
+  check('CLAUDE.md seeded in userData', fs.existsSync(path.join(userDataDir, 'CLAUDE.md')));
   ws.close();
 })()
   .catch((e) => { console.log('  FAIL  smoke harness ::', e.message); fail++; })
   .finally(async () => {
     child.kill();
-    await sleep(500);
+    await sleep(800);
+    try { fs.rmSync(appData, { recursive: true, force: true }); } catch { /* locked cache files — temp dir */ }
     if (fail) { console.log('--- main process log'); console.log(mainLog.trim().split('\n').slice(-20).join('\n')); }
     console.log('');
     console.log(`Summary: ${pass} passed, ${fail} failed`);
