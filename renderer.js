@@ -731,9 +731,9 @@
     if (prepared.context) {
       // 브라우저 컨텍스트: bracketed paste를 직접 만들어 확인 응답이 있는 IPC로 보낸다.
       // 두 번 모두 전달됐을 때만 주석·에러를 "보냄" 처리 (review r2 M3).
-      // ESC는 블록 전체에서 제거 — 입력창에 붙여 넣은 텍스트도 paste 경계를 깰 수 없게.
-      const pasted = '\x1b[200~' + text.replace(/\x1b/g, '').replace(/\r?\n/g, '\r') + '\x1b[201~';
-      const okPaste = await api.writePtyAck(ptyId, pasted);
+      // main이 쓰기 순간에 이 PTY가 bracketed paste(에이전트)인지 다시 확인하고, ESC를 뺀 뒤
+      // paste를 직접 만든다 — 그 사이 에이전트가 끝나 셸로 돌아갔다면 보내지 않는다 (review r5).
+      const okPaste = await api.pasteGuarded(ptyId, text);
       await new Promise((r) => setTimeout(r, Math.min(600, 60 + Math.floor(text.length / 20))));
       const okEnter = okPaste && leaf.ptyId === ptyId && await api.writePtyAck(ptyId, '\r');
       if (okPaste && okEnter) prepared.commit();

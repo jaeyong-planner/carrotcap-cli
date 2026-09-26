@@ -242,7 +242,9 @@
       }
     }
     lines.push('[요청]');
-    lines.push(text || '(주석 위치의 문제를 확인해줘)');
+    // 모든 컨텍스트 줄은 "# "로 시작한다 — 만에 하나 셸이 받더라도 PowerShell·bash 모두 줄 주석이라
+    // 실행되지 않는다 (줄바꿈은 이미 제거되어 주석을 벗어날 수 없음). 에이전트에게는 그냥 읽히는 텍스트.
+    const block = lines.map((l) => `# ${l}`).join('\n') + '\n' + (text || '(주석 위치의 문제를 확인해줘)');
     const commit = () => {
       if (wantErrors) api.browserCommit(ctx.errorMark);
       // 이번에 보낸 핀만 지운다 — 전송을 준비하는 사이 새로 찍은 핀은 목록·페이지 모두 남는다 (review r2).
@@ -251,7 +253,7 @@
       api.browserClearPins(sent, ctx.gen);
       renderPins();
     };
-    return { text: lines.join('\n'), commit, context: true };
+    return { text: block, commit, context: true };
   }
 
   // ---- 이벤트 ----

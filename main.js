@@ -984,6 +984,16 @@ function disposeReadyGate(session) {
   session.pendingBytes = 0;
 }
 
+// Last ESC[?2004h / ESC[?2004l in the output wins. A short tail is kept so a sequence
+// split across two chunks is still seen.
+function trackBracketedPaste(session, data) {
+  const text = session.tail + data;
+  const on = text.lastIndexOf('\x1b[?2004h');
+  const off = text.lastIndexOf('\x1b[?2004l');
+  if (on !== -1 || off !== -1) session.bracketed = on > off;
+  session.tail = text.slice(-8);
+}
+
 function spawnSession(rawPayload) {
   if (sessions.size >= MAX_SESSIONS) return { error: `터미널은 최대 ${MAX_SESSIONS}개까지 열 수 있습니다.` };
   const payload = sanitizeSpawnPayload(rawPayload);
@@ -1049,7 +1059,9 @@ function spawnSession(rawPayload) {
   // starting (measured: anything sent in the first ~2s of a new pane was lost). Input is
   // queued until the shell has printed something and then gone quiet, then flushed in order.
   // One string buffer (not an array of chunks) so a flood of tiny writes stays bounded.
-  const session = { proc, kind, ready: false, pending: '', pendingBytes: 0, quietTimer: null, maxTimer: null };
+  // bracketed: whether the app in this PTY currently has bracketed paste on (tracked from
+  // its own output, ESC[?2004h / ESC[?2004l) — checked at write time for guarded pastes.
+  const session = { proc, kind, ready: false, pending: '', pendingBytes: 0, quietTimer: null, maxTimer: null, bracketed: false, tail: '' };
   sessions.set(id, session);
   const markReady = () => {
     if (session.ready) return;
@@ -1063,12 +1075,14 @@ function spawnSession(rawPayload) {
   session.maxTimer = setTimeout(markReady, PTY_READY_MAX_MS);
 
   const wireData = (chunk) => {
+    const data = typeof chunk === 'string' ? chunk : chunk.toString();
     if (!session.ready) {
       clearTimeout(session.quietTimer);
       session.quietTimer = setTimeout(markReady, PTY_READY_QUIET_MS);
     }
+    trackBracketedPaste(session, data);
     if (!mainWindow || mainWindow.isDestroyed()) return;
-    mainWindow.webContents.send('pty:data', { id, data: typeof chunk === 'string' ? chunk : chunk.toString() });
+    mainWindow.webContents.send('pty:data', { id, data });
   };
   // 폴백 모드일 땐 spawnSession에서 직접 만든 proc도 동일한 onData/onExit 인터페이스를 갖도록 위에서 셋업했음.
   proc.onData(wireData);
@@ -1302,6 +1316,17 @@ on('pty:write', (_e, { id, data }) => { writeToSession(id, data); });
 handle('pty:write-ack', (_e, payload) => {
   const p = (payload && typeof payload === 'object') ? payload : {};
   return isValidPtyId(p.id) ? writeToSession(p.id, p.data) : false;
+});
+// Browser context (page-derived text): written ONLY if, at this very moment, the app in
+// the PTY has bracketed paste on (an interactive agent, not a bare shell). main builds the
+// paste itself and strips ESC, so the text cannot end the paste early (review r5 C3).
+handle('pty:paste-guarded', (_e, payload) => {
+  const p = (payload && typeof payload === 'object') ? payload : {};
+  if (!isValidPtyId(p.id) || typeof p.text !== 'string') return false;
+  const s = sessions.get(p.id);
+  if (!s || !s.ready || !s.bracketed) return false;
+  const body = p.text.replace(/\x1b/g, '').replace(/\r?\n/g, '\r');
+  return writeToSession(p.id, '\x1b[200~' + body + '\x1b[201~');
 });
 on('pty:resize', (_e, { id, cols, rows }) => {
   const s = sessions.get(id);

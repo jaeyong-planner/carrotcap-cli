@@ -161,7 +161,11 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
   let view = null;
   let device = 'desktop';
   let errors = [];          // { at, level, message, source, line }
-  let reportedUpTo = 0;     // errors[] index already attached to a chat message
+  // Errors carry a monotonic seq that never resets (not an index: the ring buffer drops
+  // old entries and close/reopen clears it). reportedSeq = last seq delivered to the agent.
+  let errorSeq = 0;
+  let reportedSeq = 0;
+  const newErrorList = () => errors.filter((e) => e.seq > reportedSeq);
   let debuggerAttached = false;
 
   const send = (channel, payload) => {
@@ -180,12 +184,13 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
       canGoForward: wc.canGoForward(),
       device,
       errorCount: errors.length,
-      newErrors: errors.length - reportedUpTo,
+      newErrors: newErrorList().length,
       pageGen
     });
   };
   const addError = (level, message, source, line) => {
     errors.push({
+      seq: ++errorSeq,
       at: new Date().toISOString(),
       level,
       message: cleanText(message, MAX_ERROR_LEN),
@@ -195,7 +200,6 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
     if (errors.length > MAX_ERRORS) {
       const drop = errors.length - MAX_ERRORS;
       errors = errors.slice(drop);
-      reportedUpTo = Math.max(0, reportedUpTo - drop);
     }
     pushState();
   };
@@ -292,14 +296,11 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
     view = null;
     debuggerAttached = false;
     errors = [];
-    reportedUpTo = 0;
+    reportedSeq = errorSeq; // the closed page's errors are done; seq keeps counting
     pushState();
   }
 
-  // Screenshots: <userData>/browser-shots, newest 20, max 3 days (see shotDir).
-  // Inside a project the folder goes through the same guards as AIOps setup: every
-  // ancestor must be a real directory (no symlink/junction) and the result must stay
-  // inside the picked workspace — so writing and pruning can never leave it (review C2).
+  // Screenshots: <userData>/browser-shots, newest 20, max 3 days.
   // Screenshots live in the app's own data dir, never in the project: a project folder
   // is not trusted (a repo could race a junction into .carrotcap/…), and path-based
   // Node APIs cannot make that check-then-write atomic (review r3 C2). Bonus: nothing
@@ -437,18 +438,19 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
     }
     if (!same()) return { stale: true };
     if (p.includeErrors) {
-      out.errors = errors.slice(reportedUpTo).slice(-MAX_ERRORS_SENT);
-      out.errorsSkipped = Math.max(0, errors.length - reportedUpTo - out.errors.length);
+      const fresh = newErrorList();
+      out.errors = fresh.slice(-MAX_ERRORS_SENT);
+      out.errorsSkipped = fresh.length - out.errors.length;
+      out.errorMark = fresh.length ? fresh[fresh.length - 1].seq : reportedSeq; // pass back to browser:commit
     }
-    out.errorMark = errors.length; // pass back to browser:commit
     return out;
   });
   // Called only after the paste AND the Enter were acknowledged, i.e. these errors were
-  // really delivered. mark counts only errors that existed when the context was built,
-  // so errors of a newer document stay 'new' whatever happened in between.
+  // really delivered. mark is the seq of the last error in that message, so errors that
+  // came later (even across ring-buffer drops or a close/reopen) stay 'new'.
   handle('browser:commit', (_e, mark) => {
-    if (Number.isInteger(mark) && mark > reportedUpTo && mark <= errors.length) {
-      reportedUpTo = mark;
+    if (Number.isInteger(mark) && mark > reportedSeq && mark <= errorSeq) {
+      reportedSeq = mark;
       pushState();
     }
     return true;

@@ -196,6 +196,28 @@ const server = http.createServer((req, res) => {
   await ev(`document.querySelector('#br-reload').click(), true`);
   check('pins cleared after reloading the same URL', await waitFor(async () => (await ev(`document.querySelectorAll('#br-pins .br-pin').length`)) === 0));
   check('annotation mode still on after reload', await ev(`document.querySelector('#br-annotate').classList.contains('active')`));
+
+  console.log('-- agent exits back to the shell: context never executes (review r5 C3)');
+  check('context lines are shell comments ("# ")', got.split(/\r|\n/).filter((l) => /브라우저 컨텍스트|URL:|주석:|콘솔 에러/.test(l)).every((l) => /^(\x1b\[200~)?# /.test(l)));
+  await ev(`document.querySelector('#composer-input').value = 'QUIT'; document.querySelector('#composer-send').click(); true`);
+  check('fake agent exited', await waitFor(async () => /fake-agent bye/.test(await screen())));
+  await waitFor(async () => /PS [^\n]*>\s*$/.test((await screen()).trimEnd() + ' '));
+  await sleep(1500);
+  for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
+    await view2.send('Input.dispatchMouseEvent', { type, x: r2.x, y: r2.y, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1 });
+  }
+  await waitFor(async () => (await ev(`document.querySelectorAll('#br-pins .br-pin').length`)) > 0);
+  const before = await screen();
+  await ev(`document.querySelector('#composer-input').value = 'Write-Output typed-by-user'; document.querySelector('#composer-send').click(); true`);
+  await sleep(2500);
+  const after = (await screen()).slice(before.length > 200 ? before.length - 200 : 0);
+  const target = await ev(`document.querySelector('#composer-target').textContent`);
+  const refused = /전송 실패|에이전트 페인에만/.test(target);
+  // Either main refused (bracketed off in the shell) or, if the shell has bracketed paste on,
+  // every context line reached PowerShell as a comment — nothing may run as a command.
+  check('shell did not execute page text (refused, or only comments arrived)',
+    refused || !/is not recognized|인식되지 않습니다|CommandNotFound/.test(after), `target=${target} tail=${JSON.stringify(after.slice(-300))}`);
+  if (process.env.CC_DEBUG) console.log('   shell case:', refused ? 'refused by guard' : 'delivered as comments');
   view2.close();
 
   console.log('-- close');
