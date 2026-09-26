@@ -93,6 +93,20 @@ const screen = (app) => app.ev(`[...document.querySelectorAll('.tab-page.active 
   const rec3 = readRecord();
   check('dismiss removes old layouts', (rec3.sessions || []).filter((s) => s.layout).length <= 1);
   await app.close();
+
+  console.log('-- run 4: quit right after a change (< 800ms), junk files pruned');
+  fs.writeFileSync(path.join(historyDir, '0123456789abcdef.json'), 'x'.repeat(100 * 1024)); // oversized
+  fs.writeFileSync(path.join(historyDir, 'fedcba9876543210.json'), '{ not json');           // corrupt
+  app = await launchApp(userData);
+  await sleep(3000);
+  check('oversized / corrupt history files pruned at boot',
+    !fs.existsSync(path.join(historyDir, '0123456789abcdef.json')) && !fs.existsSync(path.join(historyDir, 'fedcba9876543210.json')));
+  await app.ev(`document.querySelector('.btn-cli[data-cli="claude"]').click(), true`);
+  await app.close(); // immediately
+  const rec4 = readRecord();
+  const newest = (rec4.sessions || [])[0] || {};
+  check('CLI started just before closing is recorded', Array.isArray(newest.clis) && newest.clis.includes('claude'), JSON.stringify(newest));
+  check('and it is marked as a clean exit', newest.clean === true);
 })()
   .catch((e) => { console.log('  FAIL  harness ::', e.message); fail++; })
   .finally(() => {

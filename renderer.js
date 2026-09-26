@@ -42,6 +42,7 @@
 
   // ---------- 부트 ----------
   async function boot() {
+    try { state.platform = await api.platform(); } catch { state.platform = 'win32'; }
     state.settings = await api.getSettings();
     state.aiopsMode = !!(state.settings && state.settings.aor && state.settings.aor.autoStart);
     // task-005: AOR mode is the underlying routed-shell mode. AIOps implies AOR.
@@ -496,13 +497,22 @@
     historyPendingRoot = null;
     api.saveHistory(root, buildLayout()).catch(() => {});
   }
+  // 첫 변경은 즉시 저장(곧바로 앱을 닫아도 세션이 남게), 이어지는 변경은 800ms로 묶는다.
+  let historyLastSaveAt = 0;
   function scheduleHistorySave() {
     if (restoring || !state.folder.rootPath) return;
     if (historyPendingRoot && historyPendingRoot !== state.folder.rootPath) flushHistorySave();
     clearTimeout(historyTimer);
     historyPendingRoot = state.folder.rootPath;
-    historyTimer = setTimeout(flushHistorySave, 800);
+    if (Date.now() - historyLastSaveAt > 800) {
+      historyLastSaveAt = Date.now();
+      flushHistorySave();
+      return;
+    }
+    historyTimer = setTimeout(() => { historyLastSaveAt = Date.now(); flushHistorySave(); }, 800);
   }
+  // 창을 닫을 때 남은 예약분을 바로 보낸다.
+  window.addEventListener('beforeunload', () => flushHistorySave());
   function formatWhen(iso) {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return '';
@@ -569,7 +579,9 @@
       restoring = false;
     }
     for (const [leaf, cli] of launches) {
-      if (root !== state.folder.rootPath) break; // 복원 도중 프로젝트가 바뀜
+      // 복원 도중 다른 프로젝트를 열었으면 여기서 멈춘다 — 원래 프로젝트의 기록은 지우지 않고
+      // 성공 메시지도 띄우지 않는다 (다음에 다시 이어할 수 있게).
+      if (root !== state.folder.rootPath) return;
       if (!cli || state.cliStatus[cli] === false) continue;
       if (!(await whenPtyReady(leaf))) continue;
       const cmd = cliCommandLine(cli, null, RESUME_ARGS[cli] || []);
@@ -577,9 +589,10 @@
       api.writePty(leaf.ptyId, cmd + '\r');
       leaf.cli = cli;
     }
+    if (root !== state.folder.rootPath) return;
     // 복원했으니 이전 세션의 배치 정보는 더 필요 없다 — 지금 세션이 새로 기록된다.
     api.dismissHistory(root).catch(() => {});
-    if (root === state.folder.rootPath) scheduleHistorySave();
+    scheduleHistorySave();
     setFlowStatus('이전 세션을 복원했습니다 — 각 CLI가 마지막 대화를 이어갑니다', 'ok');
   }
   function bindResume() {
@@ -897,13 +910,20 @@
   const CLI_ROLES = { claude: '코딩', codex: '코드 리뷰', grok: '이미지·영상' };
   state.cliStatus = {};
 
+  // 셸 문법은 플랫폼마다 다르다: Windows는 PowerShell, macOS/Linux는 POSIX 셸(bash/zsh).
+  const isWin = () => state.platform === 'win32';
   function cliCommandLine(key, prompt, extraArgs = []) {
     const cli = state.settings && state.settings.cli && state.settings.cli[key];
     if (!cli) return null;
-    // PowerShell: & '<cmd>' '<arg>' ... — 공백/따옴표가 든 인자도 안전하게 전달
     const parts = [cli.command, ...(cli.args || []), ...extraArgs];
     if (prompt) parts.push(prompt);
-    return '& ' + parts.map(psQuote).join(' ');
+    // PowerShell: & '<cmd>' '<arg>' ... / POSIX: '<cmd>' '<arg>' ... — 공백·따옴표가 든 인자도 안전
+    return isWin() ? '& ' + parts.map(psQuote).join(' ') : parts.map(posixQuote).join(' ');
+  }
+  function inProjectDir(dir, command) {
+    return isWin()
+      ? `Set-Location -LiteralPath ${psQuote(dir)}; ${command}`
+      : `cd -- ${posixQuote(dir)} && ${command}`;
   }
 
   function activeLeafOrWarn() {
@@ -980,7 +1000,7 @@
       setFlowStatus(`settings.json에 '${flow.cli}' CLI 설정이 없습니다`, 'warn');
       return;
     }
-    api.writePty(leaf.ptyId, `Set-Location -LiteralPath ${psQuote(state.folder.rootPath)}; ${launch}\r`);
+    api.writePty(leaf.ptyId, inProjectDir(state.folder.rootPath, launch) + '\r');
     leaf.cli = flow.cli;
     if (leaf.term) leaf.term.focus();
     scheduleHistorySave();
@@ -1128,6 +1148,10 @@
 
   function psQuote(s) {
     return `'${String(s).replace(/'/g, "''")}'`;
+  }
+
+  function posixQuote(s) {
+    return `'${String(s).replace(/'/g, "'\\''")}'`;
   }
 
   // boot

@@ -40,3 +40,10 @@
 - Major: 디스크의 이력 파일 재검증 → `sanitizeHistoryRecord`(세션 id·ISO 시각·task 이름·CLI 목록·layout 8×8·개수 clamp)
 - Minor: settings 저장 시 `cli:status` 캐시 무효화, `settingsVersion`은 정수일 때만 인정, 로그 삭제 실패 시 경고
 - 결과: `npm test` 163/163, smoke 46/46, resume 18/18
+
+## 리뷰 반영 r2 (logs/review/task-012-013-r2_review-reflection.md — ⚠️ 조건부 승인, 이전 Major 3 RESOLVED·1 PARTIAL, 신규 Major 3 / Minor 1)
+- 복원 도중 프로젝트 전환: 즉시 중단, 원래 프로젝트 기록 삭제·성공 표시 안 함 (PARTIAL → 해결)
+- 800ms 안에 종료 시 미저장: 첫 변경은 즉시 저장(이후 800ms 묶음), 창 닫힘 시 flush, 종료 중 도착한 저장은 다시 정상 종료로 확정
+- macOS/Linux: 명령 조합을 플랫폼별로 (`cd -- '<dir>' && '<cmd>' '<arg>'`) — macOS 실기 미검증
+- 이력 파일 64KB 초과 시 읽지 않고 부팅 때 삭제
+- 결과: `npm test` 163/163, smoke 46/46, resume 21/21 (즉시 종료·손상/거대 파일 정리 시나리오 추가)

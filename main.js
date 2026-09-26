@@ -1260,9 +1260,14 @@ function historyFileFor(realRoot) {
   const hash = require('crypto').createHash('sha1').update(normalizePath(realRoot)).digest('hex').slice(0, 16);
   return path.join(HISTORY_DIR, `${hash}.json`);
 }
+const HISTORY_MAX_FILE_BYTES = 64 * 1024; // real records are 1-2KB
 function readHistory(file) {
+  try {
+    if (fs.statSync(file).size > HISTORY_MAX_FILE_BYTES) return null; // pruned at next boot
+  } catch { return null; }
   return sanitizeHistoryRecord(readJsonFile(file));
 }
+let historyQuitting = false;
 function writeHistory(file, record) {
   try {
     fs.mkdirSync(HISTORY_DIR, { recursive: true });
@@ -1319,13 +1324,17 @@ handle('history:save', (_e, payload) => {
   if (!historySessionIds.has(file)) {
     historySessionIds.set(file, `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
   }
-  const record = applyHistorySnapshot(readHistory(file), {
+  const nowIso = new Date().toISOString();
+  let record = applyHistorySnapshot(readHistory(file), {
     sessionId: historySessionIds.get(file),
     projectRoot: realRoot,
     layout,
-    nowIso: new Date().toISOString(),
+    nowIso,
     lastTask: latestBacklogTask(realRoot)
   });
+  // The window's last flush can land after before-quit already finalized — keep it
+  // a clean exit instead of reopening the session as "crashed".
+  if (historyQuitting) record = finalizeHistoryRecord(record, currentHistoryIds(), nowIso);
   return { ok: writeHistory(file, record) };
 });
 handle('history:get', (_e, projectRoot) => {
@@ -1401,6 +1410,7 @@ app.whenReady().then(() => {
 // task-013: a clean exit closes this run's sessions and compacts older ones.
 // A crash skips this, so the next launch can offer "이전 세션 이어하기 (비정상 종료)".
 app.on('before-quit', () => {
+  historyQuitting = true;
   try { finalizeHistory(); } catch (e) { console.warn('[carrotcap] finalizeHistory failed:', e.message); }
 });
 
