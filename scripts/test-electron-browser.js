@@ -52,6 +52,10 @@ const server = http.createServer((req, res) => {
   if (req.url === '/' || req.url.startsWith('/?')) { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(PAGE); return; }
   if (req.url === '/evil') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(EVIL); return; }
   if (req.url === '/redir') { res.writeHead(302, { location: 'file:///C:/Windows/win.ini' }); res.end(); return; }
+  // Slow page resource that fails late (after the test has closed the view).
+  if (req.url === '/slowpage') { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<title>slow</title><img src="/slow-fail.png">'); return; }
+  if (req.url === '/slow-fail.png') { setTimeout(() => { try { res.writeHead(500); res.end('late'); } catch {} }, 3000); return; }
+  if (req.url === '/flood') { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<title>flood</title><script>for (let i = 0; i < 150; i++) console.error("flood-" + i);</script>'); return; }
   res.writeHead(404); res.end('nope');
 });
 
@@ -168,7 +172,7 @@ const server = http.createServer((req, res) => {
   fs.mkdirSync(path.join(project, '.carrotcap'), { recursive: true });
   fs.symlinkSync(outside, path.join(project, '.carrotcap', 'browser'), 'junction'); // hostile repo layout
   await ev(`document.querySelector('#br-url').value = ${JSON.stringify(site)}; document.querySelector('#br-go').click(); true`);
-  const view2 = await app.connect((t) => t.type === 'page' && t.url === site);
+  let view2 = await app.connect((t) => t.type === 'page' && t.url === site);
   await waitFor(async () => (await view2.ev(`!!document.querySelector('#buy')`)) === true);
   await ev(`document.querySelector('#br-annotate').classList.contains('active') || document.querySelector('#br-annotate').click(), true`);
   await sleep(800);
@@ -196,6 +200,66 @@ const server = http.createServer((req, res) => {
   await ev(`document.querySelector('#br-reload').click(), true`);
   check('pins cleared after reloading the same URL', await waitFor(async () => (await ev(`document.querySelectorAll('#br-pins .br-pin').length`)) === 0));
   check('annotation mode still on after reload', await ev(`document.querySelector('#br-annotate').classList.contains('active')`));
+
+  console.log('-- context token is refused after the page changes (review r6)');
+  const agentPty = await ev(`document.querySelector('.tab-page.active .pane.active').dataset.ptyId`);
+  await for_pin();
+  async function for_pin() {
+    for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
+      await view2.send('Input.dispatchMouseEvent', { type, x: r2.x, y: r2.y, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1 });
+    }
+    await waitFor(async () => (await ev(`document.querySelectorAll('#br-pins .br-pin').length`)) > 0);
+  }
+  const gen = await ev(`(async () => { const s = await new Promise((r) => { const off = window.carrotcap.onBrowserState((x) => { off(); r(x); }); window.carrotcap.browserNav('reload'); }); return s.pageGen; })()`);
+  await sleep(1500);
+  const ctx = await ev(`window.carrotcap.browserContext({ screenshot: false, includeErrors: false, gen: ${Number(gen) + 0} })`).catch(() => null);
+  const liveGen = await ev(`window.carrotcap.browserContext({ screenshot: false, includeErrors: false, gen: -99 })`);
+  check('stale generation gets no context', !!liveGen && liveGen.stale === true);
+  // Take a fresh, valid context token, then change the page before redeeming it.
+  const cur = await ev(`(async () => { for (let g = 0; g < 200; g++) { const c = await window.carrotcap.browserContext({ screenshot: false, includeErrors: false, gen: g }); if (c && !c.stale) return c; } return null; })()`);
+  check('a valid context token is issued', !!cur && typeof cur.token === 'string', JSON.stringify(ctx));
+  await ev(`window.carrotcap.browserNav('reload'), true`);
+  await sleep(1500);
+  fs.writeFileSync(path.join(tmp, 'agent-received.bin'), '');
+  const redeemed = await ev(`window.carrotcap.pasteGuarded(${JSON.stringify(agentPty)}, '# stale context', ${JSON.stringify(cur && cur.token)})`);
+  check('paste with a token from an older document is refused', redeemed === false);
+  check('nothing reached the agent', !received().includes('stale context'));
+  const cur2 = await ev(`(async () => { for (let g = 0; g < 400; g++) { const c = await window.carrotcap.browserContext({ screenshot: false, includeErrors: false, gen: g }); if (c && !c.stale) return c; } return null; })()`);
+  const ok = await ev(`window.carrotcap.pasteGuarded(${JSON.stringify(agentPty)}, '# fresh context', ${JSON.stringify(cur2 && cur2.token)})`);
+  check('same call with a current token succeeds', ok === true && await waitFor(() => received().includes('fresh context')));
+  const reuse = await ev(`window.carrotcap.pasteGuarded(${JSON.stringify(agentPty)}, '# replay', ${JSON.stringify(cur2 && cur2.token)})`);
+  check('a token works only once', reuse === false);
+
+  console.log('-- error cursor survives ring-buffer overflow (review r5/r6)');
+  await ev(`document.querySelector('#br-url').value = ${JSON.stringify(site + 'flood')}; document.querySelector('#br-go').click(); true`);
+  const flood = await app.connect((t) => t.type === 'page' && t.url === site + 'flood');
+  await waitFor(async () => (await ev(`window.carrotcap.browserErrors()`)).some((e) => /flood-149/.test(e.message)));
+  const fctx = await ev(`(async () => { for (let g = 0; g < 400; g++) { const c = await window.carrotcap.browserContext({ screenshot: false, includeErrors: true, gen: g }); if (c && !c.stale) return c; } return null; })()`);
+  check('only the newest 8 attached, the rest of the 100-entry buffer counted', fctx && fctx.errors.length === 8 && fctx.errorsSkipped === 92, fctx && `${fctx.errors.length} / skipped ${fctx.errorsSkipped}`);
+  await flood.ev(`console.error('after-mark-1'), true`);
+  await sleep(500);
+  await ev(`window.carrotcap.browserCommit(${fctx ? fctx.errorMark : -1})`);
+  await sleep(300);
+  const after1 = await ev(`(async () => { for (let g = 0; g < 400; g++) { const c = await window.carrotcap.browserContext({ screenshot: false, includeErrors: true, gen: g }); if (c && !c.stale) return c; } return null; })()`);
+  check('an error logged after the context stays new after commit', after1 && after1.errors.length === 1 && /after-mark-1/.test(after1.errors[0].message), JSON.stringify(after1 && after1.errors));
+  flood.close();
+
+  console.log('-- late network errors of a closed view are ignored (review r6)');
+  await ev(`document.querySelector('#br-url').value = ${JSON.stringify(site + 'slowpage')}; document.querySelector('#br-go').click(); true`);
+  await sleep(600);
+  await ev(`document.querySelector('#toggle-browser').click(), true`); // close while /slow-fail.png is pending
+  await sleep(300);
+  await ev(`document.querySelector('#toggle-browser').click(), true`);
+  await ev(`document.querySelector('#br-url').value = ${JSON.stringify(site)}; document.querySelector('#br-go').click(); true`);
+  await sleep(4500); // the old request fails at ~3s
+  check('late 500 of the closed view is not reported for the new page', !(await ev(`window.carrotcap.browserErrors()`)).some((e) => /slow-fail/.test(e.message)));
+  const view3 = await app.connect((t) => t.type === 'page' && t.url === site);
+  await ev(`document.querySelector('#br-annotate').classList.contains('active') || document.querySelector('#br-annotate').click(), true`);
+  await sleep(600);
+  const view2Old = view2;
+  view2Old.close();
+  // continue the next sections on the reopened view
+  view2 = view3;
 
   console.log('-- agent exits back to the shell: context never executes (review r5 C3)');
   check('context lines are shell comments ("# ")', got.split(/\r|\n/).filter((l) => /브라우저 컨텍스트|URL:|주석:|콘솔 에러/.test(l)).every((l) => /^(\x1b\[200~)?# /.test(l)));

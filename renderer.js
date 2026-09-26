@@ -454,6 +454,7 @@
       return;
     }
     leaf.ptyId = result.id;
+    leaf.paneEl.dataset.ptyId = result.id; // lets the E2E tests address a pane's PTY
     leaf.kind = result.kind || (payload.mode || 'plain');
     if (leaf.headEl) {
       const k = leaf.headEl.querySelector('.kind');
