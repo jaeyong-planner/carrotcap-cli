@@ -44,7 +44,11 @@
   async function boot() {
     try { state.platform = await api.platform(); } catch { state.platform = 'win32'; }
     state.settings = await api.getSettings();
-    try { state.aorEngineFound = !!(await api.aorStatus()).engineFound; } catch { state.aorEngineFound = false; }
+    try {
+      const st = await api.aorStatus();
+      state.aorEngineFound = !!st.engineFound;
+      state.compressHook = typeof st.compressHook === 'string' ? st.compressHook : null; // task-017
+    } catch { state.aorEngineFound = false; state.compressHook = null; }
     // AIOps는 기본 ON — 사용자가 끈 경우(autoStart: false)만 끈다.
     state.aiopsMode = !(state.settings && state.settings.aor && state.settings.aor.autoStart === false);
     // task-005: AOR mode is the underlying routed-shell mode. AIOps implies AOR.
@@ -1007,6 +1011,11 @@
     const cli = state.settings && state.settings.cli && state.settings.cli[key];
     if (!cli) return null;
     const parts = [cli.command, ...(cli.args || []), ...extraArgs];
+    // task-017: claude gets the output-compression hook (added on top of the user's own settings)
+    // Only when the command really is Claude Code: a custom command/wrapper may not take --settings.
+    if (key === 'claude' && state.compressHook && /^claude(\.exe|\.cmd)?$/i.test(cli.command) && !parts.includes('--settings')) {
+      parts.splice(1, 0, '--settings', state.compressHook);
+    }
     if (prompt) parts.push(prompt);
     // PowerShell: & '<cmd>' '<arg>' ... / POSIX: '<cmd>' '<arg>' ... — 공백·따옴표가 든 인자도 안전
     return isWin() ? '& ' + parts.map(psQuote).join(' ') : parts.map(posixQuote).join(' ');

@@ -101,6 +101,8 @@ function validateSettings(input) {
     const aor = {};
     if ('enabled' in input.aor)   aor.enabled = !!input.aor.enabled;
     if ('autoStart' in input.aor) aor.autoStart = !!input.aor.autoStart;
+    if ('consoleShims' in input.aor) aor.consoleShims = !!input.aor.consoleShims;
+    if ('compressHook' in input.aor) aor.compressHook = !!input.aor.compressHook;
     if (typeof input.aor.engineRoot === 'string') aor.engineRoot = clipString(input.aor.engineRoot, 1024);
     if (Array.isArray(input.aor.engineRootCandidates)) {
       aor.engineRootCandidates = input.aor.engineRootCandidates
@@ -559,7 +561,9 @@ function buildDefaultSettings() {
         '%USERPROFILE%\\WINDOWS',
         'C:\\WINDOWS\\carrotcap'
       ],
-      autoStart: true
+      autoStart: true,
+      consoleShims: false,
+      compressHook: true
     },
     cli: {
       claude: { command: 'claude', args: [] },
@@ -615,15 +619,82 @@ function expandEnv(p) {
   if (!p || typeof p !== 'string') return p;
   return p.replace(/%([^%]+)%/g, (_, name) => process.env[name] || '');
 }
+const aorPrunedAt = new Map();
+function bundledAorRoot() {
+  return app.isPackaged ? path.join(process.resourcesPath, 'AOR') : path.join(APP_ROOT, 'AOR');
+}
+
+// ---- Output-compression hook for Claude Code (task-017) ----
+// A claude started from CARROTCAP gets `--settings <file>` holding one PostToolUse hook
+// (AOR/carrotcap/compress-hook.js) that routes noisy test/build/install output through
+// the AOR engine. The user's own ~/.claude settings are never touched; hooks from
+// --settings are added on top of theirs. Needs node on PATH (the hook is a node script).
+// Functions, not constants: this block is also evaluated by the unit tests.
+const hookDir = () => path.join(USER_DATA_ROOT, 'aor-hook');
+const hookSettingsPath = () => path.join(hookDir(), 'claude-settings.json');
+let compressHookCache = null; // { key, value }
+function findNodeSync() {
+  const { execFileSync } = require('child_process');
+  const [file, args] = process.platform === 'win32'
+    ? [path.join(getSystem32Path(), 'where.exe'), ['node']]
+    : ['/usr/bin/which', ['node']];
+  try {
+    const out = execFileSync(file, args, { timeout: 3000, windowsHide: true, encoding: 'utf8' });
+    const first = String(out).split(/\r?\n/).map((l) => l.trim())
+      .find((l) => l && path.isAbsolute(l) && /[\\/]node(\.exe)?$/i.test(l));
+    return first && fs.existsSync(first) ? first : null;
+  } catch { return null; }
+}
+function buildCompressHookSettings(nodePath, hookScript) {
+  // Hook commands run in Git Bash on Windows / sh elsewhere: single-quoted, forward slashes.
+  const q = (p) => "'" + String(p).replace(/\\/g, '/').replace(/'/g, "'\\''") + "'";
+  return { hooks: { PostToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `${q(nodePath)} ${q(hookScript)}`, timeout: 30 }] }] } };
+}
+function hookDirIsSafe() {
+  try {
+    const lst = fs.lstatSync(hookDir());
+    if (lst.isSymbolicLink() || !lst.isDirectory()) return false;
+    return isPathInsideRoot(fs.realpathSync.native(hookDir()), USER_DATA_ROOT);
+  } catch { return false; }
+}
+// Path of the --settings file, or null when the hook is off or cannot run here.
+function resolveCompressHook(settings) {
+  const enabled = !(settings && settings.aor && settings.aor.compressHook === false);
+  const key = String(enabled);
+  if (compressHookCache && compressHookCache.key === key) return compressHookCache.value;
+  let value = null;
+  if (enabled) {
+    const root = bundledAorRoot();
+    const hookScript = path.join(root, 'carrotcap', 'compress-hook.js');
+    const engine = process.platform === 'win32'
+      ? path.join(root, 'engine', 'windows', 'bin', 'aor-engine-win.exe')
+      : path.join(root, 'engine', 'macos', 'bin', 'aor-engine-macos');
+    const nodePath = fs.existsSync(hookScript) && fs.existsSync(engine) ? findNodeSync() : null;
+    if (nodePath) {
+      const body = JSON.stringify(buildCompressHookSettings(nodePath, hookScript), null, 2);
+      const tmp = `${hookSettingsPath()}.${process.pid}.tmp`;
+      try {
+        if (!fs.existsSync(hookDir())) fs.mkdirSync(hookDir(), { recursive: true });
+        if (!hookDirIsSafe()) throw new Error('aor-hook is not a plain directory inside userData');
+        let current = null;
+        try { current = fs.readFileSync(hookSettingsPath(), 'utf8'); } catch { /* first run */ }
+        if (current !== body) { fs.writeFileSync(tmp, body, 'utf8'); fs.renameSync(tmp, hookSettingsPath()); }
+        value = hookSettingsPath();
+      } catch (e) {
+        try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
+        console.warn('[carrotcap] compress hook unavailable:', e.message);
+      }
+    }
+  }
+  compressHookCache = { key, value };
+  return value;
+}
 function resolveAorEngineRoot(settings) {
   const candidates = [];
   // Highest priority: bundled AOR shipped with the installer.
   // Production: <install-dir>/resources/AOR (electron-builder extraResources).
   // Development: <repo>/AOR.
-  const bundledAor = app.isPackaged
-    ? path.join(process.resourcesPath, 'AOR')
-    : path.join(APP_ROOT, 'AOR');
-  candidates.push(bundledAor);
+  candidates.push(bundledAorRoot());
   // User overrides from settings.
   if (settings && settings.aor && settings.aor.engineRoot) candidates.push(settings.aor.engineRoot);
   if (settings && settings.aor && Array.isArray(settings.aor.engineRootCandidates)) {
@@ -736,6 +807,51 @@ function safeMkdir(dirPath, projectRoot) {
       throw new Error(`safeMkdir: created path escapes workspace: ${dirPath}`);
     }
   }
+}
+// AOR engine runtime (task-016): the engine keeps a raw log per compressed command,
+// a metrics line per command and a report per session. Keep what the dashboard and
+// "read the full log" need, drop the rest. Only plain files with the engine's own
+// name patterns are touched; links are never followed.
+const AOR_RAW_KEEP = 200;
+const AOR_RAW_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const AOR_REPORT_KEEP = 20;
+const AOR_METRICS_MAX_AGE_DAYS = 30;
+function pruneAorRuntime(runtimeRoot, now = Date.now()) {
+  const removed = { raw: 0, reports: 0, metrics: 0 };
+  try { if (!fs.lstatSync(runtimeRoot).isDirectory()) return removed; } catch { return removed; }
+  const realRoot = safeRealpath(runtimeRoot);
+  if (!realRoot) return removed;
+  const listFiles = (sub, re) => {
+    const dir = path.join(runtimeRoot, sub);
+    try { if (!fs.lstatSync(dir).isDirectory()) return []; } catch { return []; } // a junction is not a directory to lstat
+    let ents;
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return []; }
+    return ents.filter((d) => d.isFile() && re.test(d.name)).map((d) => {
+      const p = path.join(dir, d.name);
+      let t = 0;
+      try { t = fs.lstatSync(p).mtimeMs; } catch { /* vanished */ }
+      return { p, name: d.name, t };
+    }).sort((a, b) => b.t - a.t);
+  };
+  const rm = (f, key) => {
+    try {
+      if (!fs.lstatSync(f.p).isFile() || !isPathInsideRoot(fs.realpathSync.native(f.p), realRoot)) return;
+      fs.rmSync(f.p, { force: true });
+      removed[key]++;
+    } catch { /* next time */ }
+  };
+  listFiles('raw', /^[0-9TZ-]+-[0-9a-f]{6,64}\.log$/).forEach((f, i) => {
+    if (i >= AOR_RAW_KEEP || now - f.t > AOR_RAW_MAX_AGE_MS) rm(f, 'raw');
+  });
+  listFiles('reports', /^session-report-\d{8}-\d{6}\.txt$/).forEach((f, i) => {
+    if (i >= AOR_REPORT_KEEP) rm(f, 'reports');
+  });
+  const cutoff = now - AOR_METRICS_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+  listFiles('metrics', /^\d{4}-\d{2}-\d{2}\.jsonl$/).forEach((f) => {
+    const day = Date.parse(f.name.slice(0, 10) + 'T00:00:00Z');
+    if (Number.isFinite(day) && day < cutoff) rm(f, 'metrics');
+  });
+  return removed;
 }
 // ---------- end aiops fs helpers ----------
 
@@ -912,12 +1028,23 @@ function resolvePtyArgs(opts) {
     const shellInit = path.join(engineRoot, 'engine', 'windows', '_internal', 'shell-init.ps1');
     const invoke = path.join(engineRoot, 'engine', 'windows', '_internal', 'invoke-aor.ps1');
     const claudeInt = path.join(engineRoot, 'engine', 'windows', '_internal', 'claude-integration.ps1');
-    const shimDir = path.join(engineRoot, 'engine', 'windows', 'shims');
+    // Console shims (npm/git/node/python → engine) buffer a command's whole output
+    // until it exits — a dev server shows nothing — and only compress what the human
+    // sees, never what an agent reads. Off unless aor.consoleShims is true (task-016).
+    const shimDir = settings.aor && settings.aor.consoleShims === true
+      ? path.join(engineRoot, 'engine', 'windows', 'shims')
+      : '';
     const runtimeRoot = path.join(engineRoot, 'engine', 'windows', 'bin', '.router-output');
     const sessionFile = path.join(runtimeRoot, 'session-status.json');
     const reportsDir = path.join(runtimeRoot, 'reports');
     fs.mkdirSync(reportsDir, { recursive: true });
     fs.mkdirSync(runtimeRoot, { recursive: true });
+    // At most once an hour per engine: keeps raw logs/reports/metrics bounded.
+    const lastPrune = aorPrunedAt.get(runtimeRoot) || 0;
+    if (Date.now() - lastPrune > 60 * 60 * 1000) {
+      aorPrunedAt.set(runtimeRoot, Date.now());
+      pruneAorRuntime(runtimeRoot);
+    }
     const isoStart = new Date().toISOString();
     return {
       file: getPowerShellExePath(),
@@ -926,7 +1053,7 @@ function resolvePtyArgs(opts) {
         '-File', shellInit,
         '-ProjectPath', cwd,
         '-SessionFile', sessionFile,
-        '-ShimDir', shimDir,
+        ...(shimDir ? ['-ShimDir', shimDir] : []),
         '-InvokeScript', invoke,
         '-ClaudeIntegration', claudeInt,
         '-SessionStartIso', isoStart,
@@ -954,6 +1081,9 @@ function resolvePtyArgs(opts) {
       return { error: `CLI command '${cli.command}' rejected: must match ${CMD_NAME_RE}` };
     }
     const cliArgs = Array.isArray(cli.args) ? cli.args.filter((a) => typeof a === 'string') : [];
+    // Only when the command really is Claude Code (a custom command may not take --settings).
+    const hookSettings = opts.cliKey === 'claude' && /^claude(\.exe|\.cmd)?$/i.test(cli.command) ? resolveCompressHook(settings) : null;
+    if (hookSettings && !cliArgs.includes('--settings')) cliArgs.unshift('--settings', hookSettings);
     if (process.platform === 'win32') {
       const pwshLine = '& ' + [pwshSingleQuote(cli.command), ...cliArgs.map(pwshSingleQuote)].join(' ');
       return {
@@ -1004,6 +1134,10 @@ function spawnSession(rawPayload) {
 
   const { cols, rows } = payload;
   const env = { ...process.env, TERM: 'xterm-256color', CARROTCAP: '1' };
+  // The AOR shell's `claude` wrapper adds --settings from this (task-017).
+  const hookSettings = resolveCompressHook(settings);
+  if (hookSettings) env.CARROTCAP_CLAUDE_SETTINGS = hookSettings;
+  else delete env.CARROTCAP_CLAUDE_SETTINGS;
 
   let proc;
   try {
@@ -1217,6 +1351,7 @@ handle('settings:get', () => loadSettings());
 handle('settings:set', (_e, next) => {
   saveSettings(validateSettings(next));
   cliStatusCache = { at: 0, value: null }; // CLI commands may have changed
+  compressHookCache = null;                // aor.compressHook may have changed
   return true;
 });
 
@@ -1555,7 +1690,10 @@ handle('cli:status', async () => {
 });
 
 // Is a usable AOR engine present? The renderer hides the AOR badge when not.
-handle('aor:status', () => ({ engineFound: !!resolveAorEngineRoot(loadSettings() || {}) }));
+handle('aor:status', () => {
+  const settings = loadSettings() || {};
+  return { engineFound: !!resolveAorEngineRoot(settings), compressHook: resolveCompressHook(settings) };
+});
 
 handle('app:platform', () => process.platform);
 handle('app:pty-available', () => ptyAvailable);

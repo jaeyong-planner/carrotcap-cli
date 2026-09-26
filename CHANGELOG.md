@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.1 — 2026-09-27
+
+### AOR 엔진 연결 (task-016)
+- Cream CLI 0.3.2 엔진 스크립트를 번들 — AOR/AIOps 페인이 실제로 엔진 셸로 부팅
+- 대시보드 정직화: Claude 프롬프트 캐시 읽기를 "절감"으로 세던 계산 분리 (기존 3.26억 → 실제 압축 절감 약 3.5만)
+- 콘솔 셔임 기본 OFF(`aor.consoleShims`) — dev 서버 출력이 막히던 문제 방지
+- 엔진 raw 로그·리포트·metrics 자동 정리
+
+### 실제 토큰 절감 — Claude 출력 압축 훅 (task-017)
+- CARROTCAP에서 띄운 claude에만 PostToolUse 훅: 성공한 테스트·빌드·설치 명령의 긴 출력을 AOR 엔진 요약으로 교체 (실측 17KB→0.8KB), 실패/에러 줄은 원문 보존
+- 권한 규칙·명령 실행은 그대로, 실패한 명령 출력은 압축하지 않음, `aor.compressHook`으로 끔
+
 ## 0.2.0 — 2026-09-26
 
 CARROTCAP CLI를 Cream CLI와 별개 제품 라인으로 유지하며 진행한 첫 개선 릴리스.

@@ -56,7 +56,9 @@ async function launchApp(userDataDir, { port = 9400 + Math.floor(Math.random() *
   const args = exe ? [`--remote-debugging-port=${port}`] : ['.', `--remote-debugging-port=${port}`];
   const child = spawn(cmd, args, {
     cwd: root,
-    env: { ...process.env, CARROTCAP_USER_DATA_DIR: userDataDir },
+    // CLAUDE_CONFIG_DIR: the AOR shell auto-trusts the project in Claude's state file — keep
+    // test folders out of the real ~/.claude.json (task-016).
+    env: { ...process.env, CARROTCAP_USER_DATA_DIR: userDataDir, CLAUDE_CONFIG_DIR: path.join(userDataDir, 'claude-config') },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   let log = '';

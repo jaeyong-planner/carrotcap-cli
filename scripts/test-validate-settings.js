@@ -76,6 +76,10 @@ module.exports = {
   findMissingAiopsTemplates,
   AIOPS_CLAUDE_BLOCK_START,
   AIOPS_CLAUDE_BLOCK_END,
+  pruneAorRuntime,
+  buildCompressHookSettings,
+  AOR_RAW_KEEP,
+  AOR_REPORT_KEEP,
 };
 `;
 function loadHelpers(appRoot) {
@@ -94,7 +98,8 @@ const {
   ensureAiopsProjectStructure, AIOPS_CLAUDE_BLOCK_START, AIOPS_CLAUDE_BLOCK_END,
   isWithinByteCap, findMissingAiopsTemplates, migrateSettings, SETTINGS_VERSION,
   sanitizeHistoryLayout, applyHistorySnapshot, finalizeHistoryRecord, dropResumableLayouts,
-  pickResumableSession, isHistoryExpired, HISTORY_MAX_SESSIONS, sanitizeHistoryRecord
+  pickResumableSession, isHistoryExpired, HISTORY_MAX_SESSIONS, sanitizeHistoryRecord,
+  pruneAorRuntime, AOR_RAW_KEEP, AOR_REPORT_KEEP, buildCompressHookSettings
 } = m.exports;
 
 let pass = 0;
@@ -659,6 +664,57 @@ console.log('-- browser mode helpers (task-015)');
   check('sanitizePick rejects non-objects', sanitizePick('x') === null);
   const r = clampRect({ x: -5, y: 1e9, width: 'w', height: 10.6 });
   check('clampRect clamps to integers >= 0', r.x === 0 && r.y === 20000 && r.width === 0 && r.height === 11);
+}
+
+console.log('-- AOR engine settings + runtime pruning (task-016)');
+{
+  const v = validateSettings({ aor: { consoleShims: 'yes', compressHook: 0 } });
+  check('consoleShims / compressHook coerced to booleans', v.aor.consoleShims === true && v.aor.compressHook === false);
+  check('absent flags stay absent (defaults apply)', !('consoleShims' in validateSettings({ aor: {} }).aor));
+
+  const os = require('os');
+  const rt = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-aor-rt-'));
+  const now = Date.parse('2026-09-27T00:00:00Z');
+  for (const d of ['raw', 'reports', 'metrics']) fs.mkdirSync(path.join(rt, d));
+  const touch = (p, ms) => { fs.writeFileSync(p, 'x'); const t = new Date(ms); fs.utimesSync(p, t, t); };
+  // raw: 210 recent logs + 1 old one + a foreign file
+  for (let i = 0; i < 210; i++) touch(path.join(rt, 'raw', `2026-09-26T10-00-00-${String(i).padStart(3, '0')}Z-abcdef${String(i).padStart(6, '0')}.log`), now - 3600e3 + i * 1000);
+  touch(path.join(rt, 'raw', '2026-09-01T00-00-00-000Z-a45e5d794fee.log'), now - 20 * 86400e3);
+  touch(path.join(rt, 'raw', 'notes.txt'), now - 90 * 86400e3);
+  for (let i = 0; i < 25; i++) touch(path.join(rt, 'reports', `session-report-202609${String(i + 1).padStart(2, '0')}-120000.txt`), now - (25 - i) * 3600e3);
+  touch(path.join(rt, 'metrics', '2026-07-01.jsonl'), now);
+  touch(path.join(rt, 'metrics', '2026-09-20.jsonl'), now);
+  const res = pruneAorRuntime(rt, now);
+  const rawLeft = fs.readdirSync(path.join(rt, 'raw'));
+  check('raw logs capped at AOR_RAW_KEEP, old one dropped', rawLeft.filter((n) => n.endsWith('.log')).length === AOR_RAW_KEEP && !rawLeft.includes('2026-09-01T00-00-00-000Z-a45e5d794fee.log'), JSON.stringify(res));
+  check('newest raw log kept', rawLeft.includes('2026-09-26T10-00-00-209Z-abcdef000209.log'));
+  check('foreign file in raw untouched', rawLeft.includes('notes.txt'));
+  check('reports capped at AOR_REPORT_KEEP (newest kept)', fs.readdirSync(path.join(rt, 'reports')).length === AOR_REPORT_KEEP && fs.existsSync(path.join(rt, 'reports', 'session-report-20260925-120000.txt')));
+  check('metrics older than 30 days removed, recent kept', !fs.existsSync(path.join(rt, 'metrics', '2026-07-01.jsonl')) && fs.existsSync(path.join(rt, 'metrics', '2026-09-20.jsonl')));
+  // A junctioned raw dir is never followed.
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-aor-out-'));
+  touch(path.join(outside, '2026-01-01T00-00-00-000Z-a45e5d794fee.log'), now - 90 * 86400e3);
+  fs.rmSync(path.join(rt, 'raw'), { recursive: true, force: true });
+  fs.symlinkSync(outside, path.join(rt, 'raw'), 'junction');
+  pruneAorRuntime(rt, now);
+  check('junctioned raw dir not followed', fs.existsSync(path.join(outside, '2026-01-01T00-00-00-000Z-a45e5d794fee.log')));
+  check('missing runtime dir is a no-op', JSON.stringify(pruneAorRuntime(path.join(rt, 'nope'), now)) === '{"raw":0,"reports":0,"metrics":0}');
+  fs.rmSync(path.join(rt, 'raw'), { force: true, recursive: false });
+  fs.rmSync(rt, { recursive: true, force: true });
+  fs.rmSync(outside, { recursive: true, force: true });
+}
+
+console.log('-- compress hook settings (task-017)');
+{
+  const cfg = buildCompressHookSettings(String.raw`C:\Program Files\nodejs\node.exe`, String.raw`C:\Users\o'neil\내 드라이브\AOR\carrotcap\compress-hook.js`);
+  const h = cfg.hooks.PostToolUse[0];
+  const cmd = h.hooks[0].command;
+  check('only a PostToolUse hook on Bash', Object.keys(cfg).join() === 'hooks' && Object.keys(cfg.hooks).join() === 'PostToolUse' && h.matcher === 'Bash');
+  check('paths single-quoted with forward slashes', cmd.startsWith("'C:/Program Files/nodejs/node.exe' 'C:/Users/"), cmd);
+  check('apostrophe in a path is escaped for sh', cmd.includes(String.raw`o'\''neil`), cmd);
+  const r = require('child_process').spawnSync('bash', ['-c', 'for a in ' + cmd + '; do echo "[$a]"; done'], { encoding: 'utf8' });
+  const words = r.error ? [] : r.stdout.trim().split(/\r?\n/);
+  check('bash splits it into exactly the two paths', words.length === 2 && words[1].includes("o'neil"), r.stdout || String(r.error));
 }
 
 console.log('');
