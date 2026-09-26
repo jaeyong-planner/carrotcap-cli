@@ -34,3 +34,11 @@ CARROTCAP의 정체성(터미널 + AOR + AIOps 3-Agent 흐름)에 직접 도움�
 2. `npm run test:smoke` 20/20 — 클립보드 왕복, 비문자열 거부
 3. CDP 실제 키 입력: `Ctrl+Shift+V` 붙여넣기 → 프롬프트에 입력됨, 드래그 + `Ctrl+Shift+C` → 클립보드에 한 줄 복사됨
 4. Codex 리뷰 (task-008 + 009)
+
+## 리뷰 반영 r1 (logs/review/task-008-009_userdata-clipboard-templates.md — ❌ 반려, Critical 2 / Major 2 / Minor 2 / Optional 1)
+- Critical: `app.setPath` 전에 userData 폴더 생성 (새 프로필) — 스모크가 존재하지 않는 폴더에서 시작해 검증
+- Critical: 파싱 불가 `settings.json`은 `settings.json.corrupt-<시각>`으로 보존 후 재시드 — `--corrupt-settings` 스모크로 검증
+- Major ×2: 템플릿 8종을 **쓰기 전에** 전부 확인(`findMissingAiopsTemplates`), CLAUDE 블록도 선읽기. 누락 시 아무것도 쓰지 않고 `aiops:setup`이 누락 파일명을 반환
+- Minor: 클립보드/PTY 1MB 상한을 UTF-8 바이트 기준으로 (`isWithinByteCap`), 누락 템플릿·부분 상태·재실행 복구 테스트 추가
+- Optional: `saveWorkspaceState` 성공 여부 반환, 마이그레이션 로그는 성공 시에만
+- 결과: `npm test` 115/115, 스모크 dev·packaged × fresh·corrupt 모두 통과

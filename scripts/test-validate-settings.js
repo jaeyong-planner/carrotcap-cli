@@ -31,9 +31,10 @@ if (aiopsStart < 0 || aiopsEnd < 0) {
 const aiopsBlock = source.slice(aiopsStart, aiopsEnd);
 
 // Build a sandboxed module: eval the block and export the helpers.
-const wrapper = `
+// APP_ROOT is injectable so missing-template cases can use an empty app root.
+const makeWrapper = (appRoot) => `
 const fs = require('fs');
-const APP_ROOT = ${JSON.stringify(path.join(__dirname, '..'))};
+const APP_ROOT = ${JSON.stringify(appRoot)};
 ${block}
 ${aiopsBlock}
 module.exports = {
@@ -60,14 +61,19 @@ module.exports = {
   isValidPtyId,
   validateClaudeMdContent,
   MAX_CLAUDE_MD_BYTES,
+  isWithinByteCap,
   ensureAiopsProjectStructure,
+  findMissingAiopsTemplates,
   AIOPS_CLAUDE_BLOCK_START,
   AIOPS_CLAUDE_BLOCK_END,
 };
 `;
-const m = { exports: {} };
-const fn = new Function('module', 'require', 'process', 'path', wrapper);
-fn(m, require, process, path);
+function loadHelpers(appRoot) {
+  const mod = { exports: {} };
+  new Function('module', 'require', 'process', 'path', makeWrapper(appRoot))(mod, require, process, path);
+  return mod.exports;
+}
+const m = { exports: loadHelpers(path.join(__dirname, '..')) };
 const {
   validateSettings, pwshSingleQuote, posixShellQuote, getSystem32Path,
   isPathInsideRoot, isPathInsideAllowedWorkspace, addAllowedWorkspace,
@@ -75,7 +81,8 @@ const {
   writeIfMissing, safeMkdir, assertAncestorsClean, copyTemplateIfMissing,
   clampInt, resolveAllowedDir, sanitizeSpawnPayload, isValidPtyId,
   validateClaudeMdContent, MAX_CLAUDE_MD_BYTES,
-  ensureAiopsProjectStructure, AIOPS_CLAUDE_BLOCK_START, AIOPS_CLAUDE_BLOCK_END
+  ensureAiopsProjectStructure, AIOPS_CLAUDE_BLOCK_START, AIOPS_CLAUDE_BLOCK_END,
+  isWithinByteCap, findMissingAiopsTemplates
 } = m.exports;
 
 let pass = 0;
@@ -428,6 +435,39 @@ console.log('-- ensureAiopsProjectStructure from templates/aiops (task-009)');
     out('CLAUDE.md').split(AIOPS_CLAUDE_BLOCK_START).length === 2);
 
   try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
+}
+
+console.log('-- missing templates: refuse before writing (task-009 review)');
+{
+  const os = require('os');
+  check('real app root has all templates', findMissingAiopsTemplates().length === 0, findMissingAiopsTemplates().join(','));
+
+  const emptyRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'carrotcap-noroot-'));
+  const broken = loadHelpers(emptyRoot);
+  const missing = broken.findMissingAiopsTemplates();
+  check('empty app root reports all 8 templates missing', missing.length === 8, missing.join(','));
+  check('missing list names templates/aiops/supervisor.md', missing.includes(path.join('templates', 'aiops', 'supervisor.md')));
+
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'carrotcap-partial-'));
+  const res = broken.ensureAiopsProjectStructure(ws);
+  check('setup returns null when templates missing', res === null);
+  check('no partial structure written', fs.readdirSync(ws).length === 0, fs.readdirSync(ws).join(','));
+
+  // Re-run with a complete app root recovers normally.
+  const res2 = ensureAiopsProjectStructure(ws);
+  check('re-run with complete templates succeeds', res2 && fs.existsSync(path.join(ws, 'agents', 'supervisor.md')));
+
+  try { fs.rmSync(emptyRoot, { recursive: true, force: true }); } catch {}
+  try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
+}
+
+console.log('-- isWithinByteCap: UTF-8 bytes, not UTF-16 units (task-009 review)');
+{
+  check('ascii at cap accepted', isWithinByteCap('a'.repeat(10), 10));
+  check('ascii over cap rejected', !isWithinByteCap('a'.repeat(11), 10));
+  check('hangul counted as 3 bytes', !isWithinByteCap('가가가가', 10) && isWithinByteCap('가가가', 9));
+  check('emoji counted as 4 bytes', !isWithinByteCap('😀😀😀', 10));
+  check('non-string rejected', !isWithinByteCap(123, 10));
 }
 
 console.log('');

@@ -7,6 +7,7 @@
 //
 // Usage: node scripts/test-electron-smoke.js                (npm run test:smoke — dev app)
 //        node scripts/test-electron-smoke.js <path-to-exe>  (packaged build)
+//        add --corrupt-settings to start from an unparsable settings.json
 // The app runs with a throwaway user data dir (CARROTCAP_USER_DATA_DIR), so real
 // user settings are never touched.
 // For a packaged build, rename carrotcap.exe first: ensureCliRegistration only runs
@@ -19,10 +20,20 @@ const os = require('os');
 const path = require('path');
 
 const root = path.join(__dirname, '..');
-const packagedExe = process.argv[2] ? path.resolve(process.argv[2]) : null;
+const argv = process.argv.slice(2);
+// --corrupt-settings: start with an unparsable settings.json (backup + re-seed path).
+// Without it the user data dir does not exist at launch (fresh-profile path).
+const corruptSettings = argv.includes('--corrupt-settings');
+const exeArg = argv.find((a) => !a.startsWith('--'));
+const packagedExe = exeArg ? path.resolve(exeArg) : null;
 const port = 9333 + Math.floor(Math.random() * 500);
 const appData = fs.mkdtempSync(path.join(os.tmpdir(), 'carrotcap-smoke-'));
 const userDataDir = path.join(appData, 'userData');
+const CORRUPT_TEXT = '{ "aor": { broken json';
+if (corruptSettings) {
+  fs.mkdirSync(userDataDir, { recursive: true });
+  fs.writeFileSync(path.join(userDataDir, 'settings.json'), CORRUPT_TEXT);
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0;
@@ -149,9 +160,16 @@ const PROBE = `(async () => {
   check('terminal menu API exposed', r.termMenuApi === true);
   console.log('-- renderer errors');
   check('no exceptions / console errors on load', logs.length === 0, logs.join(' | '));
-  console.log('-- user data dir (task-008)');
-  check('settings.json seeded in userData', fs.existsSync(path.join(userDataDir, 'settings.json')), userDataDir);
+  console.log(`-- user data dir (task-008, ${corruptSettings ? 'corrupt settings' : 'fresh profile'})`);
+  let seeded = null;
+  try { seeded = JSON.parse(fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf8')); } catch {}
+  check('valid settings.json seeded in userData', !!(seeded && seeded.cli), userDataDir);
   check('CLAUDE.md seeded in userData', fs.existsSync(path.join(userDataDir, 'CLAUDE.md')));
+  if (corruptSettings) {
+    const backups = fs.readdirSync(userDataDir).filter((f) => f.startsWith('settings.json.corrupt-'));
+    check('corrupt settings backed up, not lost', backups.length === 1 &&
+      fs.readFileSync(path.join(userDataDir, backups[0]), 'utf8') === CORRUPT_TEXT, backups.join(','));
+  }
   ws.close();
 })()
   .catch((e) => { console.log('  FAIL  smoke harness ::', e.message); fail++; })

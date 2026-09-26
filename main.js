@@ -31,11 +31,12 @@ const APP_ROOT = __dirname;
 // from other Electron apps (e.g. Cream CLI uses %APPDATA%\cream-cli).
 // CARROTCAP_USER_DATA_DIR (absolute path) isolates test runs (scripts/test-electron-smoke.js).
 const userDataOverride = process.env.CARROTCAP_USER_DATA_DIR;
-app.setPath('userData', (userDataOverride && path.isAbsolute(userDataOverride))
+const USER_DATA_ROOT = (userDataOverride && path.isAbsolute(userDataOverride))
   ? userDataOverride
-  : path.join(app.getPath('appData'), app.isPackaged ? 'carrotcap-cli' : 'carrotcap-cli-dev'));
-const USER_DATA_ROOT = app.getPath('userData');
-try { fs.mkdirSync(USER_DATA_ROOT, { recursive: true }); } catch { /* initUserState retries and logs */ }
+  : path.join(app.getPath('appData'), app.isPackaged ? 'carrotcap-cli' : 'carrotcap-cli-dev');
+// app.setPath may throw for a directory that does not exist yet (fresh profile).
+try { fs.mkdirSync(USER_DATA_ROOT, { recursive: true }); } catch { /* setPath/initUserState surface it */ }
+app.setPath('userData', USER_DATA_ROOT);
 // Bundled, read-only defaults shipped with the app.
 const BUNDLED_SETTINGS_PATH  = path.join(APP_ROOT, 'settings.json');
 const BUNDLED_CLAUDE_MD_PATH = path.join(APP_ROOT, 'CLAUDE.md');
@@ -213,8 +214,8 @@ function loadWorkspaceState(filePath = WORKSPACE_STATE_PATH) {
 }
 
 function saveWorkspaceState(state) {
-  try { fs.writeFileSync(WORKSPACE_STATE_PATH, JSON.stringify(state, null, 2), 'utf8'); }
-  catch (e) { console.warn('[carrotcap] saveWorkspaceState failed:', e.message); }
+  try { fs.writeFileSync(WORKSPACE_STATE_PATH, JSON.stringify(state, null, 2), 'utf8'); return true; }
+  catch (e) { console.warn('[carrotcap] saveWorkspaceState failed:', e.message); return false; }
 }
 
 function getTemplateRoot() {
@@ -257,7 +258,7 @@ function persistRecentWorkspace(real) {
 // IPC payload validation (task-007): pty:* and aor:set-claude-md.
 const PTY_MODES = new Set(['plain', 'aor', 'aiops', 'cli']);
 const PTY_ID_RE = /^pty_\d{1,16}_[a-z0-9]{1,16}$/;
-const MAX_PTY_WRITE_LEN   = 1024 * 1024;  // 1MB per write (large pastes)
+const MAX_PTY_WRITE_BYTES = 1024 * 1024;  // 1MB (UTF-8) per write / clipboard transfer
 const MAX_CLAUDE_MD_BYTES = 512 * 1024;   // 512KB
 
 function clampInt(v, min, max, fallback) {
@@ -296,10 +297,15 @@ function isValidPtyId(id) {
   return typeof id === 'string' && PTY_ID_RE.test(id);
 }
 
+function isWithinByteCap(s, maxBytes) {
+  // Cheap reject first: a UTF-8 string is never shorter in bytes than in UTF-16 units.
+  return typeof s === 'string' && s.length <= maxBytes && Buffer.byteLength(s, 'utf8') <= maxBytes;
+}
+
 function validateClaudeMdContent(content) {
   if (typeof content !== 'string') return false;
   if (content.includes('\x00')) return false;
-  return Buffer.byteLength(content, 'utf8') <= MAX_CLAUDE_MD_BYTES;
+  return isWithinByteCap(content, MAX_CLAUDE_MD_BYTES);
 }
 // ---------- end security helpers ----------
 
@@ -413,7 +419,13 @@ function buildDefaultSettings() {
 // Existing user files are never overwritten.
 function initUserState() {
   fs.mkdirSync(USER_DATA_ROOT, { recursive: true });
-  if (!loadSettings()) {
+  if (fs.existsSync(SETTINGS_PATH) && !loadSettings()) {
+    // Unreadable/corrupt user settings: keep the original for recovery, then re-seed.
+    const backup = `${SETTINGS_PATH}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    fs.renameSync(SETTINGS_PATH, backup);
+    console.warn('[carrotcap] settings.json was unreadable; backed up to', backup);
+  }
+  if (!fs.existsSync(SETTINGS_PATH)) {
     const seeded = validateSettings(readJsonFile(BUNDLED_SETTINGS_PATH));
     saveSettings(seeded.cli && Object.keys(seeded.cli).length ? seeded : buildDefaultSettings());
   }
@@ -422,8 +434,9 @@ function initUserState() {
     catch (e) { console.warn('[carrotcap] CLAUDE.md seed failed:', e.message); }
   }
   if (!fs.existsSync(WORKSPACE_STATE_PATH) && fs.existsSync(LEGACY_WORKSPACE_STATE_PATH)) {
-    saveWorkspaceState(loadWorkspaceState(LEGACY_WORKSPACE_STATE_PATH));
-    console.log('[carrotcap] migrated workspace-state.json to', WORKSPACE_STATE_PATH);
+    if (saveWorkspaceState(loadWorkspaceState(LEGACY_WORKSPACE_STATE_PATH))) {
+      console.log('[carrotcap] migrated workspace-state.json to', WORKSPACE_STATE_PATH);
+    }
   }
 }
 
@@ -569,6 +582,21 @@ function ensureAiopsProjectStructure(projectRoot) {
   const realRoot = safeRealpath(projectRoot);
   if (!realRoot || !fs.existsSync(realRoot)) return null;
 
+  // task-009 review: verify every bundled template BEFORE writing anything, so a
+  // broken build never leaves a half-created structure reported as success.
+  const missing = findMissingAiopsTemplates();
+  if (missing.length) {
+    console.warn('[carrotcap] aiops setup refused: missing templates:', missing.join(', '));
+    return null;
+  }
+  const tmpl = getAiopsTemplateSources();
+  let aiopsBlockBody;
+  try { aiopsBlockBody = fs.readFileSync(tmpl.claudeBlock, 'utf8'); }
+  catch (e) {
+    console.warn('[carrotcap] aiops setup refused: CLAUDE block template unreadable:', e.message);
+    return null;
+  }
+
   const agentsDir = path.join(realRoot, 'agents');
   const logsDir = path.join(realRoot, 'logs');
   const researchLogsDir = path.join(logsDir, 'research');
@@ -584,27 +612,14 @@ function ensureAiopsProjectStructure(projectRoot) {
     return null;
   }
 
-  // task-009: setup documents live in templates/aiops/ (editable, shipped via build.files).
-  const aiopsTemplates = path.join(getTemplateRoot(), 'templates', 'aiops');
-  copyTemplateIfMissing(path.join(aiopsTemplates, 'supervisor.md'), path.join(agentsDir, 'supervisor.md'), realRoot);
-
-  // task-005: deploy the rich researcher.md / reviewer.md from the bundled
-  // app templates instead of the prior embedded short version. writeIfMissing
-  // (called inside copyTemplateIfMissing) preserves any existing project file.
-  const templateRoot = getTemplateRoot();
-  copyTemplateIfMissing(
-    path.join(templateRoot, 'agents', 'researcher.md'),
-    path.join(agentsDir, 'researcher.md'),
-    realRoot
-  );
-  copyTemplateIfMissing(
-    path.join(templateRoot, 'agents', 'reviewer.md'),
-    path.join(agentsDir, 'reviewer.md'),
-    realRoot
-  );
-
-  copyTemplateIfMissing(path.join(aiopsTemplates, 'task-001.md'), path.join(backlogDir, 'task-001.md'), realRoot);
-  copyTemplateIfMissing(path.join(aiopsTemplates, 'workflow.md'), path.join(backlogDir, 'workflow.md'), realRoot);
+  // task-009: setup documents live in templates/aiops/ (editable, shipped via build.files);
+  // researcher/reviewer come from agents/ (task-005). writeIfMissing (inside
+  // copyTemplateIfMissing) preserves any existing project file.
+  copyTemplateIfMissing(tmpl.supervisor, path.join(agentsDir, 'supervisor.md'), realRoot);
+  copyTemplateIfMissing(tmpl.researcher, path.join(agentsDir, 'researcher.md'), realRoot);
+  copyTemplateIfMissing(tmpl.reviewer, path.join(agentsDir, 'reviewer.md'), realRoot);
+  copyTemplateIfMissing(tmpl.task001, path.join(backlogDir, 'task-001.md'), realRoot);
+  copyTemplateIfMissing(tmpl.workflow, path.join(backlogDir, 'workflow.md'), realRoot);
 
   // task-005: deploy the helper PowerShell scripts so the project can run the
   // researcher/reviewer cycle with the same auto-loading and output shaping the
@@ -613,17 +628,8 @@ function ensureAiopsProjectStructure(projectRoot) {
   const projectScriptsDir = path.join(realRoot, 'scripts');
   try {
     safeMkdir(projectScriptsDir, realRoot);
-    const tmplScripts = path.join(getTemplateRoot(), 'scripts');
-    copyTemplateIfMissing(
-      path.join(tmplScripts, 'run-researcher.ps1'),
-      path.join(projectScriptsDir, 'run-researcher.ps1'),
-      realRoot
-    );
-    copyTemplateIfMissing(
-      path.join(tmplScripts, 'run-reviewer.ps1'),
-      path.join(projectScriptsDir, 'run-reviewer.ps1'),
-      realRoot
-    );
+    copyTemplateIfMissing(tmpl.runResearcher, path.join(projectScriptsDir, 'run-researcher.ps1'), realRoot);
+    copyTemplateIfMissing(tmpl.runReviewer, path.join(projectScriptsDir, 'run-reviewer.ps1'), realRoot);
   } catch (e) {
     // Non-fatal: setup continues with the agents/logs/backlog structure even if
     // scripts/ deployment fails (e.g. existing symlink at projectRoot/scripts).
@@ -631,12 +637,6 @@ function ensureAiopsProjectStructure(projectRoot) {
   }
 
   const claudePath = path.join(realRoot, 'CLAUDE.md');
-  let aiopsBlockBody;
-  try { aiopsBlockBody = fs.readFileSync(path.join(aiopsTemplates, 'CLAUDE-block.md'), 'utf8'); }
-  catch (e) {
-    console.warn('[carrotcap] aiops CLAUDE block template missing:', e.message);
-    return null;
-  }
   const aiopsBlock = `${AIOPS_CLAUDE_BLOCK_START}\n${aiopsBlockBody.replace(/\s*$/, '\n')}${AIOPS_CLAUDE_BLOCK_END}\n`;
 
   // task-004-r3 reflection: apply the same ancestor guard to CLAUDE.md write
@@ -681,6 +681,28 @@ function ensureAiopsProjectStructure(projectRoot) {
     }
   }
   return { agentsDir, logsDir, backlogDir, claudePath, root: realRoot };
+}
+
+// Bundled sources copied by ensureAiopsProjectStructure (task-009 review).
+function getAiopsTemplateSources() {
+  const root = getTemplateRoot();
+  return {
+    supervisor:    path.join(root, 'templates', 'aiops', 'supervisor.md'),
+    task001:       path.join(root, 'templates', 'aiops', 'task-001.md'),
+    workflow:      path.join(root, 'templates', 'aiops', 'workflow.md'),
+    claudeBlock:   path.join(root, 'templates', 'aiops', 'CLAUDE-block.md'),
+    researcher:    path.join(root, 'agents', 'researcher.md'),
+    reviewer:      path.join(root, 'agents', 'reviewer.md'),
+    runResearcher: path.join(root, 'scripts', 'run-researcher.ps1'),
+    runReviewer:   path.join(root, 'scripts', 'run-reviewer.ps1')
+  };
+}
+
+function findMissingAiopsTemplates() {
+  const root = getTemplateRoot();
+  return Object.values(getAiopsTemplateSources())
+    .filter((p) => !fs.existsSync(p))
+    .map((p) => path.relative(root, p));
 }
 
 function resolvePtyArgs(opts) {
@@ -1001,15 +1023,19 @@ handle('aiops:setup', (_e, projectRoot) => {
   if (!real || !fs.existsSync(real)) {
     return { ok: false, error: '프로젝트 폴더가 존재하지 않습니다.' };
   }
+  const missing = findMissingAiopsTemplates();
+  if (missing.length) {
+    return { ok: false, error: `앱 설치가 불완전합니다. 누락된 템플릿: ${missing.join(', ')}` };
+  }
   const result = ensureAiopsProjectStructure(real);
-  if (!result) return { ok: false, error: '프로젝트 폴더를 먼저 선택하세요.' };
+  if (!result) return { ok: false, error: 'AIOps 구조를 만들지 못했습니다. (심볼릭 링크 또는 쓰기 권한 확인)' };
   return { ok: true, root: real, ...result };
 });
 
 handle('pty:spawn', (_e, payload) => spawnSession(payload));
 on('pty:write', (_e, { id, data }) => {
   const s = sessions.get(id);
-  if (!s || typeof data !== 'string' || data.length > MAX_PTY_WRITE_LEN) return;
+  if (!s || typeof data !== 'string' || !isWithinByteCap(data, MAX_PTY_WRITE_BYTES)) return;
   try {
     s.proc.write(data);
   } catch (err) {
@@ -1038,14 +1064,14 @@ on('pty:kill', (_e, { id }) => {
 handle('clipboard:read-text', () => {
   try {
     const text = clipboard.readText() || '';
-    if (text.length > MAX_PTY_WRITE_LEN) return { ok: false, error: '클립보드 텍스트가 1MB를 넘습니다.' };
+    if (!isWithinByteCap(text, MAX_PTY_WRITE_BYTES)) return { ok: false, error: '클립보드 텍스트가 1MB를 넘습니다.' };
     return { ok: true, text };
   } catch (err) {
     return { ok: false, error: (err && err.message) || 'clipboard read failed' };
   }
 });
 handle('clipboard:write-text', (_e, text) => {
-  if (typeof text !== 'string' || text.length > MAX_PTY_WRITE_LEN) return { ok: false, error: 'invalid clipboard text' };
+  if (typeof text !== 'string' || !isWithinByteCap(text, MAX_PTY_WRITE_BYTES)) return { ok: false, error: 'invalid clipboard text' };
   try { clipboard.writeText(text); return { ok: true }; }
   catch (err) { return { ok: false, error: (err && err.message) || 'clipboard write failed' }; }
 });
