@@ -44,6 +44,12 @@ module.exports = {
   safeMkdir,
   assertAncestorsClean,
   copyTemplateIfMissing,
+  clampInt,
+  resolveAllowedDir,
+  sanitizeSpawnPayload,
+  isValidPtyId,
+  validateClaudeMdContent,
+  MAX_CLAUDE_MD_BYTES,
 };
 `;
 const m = { exports: {} };
@@ -53,7 +59,9 @@ const {
   validateSettings, pwshSingleQuote, posixShellQuote, getSystem32Path,
   isPathInsideRoot, isPathInsideAllowedWorkspace, addAllowedWorkspace,
   safeRealpath, allowedWorkspaces, MAX_RECENT_WORKSPACES,
-  writeIfMissing, safeMkdir, assertAncestorsClean, copyTemplateIfMissing
+  writeIfMissing, safeMkdir, assertAncestorsClean, copyTemplateIfMissing,
+  clampInt, resolveAllowedDir, sanitizeSpawnPayload, isValidPtyId,
+  validateClaudeMdContent, MAX_CLAUDE_MD_BYTES
 } = m.exports;
 
 let pass = 0;
@@ -306,6 +314,72 @@ console.log('-- assertAncestorsClean fail-closed (task-004-r4)');
   check('path outside workspace throws (reaches fs root)', t2);
 
   try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
+}
+
+console.log('-- clampInt (task-007)');
+{
+  check('in range kept', clampInt(80, 2, 1000, 80) === 80);
+  check('float floored', clampInt(80.9, 2, 1000, 80) === 80);
+  check('too big clamped', clampInt(1e9, 2, 1000, 80) === 1000);
+  check('negative clamped', clampInt(-5, 2, 1000, 80) === 2);
+  check('NaN -> fallback', clampInt(NaN, 2, 1000, 80) === 80);
+  check('string -> fallback', clampInt('100', 2, 1000, 80) === 80);
+}
+
+console.log('-- sanitizeSpawnPayload / resolveAllowedDir (task-007)');
+{
+  const os = require('os');
+  const ws = path.join(os.tmpdir(), 'carrotcap-spawn-' + Date.now());
+  const sub = path.join(ws, 'sub');
+  fs.mkdirSync(sub, { recursive: true });
+  const file = path.join(ws, 'f.txt');
+  fs.writeFileSync(file, 'x');
+  allowedWorkspaces.clear();
+  addAllowedWorkspace(ws);
+
+  const ok = sanitizeSpawnPayload({ mode: 'aiops', cwd: sub, cols: 120, rows: 30 });
+  check('allowed cwd kept (realpath)', ok.cwd === safeRealpath(sub));
+  check('valid mode kept', ok.mode === 'aiops');
+  check('cols/rows kept', ok.cols === 120 && ok.rows === 30);
+
+  const out = sanitizeSpawnPayload({ mode: 'aiops', cwd: os.homedir() });
+  check('cwd outside allowlist dropped', !('cwd' in out));
+  check('file cwd rejected', resolveAllowedDir(file) === null);
+  check('non-string cwd rejected', resolveAllowedDir({ toString: () => ws }) === null);
+
+  const bad = sanitizeSpawnPayload({ mode: 'root', cliKey: 'constructor', cols: 1e9, rows: -1, extra: 'x' });
+  check('unknown mode -> plain', bad.mode === 'plain');
+  check('reserved cliKey dropped', !('cliKey' in bad));
+  check('cols clamped', bad.cols === 1000);
+  check('rows clamped', bad.rows === 1);
+  check('unknown keys dropped', !('extra' in bad));
+  check('invalid cliKey dropped', !('cliKey' in sanitizeSpawnPayload({ mode: 'cli', cliKey: 'a;b' })));
+  check('valid cliKey kept', sanitizeSpawnPayload({ mode: 'cli', cliKey: 'claude' }).cliKey === 'claude');
+
+  check('null payload -> defaults', sanitizeSpawnPayload(null).mode === 'plain');
+  check('array payload -> defaults', sanitizeSpawnPayload([1, 2]).mode === 'plain');
+
+  allowedWorkspaces.clear();
+  try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
+}
+
+console.log('-- isValidPtyId (task-007)');
+{
+  check('real id shape accepted', isValidPtyId('pty_1727330000000_ab12cd'));
+  check('non-string rejected', !isValidPtyId(12));
+  check('proto key rejected', !isValidPtyId('__proto__'));
+  check('suffix garbage rejected', !isValidPtyId('pty_1_ab;rm'));
+}
+
+console.log('-- validateClaudeMdContent (task-007)');
+{
+  check('normal text accepted', validateClaudeMdContent('# 규칙\n- a'));
+  check('empty string accepted', validateClaudeMdContent(''));
+  check('non-string rejected', !validateClaudeMdContent({ a: 1 }));
+  check('NUL rejected', !validateClaudeMdContent('a\x00b'));
+  check('exact cap accepted', validateClaudeMdContent('a'.repeat(MAX_CLAUDE_MD_BYTES)));
+  check('over cap rejected', !validateClaudeMdContent('a'.repeat(MAX_CLAUDE_MD_BYTES + 1)));
+  check('multibyte counted as bytes', !validateClaudeMdContent('가'.repeat(Math.ceil(MAX_CLAUDE_MD_BYTES / 3) + 1)));
 }
 
 console.log('');

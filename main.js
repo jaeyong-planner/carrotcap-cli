@@ -237,6 +237,54 @@ function persistRecentWorkspace(real) {
   state.recentWorkspaces = filtered.slice(0, MAX_RECENT_WORKSPACES);
   saveWorkspaceState(state);
 }
+
+// IPC payload validation (task-007): pty:* and aor:set-claude-md.
+const PTY_MODES = new Set(['plain', 'aor', 'aiops', 'cli']);
+const PTY_ID_RE = /^pty_\d{1,16}_[a-z0-9]{1,16}$/;
+const MAX_PTY_WRITE_LEN   = 1024 * 1024;  // 1MB per write (large pastes)
+const MAX_CLAUDE_MD_BYTES = 512 * 1024;   // 512KB
+
+function clampInt(v, min, max, fallback) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(v)));
+}
+
+function resolveAllowedDir(p) {
+  // Returns the canonical realpath of p only if it is an existing directory
+  // inside an allowed workspace; otherwise null.
+  if (typeof p !== 'string' || !p || !isPathInsideAllowedWorkspace(p)) return null;
+  const real = safeRealpath(p);
+  if (!real) return null;
+  try { return fs.statSync(real).isDirectory() ? real : null; } catch { return null; }
+}
+
+function sanitizeSpawnPayload(input) {
+  // Whitelist clone of the renderer's pty:spawn payload. cwd outside the
+  // workspace allowlist is dropped (spawn falls back to the home directory) so
+  // AIOps auto-setup can never write outside a folder the user picked.
+  const p = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+  const out = {
+    mode: PTY_MODES.has(p.mode) ? p.mode : 'plain',
+    cols: clampInt(p.cols, 2, 1000, 80),
+    rows: clampInt(p.rows, 1, 500, 24)
+  };
+  if (typeof p.cliKey === 'string' && CLI_KEY_RE.test(p.cliKey) && !RESERVED_OBJECT_KEYS.has(p.cliKey)) {
+    out.cliKey = p.cliKey;
+  }
+  const cwd = resolveAllowedDir(p.cwd);
+  if (cwd) out.cwd = cwd;
+  return out;
+}
+
+function isValidPtyId(id) {
+  return typeof id === 'string' && PTY_ID_RE.test(id);
+}
+
+function validateClaudeMdContent(content) {
+  if (typeof content !== 'string') return false;
+  if (content.includes('\x00')) return false;
+  return Buffer.byteLength(content, 'utf8') <= MAX_CLAUDE_MD_BYTES;
+}
 // ---------- end security helpers ----------
 
 // Self-heal the global `carrotcap` / `aor` CLI registration on every packaged launch.
@@ -669,10 +717,9 @@ ${AIOPS_CLAUDE_BLOCK_END}
 function resolvePtyArgs(opts) {
   // opts: { mode: 'plain' | 'aor' | 'aiops' | 'cli', cliKey?, cwd, settings }
   const settings = opts.settings || {};
-  const requestedProjectRoot =
-    opts.cwd && fs.existsSync(opts.cwd)
-      ? opts.cwd
-      : (settings.defaultProjectPath && fs.existsSync(settings.defaultProjectPath) ? settings.defaultProjectPath : null);
+  // task-007: both sources must be inside the workspace allowlist — AIOps mode
+  // writes project files under this root.
+  const requestedProjectRoot = resolveAllowedDir(opts.cwd) || resolveAllowedDir(settings.defaultProjectPath);
   const cwd = requestedProjectRoot || os.homedir();
   if (opts.mode === 'aor' || opts.mode === 'aiops') {
     const isAiops = opts.mode === 'aiops';
@@ -751,14 +798,14 @@ function resolvePtyArgs(opts) {
   return { file: defaultShell(), args: plainArgs, cwd, kind: 'plain' };
 }
 
-function spawnSession(payload) {
+function spawnSession(rawPayload) {
+  const payload = sanitizeSpawnPayload(rawPayload);
   const settings = loadSettings() || {};
   const resolved = resolvePtyArgs({ ...payload, settings });
   if (resolved.error) return { error: resolved.error };
   const { file, args, cwd, kind } = resolved;
 
-  const cols = payload.cols || 80;
-  const rows = payload.rows || 24;
+  const { cols, rows } = payload;
   const env = { ...process.env, TERM: 'xterm-256color', CARROTCAP: '1' };
 
   let proc;
@@ -879,9 +926,19 @@ function createWindow() {
       preload: path.join(APP_ROOT, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      // task-007: preload only uses contextBridge/ipcRenderer, which are
+      // available in the sandboxed preload, so the renderer runs sandboxed.
+      sandbox: true,
+      webviewTags: false
     }
   });
+  // task-007: the UI is a single local page. Block in-app navigation and new
+  // windows; hand http(s) links (xterm web-links addon) to the OS browser.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url).catch(() => {});
+    return { action: 'deny' };
+  });
+  mainWindow.webContents.on('will-navigate', (e) => e.preventDefault());
   mainWindow.loadFile('index.html');
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -893,18 +950,42 @@ function createWindow() {
 }
 
 // ---------- IPC ----------
-ipcMain.handle('settings:get', () => loadSettings());
-ipcMain.handle('settings:set', (_e, next) => { saveSettings(validateSettings(next)); return true; });
+// task-007: every channel only answers the app's own top-level frame. Anything
+// else (a navigated/foreign frame) gets `undefined` / is ignored.
+function isTrustedSender(e) {
+  if (!mainWindow || mainWindow.isDestroyed() || !e) return false;
+  const wc = mainWindow.webContents;
+  return e.sender === wc && e.senderFrame === wc.mainFrame;
+}
+function handle(channel, fn) {
+  ipcMain.handle(channel, (e, ...args) => (isTrustedSender(e) ? fn(e, ...args) : undefined));
+}
+function on(channel, fn) {
+  ipcMain.on(channel, (e, payload) => {
+    if (!isTrustedSender(e)) return;
+    if (!payload || typeof payload !== 'object' || !isValidPtyId(payload.id)) return;
+    fn(e, payload);
+  });
+}
 
-ipcMain.handle('aor:get-claude-md', () => {
+handle('settings:get', () => loadSettings());
+handle('settings:set', (_e, next) => { saveSettings(validateSettings(next)); return true; });
+
+handle('aor:get-claude-md', () => {
   try { return fs.readFileSync(CLAUDE_MD_PATH, 'utf8'); } catch { return ''; }
 });
-ipcMain.handle('aor:set-claude-md', (_e, content) => {
-  fs.writeFileSync(CLAUDE_MD_PATH, content, 'utf8');
-  return true;
+handle('aor:set-claude-md', (_e, content) => {
+  if (!validateClaudeMdContent(content)) return false;
+  try {
+    fs.writeFileSync(CLAUDE_MD_PATH, content, 'utf8');
+    return true;
+  } catch (err) {
+    console.warn('[carrotcap] aor:set-claude-md failed:', err && err.message);
+    return false;
+  }
 });
 
-ipcMain.handle('folder:pick', async () => {
+handle('folder:pick', async () => {
   const r = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] });
   if (r.canceled || !r.filePaths[0]) return null;
   const picked = r.filePaths[0];
@@ -912,16 +993,16 @@ ipcMain.handle('folder:pick', async () => {
   if (real) persistRecentWorkspace(real);
   return picked;
 });
-ipcMain.handle('folder:tree', (_e, rootPath) => {
+handle('folder:tree', (_e, rootPath) => {
   if (!isPathInsideAllowedWorkspace(rootPath)) return null;
   return buildFolderTree(rootPath);
 });
-ipcMain.handle('folder:search', (_e, rootPath, query) => {
+handle('folder:search', (_e, rootPath, query) => {
   if (!isPathInsideAllowedWorkspace(rootPath)) return [];
   if (typeof query !== 'string' || !query) return [];
   return searchFiles(rootPath, clipString(query, MAX_QUERY_LEN));
 });
-ipcMain.handle('folder:open-in-os', (_e, p) => {
+handle('folder:open-in-os', (_e, p) => {
   if (!isPathInsideAllowedWorkspace(p)) return false;
   try {
     if (!fs.existsSync(p)) return false;
@@ -933,7 +1014,7 @@ ipcMain.handle('folder:open-in-os', (_e, p) => {
   }
 });
 
-ipcMain.handle('aiops:setup', (_e, projectRoot) => {
+handle('aiops:setup', (_e, projectRoot) => {
   // Reject if the requested root is not inside an explicitly allowed workspace.
   // The renderer must call folder:pick first; defaultProjectPath is NOT a permission
   // grant — only paths persisted to workspace-state.json (main-only file) are seeded
@@ -951,29 +1032,28 @@ ipcMain.handle('aiops:setup', (_e, projectRoot) => {
   return { ok: true, root: real, ...result };
 });
 
-ipcMain.handle('pty:spawn', (_e, payload) => spawnSession(payload || {}));
-ipcMain.on('pty:write', (_e, { id, data }) => {
+handle('pty:spawn', (_e, payload) => spawnSession(payload));
+on('pty:write', (_e, { id, data }) => {
   const s = sessions.get(id);
-  if (!s) return;
+  if (!s || typeof data !== 'string' || data.length > MAX_PTY_WRITE_LEN) return;
   try {
-    s.proc.write(typeof data === 'string' ? data : String(data));
+    s.proc.write(data);
   } catch (err) {
     console.warn('[carrotcap] pty write fail', err && err.message);
   }
 });
-ipcMain.on('pty:resize', (_e, { id, cols, rows }) => {
+on('pty:resize', (_e, { id, cols, rows }) => {
   const s = sessions.get(id);
-  if (s && s.proc.resize) {
-    try { s.proc.resize(cols, rows); } catch {}
-  }
+  if (!s || !s.proc.resize) return;
+  try { s.proc.resize(clampInt(cols, 2, 1000, 80), clampInt(rows, 1, 500, 24)); } catch {}
 });
-ipcMain.on('pty:kill', (_e, { id }) => {
+on('pty:kill', (_e, { id }) => {
   const s = sessions.get(id);
   if (s) { try { s.proc.kill(); } catch {} sessions.delete(id); }
 });
 
-ipcMain.handle('app:platform', () => process.platform);
-ipcMain.handle('app:pty-available', () => ptyAvailable);
+handle('app:platform', () => process.platform);
+handle('app:pty-available', () => ptyAvailable);
 
 app.whenReady().then(() => {
   // Self-heal the `carrotcap` CLI registration. Runs only when packaged.
