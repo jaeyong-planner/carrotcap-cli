@@ -115,8 +115,14 @@
     const token = ++st.pickToken;
     while (st.annotating && token === st.pickToken) {
       const pick = await api.browserPick();
-      if (token !== st.pickToken) return;     // 페이지 이동 등으로 새 루프가 시작됨
-      if (!pick) { stopAnnotating(); return; } // Esc / 취소
+      if (token !== st.pickToken) return;     // 페이지 이동·지우기 등으로 새 루프가 시작됨
+      // 끝난 이유를 구분한다 (review r2 M4): 사용자가 Esc를 누른 경우에만 주석 모드를 끈다.
+      if (!pick || pick.cancelled === 'esc') { stopAnnotating(); return; }
+      if (pick.cancelled === 'cancel') return; // 앱이 취소함 (끄기/지우기가 이미 처리)
+      if (pick.cancelled === 'gone') {         // 페이지가 바뀌는 중 — 잠시 뒤 새 페이지에 다시 건다
+        await new Promise((r) => setTimeout(r, 500));
+        continue;
+      }
       st.pins.push(pick);
       renderPins();
     }
@@ -228,13 +234,13 @@
     lines.push(text || '(주석 위치의 문제를 확인해줘)');
     const commit = () => {
       if (wantErrors) api.browserCommit(ctx.errorMark);
-      // 페이지의 핀을 모두 지우므로 목록도 모두 비운다 (둘이 항상 일치하게)
-      st.pins = [];
-      st.pickToken++;
-      api.browserClearPins().then(() => { if (st.annotating) annotateLoop(); });
+      // 이번에 보낸 핀만 지운다 — 전송을 준비하는 사이 새로 찍은 핀은 목록·페이지 모두 남는다 (review r2).
+      const sent = pins.map((p) => p.n);
+      st.pins = st.pins.filter((p) => !sent.includes(p.n));
+      api.browserClearPins(sent);
       renderPins();
     };
-    return { text: lines.join('\n'), commit };
+    return { text: lines.join('\n'), commit, context: true };
   }
 
   // ---- 이벤트 ----

@@ -87,7 +87,7 @@ const PICK_SCRIPT = `(() => new Promise((resolve) => {
     window.__ccPickCancel = null;
     resolve(value);
   };
-  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); done(null); } };
+  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); done({ cancelled: 'esc' }); } };
   glass.addEventListener('mousemove', (e) => {
     const el = under(e.clientX, e.clientY);
     if (!el) return;
@@ -97,14 +97,16 @@ const PICK_SCRIPT = `(() => new Promise((resolve) => {
   glass.addEventListener('click', (e) => {
     e.preventDefault(); e.stopPropagation();
     const el = under(e.clientX, e.clientY);
-    if (!el) return done(null);
+    if (!el) return done({ cancelled: 'cancel' });
     const r = el.getBoundingClientRect();
-    const n = pins.querySelectorAll('[data-cc-pin]').length + 1;
+    const n = (Number(pins.dataset.next) || 0) + 1;
+    pins.dataset.next = String(n);
     const pin = document.createElement('div');
     pin.setAttribute('data-cc-pin', String(n));
     pin.textContent = String(n);
     pin.style.cssText = 'position:absolute;left:' + (r.left + scrollX - 10) + 'px;top:' + (r.top + scrollY - 10) + 'px;width:20px;height:20px;border-radius:10px;background:#ff8c42;color:#15151a;font:bold 12px/20px sans-serif;text-align:center;box-shadow:0 0 0 2px #fff';
     const outline = document.createElement('div');
+    outline.setAttribute('data-cc-outline', String(n));
     outline.style.cssText = 'position:absolute;left:' + (r.left + scrollX) + 'px;top:' + (r.top + scrollY) + 'px;width:' + r.width + 'px;height:' + r.height + 'px;border:2px dashed #ff8c42';
     pins.appendChild(outline); pins.appendChild(pin);
     const text = (el.innerText || el.value || el.getAttribute('aria-label') || el.getAttribute('alt') || '').replace(/\\s+/g, ' ').trim().slice(0, 120);
@@ -113,20 +115,29 @@ const PICK_SCRIPT = `(() => new Promise((resolve) => {
       viewport: { width: innerWidth, height: innerHeight } });
   });
   window.addEventListener('keydown', onKey, true);
-  window.__ccPickCancel = () => done(null);
+  window.__ccPickCancel = () => done({ cancelled: 'cancel' });
 }))()`;
 
 const CANCEL_SCRIPT = `(() => { if (window.__ccPickCancel) window.__ccPickCancel(); return true; })()`;
 const CLEAR_SCRIPT  = `(() => { if (window.__ccPickCancel) window.__ccPickCancel(); const p = document.getElementById('__cc_pins'); if (p) p.remove(); return true; })()`;
+// Remove only the given pin numbers (the ones that were sent); others stay.
+function clearSomeScript(ns) {
+  const list = JSON.stringify(ns);
+  return `(() => { const p = document.getElementById('__cc_pins'); if (!p) return true;
+    for (const n of ${list}) p.querySelectorAll('[data-cc-pin="' + n + '"],[data-cc-outline="' + n + '"]').forEach((e) => e.remove());
+    return true; })()`;
+}
 
+const PICK_CANCEL_REASONS = new Set(['esc', 'cancel', 'gone']);
 function sanitizePick(v) {
   if (!v || typeof v !== 'object') return null;
+  if (typeof v.cancelled === 'string') return { cancelled: PICK_CANCEL_REASONS.has(v.cancelled) ? v.cancelled : 'cancel' };
   const str = (s, n) => (typeof s === 'string' ? cleanText(s, n) : '');
   const num = (x) => (typeof x === 'number' && Number.isFinite(x) ? Math.round(x) : 0);
   const r = v.rect || {};
   const vp = v.viewport || {};
   return {
-    n: Math.max(1, Math.min(99, num(v.n))),
+    n: Math.max(1, Math.min(999, num(v.n))),
     selector: str(v.selector, 300),
     tag: str(v.tag, 20),
     text: str(v.text, 120),
@@ -143,8 +154,9 @@ const withTimeout = (p, ms, what) => {
   ]).finally(() => clearTimeout(timer));
 };
 
-function setupBrowser({ handle, getWindow, resolveAllowedDir, safeMkdir, writeIfMissing, userDataRoot }) {
+function setupBrowser({ handle, getWindow, resolveAllowedDir, safeMkdir, writeIfMissing, assertAncestorsClean, isPathInsideRoot, userDataRoot }) {
   let sessionReady = false;
+  let openGen = 0;          // bumped by every open/close; late async steps check it (review r2 M5)
   let view = null;
   let device = 'desktop';
   let errors = [];          // { at, level, message, source, line }
@@ -267,6 +279,7 @@ function setupBrowser({ handle, getWindow, resolveAllowedDir, safeMkdir, writeIf
   }
 
   function destroyView() {
+    openGen++;
     if (!view) return;
     const win = getWindow();
     try { if (win && !win.isDestroyed()) win.removeBrowserView(view); } catch { /* window closing */ }
@@ -288,46 +301,72 @@ function setupBrowser({ handle, getWindow, resolveAllowedDir, safeMkdir, writeIf
     if (!real) {
       const dir = path.join(userDataRoot, 'browser-shots');
       fs.mkdirSync(dir, { recursive: true });
-      return dir;
+      return { dir, root: userDataRoot };
     }
     const dir = path.join(real, '.carrotcap', 'browser');
     safeMkdir(dir, real); // throws on symlinked ancestors / escape
     writeIfMissing(path.join(real, '.carrotcap', '.gitignore'), '*\n', real);
-    return dir;
+    return { dir, root: real };
   }
-  function pruneShots(dir) {
-    let files;
+  // Re-checked immediately before every write and delete: the folder could have been
+  // swapped for a junction after shotDir() validated it (review r2, TOCTOU).
+  function dirStillSafe(dir, root) {
     try {
       const lst = fs.lstatSync(dir);
-      if (lst.isSymbolicLink() || !lst.isDirectory()) return;
-      // withFileTypes: isFile() is false for symlinks, so only real files are removed
-      files = fs.readdirSync(dir, { withFileTypes: true }).filter((d) => d.isFile() && /^shot-[0-9TZ-]+\.png$/.test(d.name));
-    } catch { return; }
+      if (lst.isSymbolicLink() || !lst.isDirectory()) return false;
+      assertAncestorsClean(path.join(dir, 'x'), root);
+      return isPathInsideRoot(fs.realpathSync.native(dir), root);
+    } catch { return false; }
+  }
+  function writeShot(dir, root, png) {
+    if (!dirStillSafe(dir, root)) throw new Error('capture folder changed; refusing to write');
+    const file = path.join(dir, `shot-${new Date().toISOString().replace(/[:.]/g, '-')}.png`);
+    fs.writeFileSync(file, png, { flag: 'wx' }); // never follows/overwrites an existing entry
+    if (!isPathInsideRoot(fs.realpathSync.native(file), root)) {
+      try { fs.rmSync(file, { force: true }); } catch { /* best effort */ }
+      throw new Error('capture escaped the workspace');
+    }
+    return file;
+  }
+  function pruneShots(dir, root) {
+    if (!dirStillSafe(dir, root)) return;
+    let files;
+    // withFileTypes: isFile() is false for symlinks, so only real files are candidates
+    try { files = fs.readdirSync(dir, { withFileTypes: true }).filter((d) => d.isFile() && /^shot-[0-9TZ-]+\.png$/.test(d.name)); } catch { return; }
     const now = Date.now();
     const withTime = files.map((d) => {
       const p = path.join(dir, d.name);
       let t = 0;
-      try { t = fs.statSync(p).mtimeMs; } catch { /* vanished */ }
+      try { t = fs.lstatSync(p).mtimeMs; } catch { /* vanished */ }
       return { p, t };
     }).sort((a, b) => b.t - a.t);
     withTime.forEach((f, i) => {
-      if (i >= SHOT_KEEP || now - f.t > SHOT_MAX_AGE_MS) { try { fs.rmSync(f.p, { force: true }); } catch { /* next time */ } }
+      if (i < SHOT_KEEP && now - f.t <= SHOT_MAX_AGE_MS) return;
+      try {
+        const lst = fs.lstatSync(f.p);
+        if (!lst.isFile() || !dirStillSafe(dir, root) || !isPathInsideRoot(fs.realpathSync.native(f.p), root)) return;
+        fs.rmSync(f.p, { force: true });
+      } catch { /* next time */ }
     });
   }
 
   handle('browser:open', async (_e, url) => {
     const u = normalizeUrl(url);
     if (!u) return { ok: false, error: 'http:// 또는 https:// 주소만 열 수 있습니다.' };
+    const gen = ++openGen;
     const v = ensureView();
+    const current = () => view === v && gen === openGen; // closed or superseded meanwhile?
     // Navigate first: CDP emulation commands on a view that never loaded can stall.
     v.webContents.loadURL(u).catch(() => { /* did-fail-load records it */ });
     await withTimeout(new Promise((r) => v.webContents.once('did-stop-loading', r)), 15000, 'page load').catch(() => {});
+    if (!current()) return { ok: false, error: 'superseded' };
     if (device === 'mobile') {
       await applyDevice('mobile');
+      if (!current()) return { ok: false, error: 'superseded' };
       v.webContents.reload(); // re-layout with the mobile viewport/UA from the first request
     }
     pushState();
-    return { ok: true, url: v.webContents.getURL() };
+    return { ok: true, url: cleanText(v.webContents.getURL(), MAX_URL_LEN) };
   });
   handle('browser:close', () => { destroyView(); return true; });
   handle('browser:bounds', (_e, rect) => {
@@ -348,20 +387,22 @@ function setupBrowser({ handle, getWindow, resolveAllowedDir, safeMkdir, writeIf
     return device;
   });
   handle('browser:pick', async () => {
-    if (!view) return null;
+    if (!view) return { cancelled: 'gone' };
     try {
       const v = await view.webContents.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD, [{ code: PICK_SCRIPT }], true);
-      return sanitizePick(v);
-    } catch { return null; }
+      return sanitizePick(v) || { cancelled: 'gone' };
+    } catch { return { cancelled: 'gone' }; } // page navigated / context destroyed
   });
   handle('browser:pick-cancel', async () => {
     if (!view) return false;
     try { await view.webContents.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD, [{ code: CANCEL_SCRIPT }]); } catch { /* page gone */ }
     return true;
   });
-  handle('browser:clear-pins', async () => {
+  handle('browser:clear-pins', async (_e, only) => {
     if (!view) return false;
-    try { await view.webContents.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD, [{ code: CLEAR_SCRIPT }]); } catch { /* page gone */ }
+    const ns = Array.isArray(only) ? only.filter((n) => Number.isInteger(n) && n >= 1 && n <= 999).slice(0, 100) : null;
+    const code = ns ? clearSomeScript(ns) : CLEAR_SCRIPT;
+    try { await view.webContents.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD, [{ code }]); } catch { /* page gone */ }
     return true;
   });
   handle('browser:errors', () => errors.slice(-MAX_ERRORS));
@@ -375,11 +416,9 @@ function setupBrowser({ handle, getWindow, resolveAllowedDir, safeMkdir, writeIf
     if (p.screenshot) {
       try {
         const img = await wc.capturePage();
-        const dir = shotDir(p.projectRoot);
-        const file = path.join(dir, `shot-${new Date().toISOString().replace(/[:.]/g, '-')}.png`);
-        fs.writeFileSync(file, img.toPNG());
-        pruneShots(dir);
-        out.screenshot = file;
+        const { dir, root } = shotDir(p.projectRoot);
+        out.screenshot = writeShot(dir, root, img.toPNG());
+        pruneShots(dir, root);
       } catch (e) {
         console.warn('[carrotcap] browser screenshot failed:', e.message);
       }

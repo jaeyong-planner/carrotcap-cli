@@ -718,8 +718,19 @@
     const ptyId = leaf.ptyId;
     if (!ptyId) { composerInput.value = typed; autoGrowComposer(); return; } // 그 사이 세션 종료 — 컨텍스트는 소비하지 않음
     const text = prepared.text;
+    if (prepared.context) {
+      // 브라우저 컨텍스트: bracketed paste를 직접 만들어 확인 응답이 있는 IPC로 보낸다.
+      // 두 번 모두 전달됐을 때만 주석·에러를 "보냄" 처리 (review r2 M3).
+      // ESC는 블록 전체에서 제거 — 입력창에 붙여 넣은 텍스트도 paste 경계를 깰 수 없게.
+      const pasted = '\x1b[200~' + text.replace(/\x1b/g, '').replace(/\r?\n/g, '\r') + '\x1b[201~';
+      const okPaste = await api.writePtyAck(ptyId, pasted);
+      await new Promise((r) => setTimeout(r, Math.min(600, 60 + Math.floor(text.length / 20))));
+      const okEnter = okPaste && leaf.ptyId === ptyId && await api.writePtyAck(ptyId, '\r');
+      if (okPaste && okEnter) prepared.commit();
+      else { composerInput.value = typed; autoGrowComposer(); composerTarget.textContent = '→ 전송 실패 — 세션을 확인하세요'; }
+      return;
+    }
     if (text) leaf.term.paste(text);
-    prepared.commit(); // 실제로 보낸 뒤에만 주석·에러를 "보냄" 처리
     // Enter는 붙여넣기와 분리해 보낸다 — 붙여넣기 안의 개행으로 취급되어 제출이 안 되는 CLI가 있다.
     // 긴 붙여넣기(브라우저 컨텍스트)는 CLI가 받아들이는 시간을 조금 더 준다. 그 사이 세션이 끝났으면 보내지 않는다.
     const delay = text ? Math.min(600, 60 + Math.floor(text.length / 20)) : 0;

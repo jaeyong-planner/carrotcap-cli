@@ -21,11 +21,24 @@ async function connectTarget(target) {
   await new Promise((r) => ws.addEventListener('open', r));
   let seq = 0;
   const pending = new Map();
+  let closed = false;
   ws.addEventListener('message', (e) => {
     const m = JSON.parse(e.data);
-    if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
+    if (m.id && pending.has(m.id)) { pending.get(m.id).resolve(m); pending.delete(m.id); }
   });
-  const send = (method, params = {}) => new Promise((r) => { const id = ++seq; pending.set(id, r); ws.send(JSON.stringify({ id, method, params })); });
+  // A closed socket must settle every waiter — otherwise Node's event loop can run dry
+  // mid-test and the process exits silently without a summary.
+  ws.addEventListener('close', () => {
+    closed = true;
+    for (const [, p] of pending) p.reject(new Error('CDP socket closed'));
+    pending.clear();
+  });
+  const send = (method, params = {}) => new Promise((resolve, reject) => {
+    if (closed) return reject(new Error('CDP socket closed'));
+    const id = ++seq;
+    pending.set(id, { resolve, reject });
+    ws.send(JSON.stringify({ id, method, params }));
+  });
   const ev = async (expression) => {
     const out = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
     return out.result && out.result.result ? out.result.result.value : undefined;
@@ -73,10 +86,11 @@ async function launchApp(userDataDir, { port = 9400 + Math.floor(Math.random() *
     kill: async () => { app.close(); child.kill(); await exited; },
     // Normal close: the window closes, the app quits through before-quit.
     close: async () => {
-      await app.ev('window.close(), true').catch(() => {});
+      app.ev('window.close(), true').catch(() => {}); // the reply may never come: the window is gone
       const t = setTimeout(() => child.kill(), 8000);
       await exited;
       clearTimeout(t);
+      app.close();
     }
   };
 }

@@ -1277,20 +1277,31 @@ handle('aiops:setup', (_e, projectRoot) => {
 });
 
 handle('pty:spawn', (_e, payload) => spawnSession(payload));
-on('pty:write', (_e, { id, data }) => {
+// Returns true when the data was written (or queued behind the ready gate).
+function writeToSession(id, data) {
   const s = sessions.get(id);
-  if (!s || typeof data !== 'string' || !isWithinByteCap(data, MAX_PTY_WRITE_BYTES)) return;
+  if (!s || typeof data !== 'string' || !isWithinByteCap(data, MAX_PTY_WRITE_BYTES)) return false;
   if (!s.ready) {
     // Held until the shell is ready (see spawnSession). Capped like a single write.
     const size = Buffer.byteLength(data, 'utf8');
-    if (s.pendingBytes + size <= MAX_PTY_WRITE_BYTES) { s.pending += data; s.pendingBytes += size; }
-    return;
+    if (s.pendingBytes + size > MAX_PTY_WRITE_BYTES) return false;
+    s.pending += data;
+    s.pendingBytes += size;
+    return true;
   }
   try {
     s.proc.write(data);
+    return true;
   } catch (err) {
     console.warn('[carrotcap] pty write fail', err && err.message);
+    return false;
   }
+}
+on('pty:write', (_e, { id, data }) => { writeToSession(id, data); });
+// Same, with an answer — for sends whose side effects depend on delivery (browser context).
+handle('pty:write-ack', (_e, payload) => {
+  const p = (payload && typeof payload === 'object') ? payload : {};
+  return isValidPtyId(p.id) ? writeToSession(p.id, p.data) : false;
 });
 on('pty:resize', (_e, { id, cols, rows }) => {
   const s = sessions.get(id);
@@ -1521,6 +1532,8 @@ const browserMode = require('./main-browser').setupBrowser({
   resolveAllowedDir,
   safeMkdir,
   writeIfMissing,
+  assertAncestorsClean,
+  isPathInsideRoot,
   userDataRoot: USER_DATA_ROOT
 });
 

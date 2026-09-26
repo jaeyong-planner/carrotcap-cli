@@ -654,8 +654,8 @@ console.log('-- browser mode helpers (task-015)');
   for (const bad of ['javascript:alert(1)', 'file:///C:/Windows/win.ini', 'data:text/html,x', 'chrome://gpu', 'http://a\nb', '', null]) {
     check(`normalizeUrl rejects ${JSON.stringify(bad)}`, normalizeUrl(bad) === null);
   }
-  const pick = sanitizePick({ n: 500, selector: `a${ESC}[201~b`, tag: 'button', text: 'x\r\ny', rect: { x: 1.4, y: 'z' }, viewport: {} });
-  check('sanitizePick clamps n and cleans strings', pick.n === 99 && !pick.selector.includes(ESC) && !/[\r\n]/.test(pick.text) && pick.rect.x === 1 && pick.rect.y === 0);
+  const pick = sanitizePick({ n: 5000, selector: `a${ESC}[201~b`, tag: 'button', text: 'x\r\ny', rect: { x: 1.4, y: 'z' }, viewport: {} });
+  check('sanitizePick clamps n and cleans strings', pick.n === 999 && !pick.selector.includes(ESC) && !/[\r\n]/.test(pick.text) && pick.rect.x === 1 && pick.rect.y === 0);
   check('sanitizePick rejects non-objects', sanitizePick('x') === null);
   const r = clampRect({ x: -5, y: 1e9, width: 'w', height: 10.6 });
   check('clampRect clamps to integers >= 0', r.x === 0 && r.y === 20000 && r.width === 0 && r.height === 11);

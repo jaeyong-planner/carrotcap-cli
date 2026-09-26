@@ -145,6 +145,7 @@ const server = http.createServer((req, res) => {
   if (process.env.CC_DEBUG) console.log('   before send:', await ev(`document.querySelector('#br-err-count').className`), JSON.stringify(await ev(`window.carrotcap.browserErrors()`)).slice(0, 300));
   await ev(`document.querySelector('#composer-input').value = 'check errors'; document.querySelector('#composer-send').click(); true`);
   check('agent got the hostile page context', await waitFor(() => received().includes('\x1b[201~')));
+  check('annotation mode survived the navigation (review r2 M4)', await ev(`document.querySelector('#br-annotate').classList.contains('active')`));
   const evil = Buffer.from(received(), 'latin1').toString('utf8');
   const inner = evil.slice(evil.indexOf('\x1b[200~') + 6, evil.lastIndexOf('\x1b[201~'));
   check('no ESC inside the pasted block (page ESC stripped)', !inner.includes('\x1b'), JSON.stringify(inner.slice(0, 200)));

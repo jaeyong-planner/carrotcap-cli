@@ -20,6 +20,7 @@ const api = {
   // 페인 / PTY
   spawnPty: (payload) => ipcRenderer.invoke('pty:spawn', payload),
   writePty: (id, data) => ipcRenderer.send('pty:write', { id, data }),
+  writePtyAck: (id, data) => ipcRenderer.invoke('pty:write-ack', { id, data }),
   resizePty: (id, cols, rows) => ipcRenderer.send('pty:resize', { id, cols, rows }),
   killPty: (id) => ipcRenderer.send('pty:kill', { id }),
 
@@ -54,7 +55,7 @@ const api = {
   browserDevice: (mode) => ipcRenderer.invoke('browser:device', mode),
   browserPick: () => ipcRenderer.invoke('browser:pick'),
   browserPickCancel: () => ipcRenderer.invoke('browser:pick-cancel'),
-  browserClearPins: () => ipcRenderer.invoke('browser:clear-pins'),
+  browserClearPins: (only) => ipcRenderer.invoke('browser:clear-pins', only),
   browserErrors: () => ipcRenderer.invoke('browser:errors'),
   browserContext: (opts) => ipcRenderer.invoke('browser:context', opts),
   browserCommit: (mark) => ipcRenderer.invoke('browser:commit', mark),
