@@ -63,6 +63,8 @@ $projectRoot  = Split-Path -Parent $PSScriptRoot
 $contractPath = Join-Path $projectRoot "agents\media.md"
 $mediaLogDir  = Join-Path $projectRoot "logs\media"
 $stdoutPath   = Join-Path $mediaLogDir ("{0}_{1}.grok-stdout.log" -f $TaskId, $Slug)
+# The agent must write this record (agents/media.md §4); it is how we know the run worked.
+$mediaLogPath = Join-Path $mediaLogDir ("{0}_{1}.md" -f $TaskId, $Slug)
 $timestampUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
 if (-not (Get-Command grok -ErrorAction SilentlyContinue)) {
@@ -88,12 +90,17 @@ $prompt = @"
 [CONTRACT — agents/media.md, follow exactly]
 $contract
 
+[OUTPUT]
+- Save files under assets/generated/.
+- Write the media log to exactly: logs/media/$($TaskId)_$($Slug).md
+
 [REQUEST]
 $Request
 "@
 
 # The prompt goes through a temp file: long multi-line Korean text is not safe as a
 # native-exe argument in Windows PowerShell 5.1.
+$logBefore = if (Test-Path -LiteralPath $mediaLogPath) { (Get-Item -LiteralPath $mediaLogPath).LastWriteTimeUtc } else { $null }
 $promptFile = [System.IO.Path]::GetTempFileName()
 try {
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -106,7 +113,15 @@ try {
     Remove-Item -LiteralPath $promptFile -Force -ErrorAction SilentlyContinue
 }
 
+# Exit code 0 is not enough: the media log must exist and be new or updated by THIS run,
+# otherwise keep grok's stdout for diagnosis and fail.
+$logAfter = if (Test-Path -LiteralPath $mediaLogPath) { (Get-Item -LiteralPath $mediaLogPath).LastWriteTimeUtc } else { $null }
+if ($null -eq $logAfter -or ($null -ne $logBefore -and $logAfter -le $logBefore)) {
+    throw "Grok finished but did not write $mediaLogPath for this run. See $stdoutPath."
+}
+
 Write-Host "[media] files: $(Join-Path $projectRoot 'assets\generated')" -ForegroundColor Green
+Write-Host "[media] log: $mediaLogPath" -ForegroundColor Green
 if ($KeepLog) {
     Write-Host "[media] grok output: $stdoutPath" -ForegroundColor DarkGray
 } else {

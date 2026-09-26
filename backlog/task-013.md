@@ -47,3 +47,7 @@
 - macOS/Linux: 명령 조합을 플랫폼별로 (`cd -- '<dir>' && '<cmd>' '<arg>'`) — macOS 실기 미검증
 - 이력 파일 64KB 초과 시 읽지 않고 부팅 때 삭제
 - 결과: `npm test` 163/163, smoke 46/46, resume 21/21 (즉시 종료·손상/거대 파일 정리 시나리오 추가)
+
+## 리뷰 반영 r3 (logs/review/task-012-013-r3_review-reflection.md — ⚠️ 조건부 승인, 이전 항목 전부 RESOLVED, 신규 Major 1)
+- `run-media.ps1`: exit 0이어도 이번 실행에서 `logs/media/<TaskId>_<Slug>.md`가 새로 생기거나 갱신되지 않으면 실패 처리하고 stdout 보존. 프롬프트에 로그 경로를 정확히 지정
+- `npm run test:media` (가짜 grok): 성공/로그 없음/오래된 로그/exit 1/경로형 TaskId 8/8

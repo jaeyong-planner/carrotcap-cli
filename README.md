@@ -25,7 +25,8 @@ npm start
 | --- | --- |
 | `npm test` | 보안 헬퍼 + AIOps 셋업 단위 테스트 (Electron 없이 실행) |
 | `npm run test:smoke` | 실제 앱을 띄워 CDP로 점검 (sandbox · PTY · 악성 IPC · 키보드/입력창 · 복사 · CLI 구성) |
-| `npm run test:resume` | 앱을 3번 띄워 세션 기록 → 비정상 종료 → 이어하기 → 정리까지 점검 |
+| `npm run test:resume` | 앱을 4번 띄워 세션 기록 → 비정상 종료 → 이어하기 → 정리 → 즉시 종료까지 점검 |
+| `npm run test:media` | 가짜 grok으로 `run-media.ps1` 성공·실패·경로 검증 점검 |
 | `npm run pack` | 설치 없이 `release/win-unpacked/` 생성 |
 | `npm run dist:win` | NSIS 설치 파일 생성 (`release/CARROTCAP-CLI-<ver>-win-x64.exe`) |
 
