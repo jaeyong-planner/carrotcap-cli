@@ -51,7 +51,16 @@ powershell -ExecutionPolicy Bypass -File scripts\repair-cli.ps1 -ExePath 'D:\Too
 
 ### Upgrade from an older install location
 
-Older CARROTCAP builds installed to `%LOCALAPPDATA%\Programs\carrotcap`, which is also the parent folder of a Cream CLI install. The setup refuses to reuse that location (the uninstaller deletes its folder recursively); uninstall the old version from **Settings > Apps** first, then run the setup again.
+Builds before 0.2.1 used the appId `com.carrotcap.cli` — the same as the separate **Cream CLI** — and installed to `%LOCALAPPDATA%\Programs\carrotcap`, the parent folder of a Cream CLI install. On 2026-09-27 this let a CARROTCAP setup uninstall Cream CLI and install over it.
+
+The setup now stops (nothing is removed) if any installation is registered under its appId that is not a CARROTCAP CLI inside `%LOCALAPPDATA%\Programs\carrotcap-cli`.
+
+**Do not use "Uninstall" (Settings > Apps) for an old CARROTCAP registered in `Programs\carrotcap` or in a `Cream CLI` folder**: its uninstaller deletes that whole folder, including anything else in it. Retire it by hand instead:
+
+1. Close the old app.
+2. Delete only the old CARROTCAP program files (`carrotcap.exe`, `resources\`, `locales\`, the Electron `.dll`/`.pak`/`.bin`/`.dat` files, `Uninstall carrotcap.exe`) — check that no other product's files are in the list.
+3. Remove its registration: in `regedit`, under `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall`, delete the key whose `DisplayName` is the old CARROTCAP CLI, and the matching `HKEY_CURRENT_USER\Software\<same GUID>` key.
+4. Run the new setup.
 
 ### Uninstall
 

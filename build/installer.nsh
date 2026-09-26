@@ -2,15 +2,17 @@
 ; Goal: double-clicking the setup installs, starts the app, and `carrotcap` opens it
 ; from any new terminal (task-018).
 ;
-; - Own folder: $LOCALAPPDATA\Programs\carrotcap-cli. Never $LOCALAPPDATA\Programs\carrotcap:
-;   that is the parent of the separate Cream CLI install, and electron-builder removes
-;   $INSTDIR recursively on uninstall/upgrade. An existing install anywhere else stops
-;   the setup instead of being reused (review task-018 r1).
+; - Own appId (com.carrotcap.carrotcap-cli) and own folder $LOCALAPPDATA\Programs\carrotcap-cli.
+;   On 2026-09-27 CARROTCAP still shared Cream CLI's appId: electron-builder treated Cream
+;   as the old version, ran Cream's uninstaller and installed over it.
+; - electron-builder removes an existing install before installing: it runs the uninstaller
+;   named in the Uninstall key, on the folder in Software\<GUID>\InstallLocation, and that
+;   uninstaller deletes the folder recursively. So the setup STOPS unless every existing
+;   entry for our appId (HKCU and HKLM) is a CARROTCAP CLI inside our own folder.
 ; - Command: WindowsApps\carrotcap.bat (cmd / PowerShell) + extensionless carrotcap
-;   (Git Bash). Cream CLI keeps rewriting WindowsApps\carrotcap.cmd; .BAT comes before
-;   .CMD in the default PATHEXT, so ours wins without touching Cream's files (its aor.cmd
-;   stays as it is). Assumes WindowsApps is on PATH (Windows 10/11 default) and the
-;   default PATHEXT order.
+;   (Git Bash). Cream CLI rewrites WindowsApps\carrotcap.cmd; .BAT comes before .CMD in the
+;   default PATHEXT, so ours wins without touching Cream's files. Assumes WindowsApps on
+;   PATH (Windows 10/11 default) and the default PATHEXT order.
 ; - Ownership: our launchers carry the marker line below. A file with that name that
 ;   lacks the marker, a link or a folder is never written or deleted.
 ; - The user PATH is NOT edited: NSIS strings are length-limited and a long PATH would
@@ -20,6 +22,7 @@
 
 !define CC_MARK "CARROTCAP-CLI-LAUNCHER"
 !define CC_SHIMDIR "$LOCALAPPDATA\Microsoft\WindowsApps"
+!define CC_UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_APP_KEY}"
 
 ; $R9 = "ok" when PATH may be written/removed by us: missing, or a plain file (no
 ; directory / reparse point) whose second line is our marker. Registers are preserved.
@@ -54,18 +57,12 @@
   Pop $R4
 !macroend
 
-; Refuses to run when the uninstall entry for our appId belongs to something else or
-; lives outside our folder: electron-builder would run THAT uninstaller and install over
-; it. This happened on 2026-09-27 when CARROTCAP shared Cream CLI's appId (the entry had
-; no InstallLocation, so only checking that value was not enough).
-!macro preInit
-  SetRegView 64
-  ; perMachine: false matches per-user install. Avoids requiring UAC elevation.
-  ; electron-builder defines UNINSTALL_APP_KEY (NOT UNINSTALL_KEY).
-  StrCpy $3 "$LOCALAPPDATA\Programs\carrotcap-cli"
-  ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_APP_KEY}" "DisplayName"
-  ReadRegStr $1 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_APP_KEY}" "UninstallString"
-  ReadRegStr $2 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_APP_KEY}" "InstallLocation"
+; Quits unless the existing registration under ROOT (HKCU / HKLM) is absent or is a
+; CARROTCAP CLI inside $3 (our folder). Uses $0-$2, $4-$7.
+!macro CC_GuardRoot ROOT
+  ReadRegStr $0 ${ROOT} "${CC_UNINSTALL_KEY}" "DisplayName"
+  ReadRegStr $1 ${ROOT} "${CC_UNINSTALL_KEY}" "UninstallString"
+  ReadRegStr $2 ${ROOT} "${INSTALL_REGISTRY_KEY}" "InstallLocation"
   ${if} "$0$1$2" != ""
     StrCpy $7 "ours"
     StrCpy $4 $0 13                       ; DisplayName must start with "CARROTCAP CLI"
@@ -77,16 +74,35 @@
     ${if} $6 != '"$3\'
       StrCpy $7 "foreign"
     ${endif}
-    ${if} "$2" != ""
-    ${andif} "$2" != "$3"
+    ${if} $2 != $3                        ; the folder the old uninstaller would delete
       StrCpy $7 "foreign"
     ${endif}
     ${if} $7 == "foreign"
-      MessageBox MB_OK|MB_ICONSTOP "Another installation is registered under this app's ID:$\r$\n$0$\r$\n$1$\r$\n$\r$\nSetup stopped so it is not removed. Uninstall it from Settings > Apps if it is an old CARROTCAP CLI, then run this setup again." /SD IDOK
+      MessageBox MB_OK|MB_ICONSTOP "Another installation is registered under this app's ID:$\r$\n$0$\r$\n$1$\r$\n$2$\r$\n$\r$\nSetup stopped so nothing is removed. See INSTALLER.md ($\"Upgrade from an older install location$\")." /SD IDOK
+      SetErrorLevel 2
       Quit
     ${endif}
   ${endif}
+!macroend
+
+!macro preInit
+  SetRegView 64
+  StrCpy $3 "$LOCALAPPDATA\Programs\carrotcap-cli"
+  ; preInit also runs in the build-time pass that only writes the uninstaller — the
+  ; build machine's registry must not stop the build.
+  !ifndef BUILD_UNINSTALLER
+    !insertmacro CC_GuardRoot HKCU
+    !insertmacro CC_GuardRoot HKLM
+  !endif
   StrCpy $INSTDIR $3
+!macroend
+
+; After electron-builder's initMultiUser (which re-reads the registry and /D): the install
+; folder is always ours.
+!macro customInit
+  ${if} $INSTDIR != "$LOCALAPPDATA\Programs\carrotcap-cli"
+    StrCpy $INSTDIR "$LOCALAPPDATA\Programs\carrotcap-cli"
+  ${endif}
 !macroend
 
 !macro customInstall
@@ -103,7 +119,7 @@
     FileWrite $0 `start "" "$INSTDIR\carrotcap.exe" %*$\r$\n`
     FileClose $0
   ${Else}
-    DetailPrint "Skipped ${CC_SHIMDIR}\carrotcap.bat (belongs to another program)"
+    MessageBox MB_OK|MB_ICONEXCLAMATION "CARROTCAP CLI is installed, but the `carrotcap` command was not registered: another program owns$\r$\n${CC_SHIMDIR}\carrotcap.bat$\r$\n$\r$\nStart CARROTCAP CLI from the Start Menu or Desktop, or see INSTALLER.md." /SD IDOK
   ${EndIf}
 
   ; Git Bash: C:/path/carrotcap.exe in single quotes, run in the background.
@@ -117,7 +133,7 @@
     FileWrite $0 `'$1' "$$@" >/dev/null 2>&1 &$\n`
     FileClose $0
   ${Else}
-    DetailPrint "Skipped ${CC_SHIMDIR}\carrotcap (belongs to another program)"
+    MessageBox MB_OK|MB_ICONEXCLAMATION "The Git Bash `carrotcap` command was not registered: another program owns$\r$\n${CC_SHIMDIR}\carrotcap" /SD IDOK
   ${EndIf}
   Pop $R9
   Pop $1
@@ -126,7 +142,7 @@
 
 !macro customUnInstall
   Push $R9
-  ; Only our own launchers (marker checked) — Cream CLI's carrotcap.cmd / aor.cmd stay.
+  ; Only our own launchers (marker checked) — other programs' carrotcap.cmd / aor.cmd stay.
   !insertmacro CC_CanOwn "${CC_SHIMDIR}\carrotcap.bat"
   ${If} $R9 == "ok"
     Delete "${CC_SHIMDIR}\carrotcap.bat"

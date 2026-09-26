@@ -51,3 +51,18 @@
 - `carrotcap` 해석: pwsh 7·PowerShell 5.1 → `carrotcap.bat`, Git Bash → `carrotcap`; 실행 시 설치 폴더의 carrotcap.exe가 뜸
 - 앱 첫 실행 후 실행기 파일 해시 변화 없음(설치 스크립트와 앱 내용 일치)
 - unit 225
+
+## r2 리뷰 반영
+| 항목 | 내용 |
+|---|---|
+| 가드 위치·대상 | electron-builder는 `HKCU/HKLM\Software\<GUID>\InstallLocation`의 폴더를 옛 제거 프로그램으로 지움 → 이 값도 전용 폴더와 정확히 같아야 함. HKCU·HKLM 모두 검사, 빌드 중 제거 프로그램 생성 단계(`BUILD_UNINSTALLER`)에서는 검사 안 함 |
+| 초기화 후 | `customInit`: `initMultiUser`·`/D` 이후에도 `$INSTDIR`은 항상 전용 폴더 |
+| 옛 위치 안내 | INSTALLER.md: 옛 위치(`Programs\carrotcap`·`Cream CLI` 폴더)의 제거 프로그램은 **실행 금지**, 수동 정리 절차로 교체 |
+| 실행기 충돌 표시 | 다른 프로그램 소유 파일이면 경고 창(무인 설치에서는 자동 확인) |
+| 통합 테스트 | `npm run test:launchers`: 가짜 carrotcap.exe(csc 컴파일, 공백+아포스트로피 경로)로 cmd·PowerShell 5.1·pwsh 7·Git Bash에서 `carrotcap "C:\my project" second` 인자 전달 확인, PATHEXT를 .CMD 우선으로 바꾸면 Cream 쪽이 이김(문서화된 한계) |
+
+## 실측 (이 PC, r2 빌드)
+- a) 자기 설치 위 업그레이드 → 종료 0
+- b) `Software\<GUID>\InstallLocation`을 다른 경로로 → 설치 중단(종료 2), 기존 설치 무변경, 값 복원
+- c) 제거 항목 이름을 "Cream CLI 0.3.2"로 → 설치 중단(종료 2), 값 복원
+- d) 제거: 앱 폴더·우리 `.bat` 삭제, 표시 없는 같은 이름 파일은 보존 → 테스트 파일 정리 후 재설치, `carrotcap` → `carrotcap.bat`
