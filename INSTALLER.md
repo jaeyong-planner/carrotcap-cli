@@ -11,69 +11,58 @@ Build:
 Output:
 
 ```text
-release\CARROTCAP-CLI-0.1.0-win-x64.exe
+release\CARROTCAP-CLI-Setup-<version>.exe
 ```
 
-**Important:** building only produces the `.exe` — it does NOT register the `carrotcap` command. You must double-click the produced `.exe` (or run it from Explorer) to actually install. After installation, open a **new** PowerShell window and run:
+**Install:** double-click `CARROTCAP-CLI-Setup-<version>.exe`. It is a one-click, per-user installer (no admin, no wizard): it installs to `%LOCALAPPDATA%\Programs\carrotcap-cli`, creates Desktop and Start Menu shortcuts, and starts the app. Then in any terminal:
 
 ```powershell
 carrotcap
 ```
 
-The installer registers the command in two redundant ways so it works even on stripped-down PATH setups:
+### How the `carrotcap` command works
 
-1. `%LOCALAPPDATA%\Microsoft\WindowsApps\carrotcap.cmd` — a shim that forwards to `carrotcap.exe`. This folder is on the user PATH by default on Windows 10/11.
-2. The install directory (`%LOCALAPPDATA%\Programs\carrotcap`) is also appended to the user `Path` environment variable as a fallback. `carrotcap.exe` is then callable directly.
+Two launchers are written to `%LOCALAPPDATA%\Microsoft\WindowsApps` (on PATH by default on Windows 10/11):
 
-The installer broadcasts `WM_SETTINGCHANGE`, so newly opened terminals pick up the change immediately. Terminals that were already open before installing must be closed and reopened.
+| File | Used by |
+|---|---|
+| `carrotcap.bat` | cmd, Windows PowerShell 5.1, PowerShell 7 |
+| `carrotcap` (no extension) | Git Bash |
+
+The separate **Cream CLI** product rewrites `WindowsApps\carrotcap.cmd` and `aor.cmd` every time it starts. Within one folder Windows tries extensions in `PATHEXT` order (`.COM;.EXE;.BAT;.CMD`), so `carrotcap.bat` wins over Cream's `carrotcap.cmd` without touching it. `aor` stays with Cream CLI.
+
+Both launchers carry the marker line `CARROTCAP-CLI-LAUNCHER`. The installer, the app and the repair script only ever write or delete a launcher that is missing or carries that marker — never another program's file, a link or a folder.
+
+The user `Path` is **not** modified (older versions appended the install folder; long PATH values could be truncated by the installer).
+
+Assumptions: WindowsApps on PATH and the default `PATHEXT` order. If `PATHEXT` lists `.CMD` before `.BAT`, or a `carrotcap.exe`/`.com` comes earlier on PATH, that one wins — `scripts\repair-cli.ps1` reports this.
 
 ### Self-heal on launch
 
-The packaged app self-heals the CLI registration on every launch (Windows only). If the original install ever lost the shim — antivirus quarantine, manual file copy, portable run from `release\win-unpacked\`, etc. — simply opening the app once from Start Menu will:
+Every launch of the installed app rewrites its own launchers to the current `carrotcap.exe` path (same ownership rule). Opening the app once from the Start Menu repairs the command.
 
-1. Recreate `%LOCALAPPDATA%\Microsoft\WindowsApps\carrotcap.cmd` pointing at the current `carrotcap.exe`.
-2. Append the install directory to the user `Path` if missing.
-3. Broadcast `WM_SETTINGCHANGE` so new terminals see the change.
-
-After one launch, open a new PowerShell and `carrotcap` will work.
-
-### Manual repair (no installer needed)
-
-If the GUI is not even running but you have `carrotcap.exe` somewhere on disk, run:
+### Manual repair
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\repair-cli.ps1
 # or, pointing at a custom location:
-powershell -ExecutionPolicy Bypass -File scripts\repair-cli.ps1 -ExePath 'D:\Tools\carrotcap\carrotcap.exe'
+powershell -ExecutionPolicy Bypass -File scripts\repair-cli.ps1 -ExePath 'D:\Tools\carrotcap-cli\carrotcap.exe'
 ```
 
-This script does the same registration the installer does — shim + user PATH + broadcast — without any admin rights and without rerunning the installer.
+### Upgrade from an older install location
 
-### Troubleshooting: `'carrotcap' is not recognized`
+Older CARROTCAP builds installed to `%LOCALAPPDATA%\Programs\carrotcap`, which is also the parent folder of a Cream CLI install. The setup refuses to reuse that location (the uninstaller deletes its folder recursively); uninstall the old version from **Settings > Apps** first, then run the setup again.
 
-If you see:
+### Uninstall
 
-```text
-carrotcap : 'carrotcap' is not recognized as a cmdlet, function, ...
-```
+**Settings > Apps > CARROTCAP CLI**. Removes the app folder and our two launchers (marker checked). Cream CLI's files are left alone.
 
-run these checks in PowerShell:
+### Troubleshooting: `'carrotcap' is not recognized` / opens something else
 
 ```powershell
-# 1) Did you actually run the installer?
-Test-Path "$env:LOCALAPPDATA\Programs\carrotcap\carrotcap.exe"
-Test-Path "$env:LOCALAPPDATA\Microsoft\WindowsApps\carrotcap.cmd"
-
-# 2) Is the WindowsApps folder on PATH?
-($env:PATH -split ';') -match 'WindowsApps'
-
-# 3) Open a NEW PowerShell window after installing (existing sessions cache PATH).
-```
-
-If `carrotcap.exe` exists but the command is still missing, just call the exe directly once to confirm the build is fine:
-
-```powershell
-& "$env:LOCALAPPDATA\Programs\carrotcap\carrotcap.exe"
+Test-Path "$env:LOCALAPPDATA\Programs\carrotcap-cli\carrotcap.exe"
+where.exe carrotcap          # first line should end in \WindowsApps\carrotcap.bat
+$env:PATHEXT                 # .BAT must come before .CMD
 ```
 
 ## macOS

@@ -471,16 +471,26 @@ function validateClaudeMdContent(content) {
 // our carrotcap.bat wins over Cream's carrotcap.cmd in cmd / PowerShell 5.1 / pwsh 7,
 // and an extensionless `carrotcap` covers Git Bash. Cream's files (and `aor`) are never
 // touched. The user PATH is not edited: it is long on this kind of machine and a
-// truncating write would be destructive.
+// truncating write would be destructive. Assumes the default PATHEXT order and
+// WindowsApps on PATH (Windows 10/11 defaults).
+// Ownership (review task-018 r1): our launchers carry LAUNCH_SHIM_MARK on line 2 —
+// byte-identical to what build/installer.nsh writes. A same-named file without it, a
+// link or a folder is never overwritten.
 const LAUNCH_SHIM_NAMES = ['carrotcap.bat', 'carrotcap'];
+const LAUNCH_SHIM_MARK = 'CARROTCAP-CLI-LAUNCHER';
 function buildLaunchShims(exePath) {
   if (typeof exePath !== 'string' || !path.win32.isAbsolute(exePath) || /["%\r\n]/.test(exePath)) return null;
-  const posix = exePath.replace(/^([A-Za-z]):[\\/]/, (_, d) => `/${d.toLowerCase()}/`).replace(/\\/g, '/');
   const shq = (s) => "'" + s.replace(/'/g, "'\\''") + "'";
   return {
-    'carrotcap.bat': `@echo off\r\nstart "" "${exePath}" %*\r\n`,
-    carrotcap: `#!/bin/sh\n# CARROTCAP CLI launcher (Git Bash)\n${shq(posix)} "$@" >/dev/null 2>&1 &\n`,
+    'carrotcap.bat': `@echo off\r\nrem ${LAUNCH_SHIM_MARK}\r\nstart "" "${exePath}" %*\r\n`,
+    carrotcap: `#!/bin/sh\n# ${LAUNCH_SHIM_MARK}\n${shq(exePath.replace(/\\/g, '/'))} "$@" >/dev/null 2>&1 &\n`,
   };
+}
+// true when `content` is one of our launchers (marker on the second line).
+function isOwnLaunchShim(content) {
+  if (typeof content !== 'string') return false;
+  const second = content.split('\n')[1];
+  return typeof second === 'string' && ['rem ', '# '].some((p) => second.replace(/\r$/, '') === p + LAUNCH_SHIM_MARK);
 }
 // Self-heal the `carrotcap` command on every packaged launch (installer may have been
 // blocked, the app moved, a portable copy run...).
@@ -498,10 +508,16 @@ function ensureCliRegistration() {
     for (const name of LAUNCH_SHIM_NAMES) {
       const shimPath = path.join(shimDir, name);
       let current = null;
-      try {
-        if (!fs.lstatSync(shimPath).isFile()) continue; // a link or folder there is not ours to replace
-        current = fs.readFileSync(shimPath, 'utf8');
-      } catch { /* missing → write */ }
+      let exists = true;
+      try { if (!fs.lstatSync(shimPath).isFile()) continue; } // a link or folder: not ours
+      catch { exists = false; }
+      if (exists) {
+        try { current = fs.readFileSync(shimPath, 'utf8'); } catch { continue; }
+        if (!isOwnLaunchShim(current)) {
+          console.warn('[carrotcap] not replacing another program\'s launcher:', shimPath);
+          continue;
+        }
+      }
       if (current !== shims[name]) {
         fs.writeFileSync(shimPath, shims[name], 'utf8');
         console.log('[carrotcap] CLI shim ensured:', shimPath);
