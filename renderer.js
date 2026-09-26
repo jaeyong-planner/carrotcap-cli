@@ -1015,7 +1015,8 @@
       return null;
     }
     await loadFolder(state.folder.rootPath);
-    setFlowStatus('agents/logs/backlog 워크플로우 준비 완료', 'ok');
+    if (result.warning) setFlowStatus(result.warning, 'warn');
+    else setFlowStatus('agents/logs/backlog 워크플로우 준비 완료', 'ok');
     return result;
   }
 

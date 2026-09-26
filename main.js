@@ -797,14 +797,16 @@ function ensureAiopsProjectStructure(projectRoot) {
   // PM uses. The scripts are copy-only (no template variables); writeIfMissing
   // preserves any user-modified project copy.
   const projectScriptsDir = path.join(realRoot, 'scripts');
+  let warning;
   try {
     safeMkdir(projectScriptsDir, realRoot);
     copyTemplateIfMissing(tmpl.runMedia, path.join(projectScriptsDir, 'run-media.ps1'), realRoot);
     copyTemplateIfMissing(tmpl.runReviewer, path.join(projectScriptsDir, 'run-reviewer.ps1'), realRoot);
   } catch (e) {
-    // Non-fatal: setup continues with the agents/logs/backlog structure even if
-    // scripts/ deployment fails (e.g. existing symlink at projectRoot/scripts).
+    // Non-fatal (e.g. projectRoot/scripts is a symlink): the agents/logs/backlog
+    // structure still works, but the caller must tell the user (Codex task-014 r6).
     console.warn('[carrotcap] aiops scripts deployment failed:', e.message);
+    warning = 'AIOps 구조는 만들었지만 scripts/run-media.ps1·run-reviewer.ps1을 복사하지 못했습니다 (scripts 폴더 권한/링크 확인).';
   }
 
   const claudePath = path.join(realRoot, 'CLAUDE.md');
@@ -851,7 +853,9 @@ function ensureAiopsProjectStructure(projectRoot) {
       return null;
     }
   }
-  return { agentsDir, logsDir, backlogDir, claudePath, root: realRoot };
+  return warning
+    ? { agentsDir, logsDir, backlogDir, claudePath, root: realRoot, warning }
+    : { agentsDir, logsDir, backlogDir, claudePath, root: realRoot };
 }
 
 // Bundled sources copied by ensureAiopsProjectStructure (task-009 review).
@@ -889,7 +893,7 @@ function resolvePtyArgs(opts) {
     // A folder IS selected but setup failed (read-only, symlink...): a real problem → warning.
     const aiopsSetupWarning = isAiops && requestedProjectRoot && !aiopsStructure
       ? 'AIOps 구조를 만들지 못했습니다 — 프로젝트 폴더의 쓰기 권한이나 심볼릭 링크를 확인하세요.'
-      : undefined;
+      : (aiopsStructure && aiopsStructure.warning) || undefined;
     const engineRoot = resolveAorEngineRoot(settings);
     if (!engineRoot) {
       // AOR 엔진이 없으면 조용히 plain 셸로 연다 — 엔진이 없는 PC에서는 정상 상태라

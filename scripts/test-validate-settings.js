@@ -466,6 +466,15 @@ console.log('-- missing templates: refuse before writing (task-009 review)');
   check('setup returns null when templates missing', res === null);
   check('no partial structure written', fs.readdirSync(ws).length === 0, fs.readdirSync(ws).join(','));
 
+  // Helper scripts cannot be deployed (scripts/ is a file here): setup succeeds WITH a warning.
+  const wsScripts = fs.mkdtempSync(path.join(os.tmpdir(), 'carrotcap-scripts-'));
+  fs.writeFileSync(path.join(wsScripts, 'scripts'), 'not a directory');
+  const resS = ensureAiopsProjectStructure(wsScripts);
+  check('scripts deployment failure -> success with a warning', resS && typeof resS.warning === 'string' && /scripts/.test(resS.warning));
+  const clean = ensureAiopsProjectStructure(ws);
+  check('clean setup has no warning', !!clean && clean.warning === undefined);
+  try { fs.rmSync(wsScripts, { recursive: true, force: true }); } catch {}
+
   // Re-run with a complete app root recovers normally.
   const res2 = ensureAiopsProjectStructure(ws);
   check('re-run with complete templates succeeds', res2 && fs.existsSync(path.join(ws, 'agents', 'supervisor.md')));
