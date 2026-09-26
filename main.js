@@ -872,16 +872,17 @@ function resolvePtyArgs(opts) {
     const aiopsStructure = isAiops && requestedProjectRoot ? ensureAiopsProjectStructure(requestedProjectRoot) : null;
     const engineRoot = resolveAorEngineRoot(settings);
     if (!engineRoot) {
-      // AOR 부팅 불가 → plain 셸로 폴백하되 kind에 사유 표시. 사용자 페인이 죽지 않게.
-      return {
+      // AOR 엔진이 없으면 조용히 plain 셸로 연다 — 엔진이 없는 PC에서는 정상 상태라
+      // 경고를 띄우지 않는다. 사유는 페인 헤더 툴팁(note)으로만 남긴다.
+      const out = {
         file: defaultShell(),
         args: process.platform === 'win32' ? ['-NoLogo'] : [],
         cwd,
-        kind: isAiops ? 'aiops-fallback(plain)' : 'aor-fallback(plain)',
-        warning: isAiops
-          ? `${aiopsStructure ? 'AIOps project structure is ready.' : 'Select a project folder to create the AIOps project structure.'} AOR engineRoot not found — falling back to plain shell. Configure aor.engineRoot in settings.json.`
-          : 'AOR engineRoot not found — falling back to plain shell. Configure aor.engineRoot in settings.json.'
+        kind: isAiops ? 'aiops' : 'plain',
+        note: 'AOR 엔진이 없어 일반 셸로 실행 중 (settings.json의 aor.engineRoot로 지정 가능)'
       };
+      if (isAiops && !aiopsStructure) out.warning = '프로젝트 폴더를 선택하면 AIOps 구조가 만들어집니다.';
+      return out;
     }
     const shellInit = path.join(engineRoot, 'engine', 'windows', '_internal', 'shell-init.ps1');
     const invoke = path.join(engineRoot, 'engine', 'windows', '_internal', 'invoke-aor.ps1');
@@ -1004,7 +1005,10 @@ function spawnSession(rawPayload) {
   // task-011: warnings (e.g. AOR fallback) are returned to the renderer and shown in
   // the pane header. Writing them into xterm out-of-band desyncs ConPTY's screen
   // model from xterm, so the shell/TUI redraws land on the wrong lines.
-  return resolved.warning ? { id, kind, warning: resolved.warning } : { id, kind };
+  const out = { id, kind };
+  if (resolved.warning) out.warning = resolved.warning;
+  if (resolved.note) out.note = resolved.note;
+  return out;
 }
 
 function buildFolderTree(rootPath, maxDepth = 4) {

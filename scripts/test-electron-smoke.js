@@ -276,9 +276,9 @@ const PROBE = `(async () => {
   console.log('-- no out-of-band terminal writes (task-011)');
   // Warnings used to be injected into xterm behind ConPTY's back, garbling redraws.
   check('fallback warning not written into the terminal', !/\[carrotcap\] AOR engineRoot/.test(await screenText()));
-  check('fallback warning shown in the pane header instead',
-    (await ev(`[...document.querySelectorAll('.pane .kind')].some((k) => /⚠/.test(k.textContent) && k.title.length > 0)`)) === true
-    || !/FALLBACK/.test(await ev(`document.querySelector('.pane .kind').textContent`)));
+  // A missing AOR engine is normal on machines without it: no warning anywhere (user request).
+  check('no AOR warning in pane headers', (await ev(`[...document.querySelectorAll('.pane .kind')].every((k) => !/⚠|FALLBACK/.test(k.textContent))`)) === true);
+  check('no AOR warning in the flow status', !/engineRoot|AOR 엔진/.test(await ev(`document.querySelector('#flow-status').textContent`)));
 
   console.log('-- CLI line-up (task-012)');
   const cliKeys = await ev(`[...document.querySelectorAll('.btn-cli')].map((b) => b.dataset.cli).join(',')`);

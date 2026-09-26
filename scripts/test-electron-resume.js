@@ -9,7 +9,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { launchApp, sleep } = require('./lib/cdp-app');
+const { launchApp, sleep, waitFor } = require('./lib/cdp-app');
 
 let pass = 0;
 let fail = 0;
@@ -62,7 +62,7 @@ const screen = (app) => app.ev(`[...document.querySelectorAll('.tab-page.active 
 
   console.log('-- run 2: resume after crash');
   app = await launchApp(userData);
-  await sleep(3500);
+  await waitFor(() => app.ev(`!document.querySelector('#resume-box').classList.contains('hidden')`));
   const offer = await app.ev(`document.querySelector('#resume-box').classList.contains('hidden') ? '' : document.querySelector('#resume-text').textContent`);
   check('resume offer shown', offer.length > 0, offer);
   check('offer says it was not a clean exit', /비정상 종료/.test(offer), offer);
@@ -77,7 +77,7 @@ const screen = (app) => app.ev(`[...document.querySelectorAll('.tab-page.active 
   check('its shell is still alive', /still-alive/.test(await startTabText()) && !/session ended/.test(await startTabText()));
   check('double click restores only once', (await app.ev(`document.querySelectorAll('.pane').length`)) === 3);
   check('restored tab has 2 panes', (await app.ev(`document.querySelectorAll('.tab-page.active .pane').length`)) === 2);
-  check('claude pane got its continue command', /'where' '--continue'/.test(await screen(app)));
+  check('claude pane got its continue command', await waitFor(async () => /'where' '--continue'/.test(await screen(app))));
   check('offer hidden after resuming', await app.ev(`document.querySelector('#resume-box').classList.contains('hidden')`));
   await sleep(1200); // let the debounced snapshot land
   const panesInRecord = () => { const s = (readRecord().sessions || [])[0]; return s && s.layout ? s.layout.tabs.reduce((n, t) => n + t.panes.length, 0) : 0; };
@@ -97,8 +97,7 @@ const screen = (app) => app.ev(`[...document.querySelectorAll('.tab-page.active 
 
   console.log('-- run 3: "새로 시작" drops the offer');
   app = await launchApp(userData);
-  await sleep(3500);
-  check('resume offered for the clean previous session', !(await app.ev(`document.querySelector('#resume-box').classList.contains('hidden')`)));
+  check('resume offered for the clean previous session', await waitFor(() => app.ev(`!document.querySelector('#resume-box').classList.contains('hidden')`)));
   await app.ev(`document.querySelector('#resume-dismiss').click(), true`);
   await sleep(500);
   const rec3 = readRecord();

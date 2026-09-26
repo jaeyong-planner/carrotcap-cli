@@ -461,6 +461,8 @@
         if (result.warning) {
           k.title = result.warning;
           k.textContent += ' ⚠';
+        } else if (result.note) {
+          k.title = result.note; // 정보성 안내는 툴팁으로만 (경고 표시 없음)
         }
       }
     }

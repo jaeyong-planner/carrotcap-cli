@@ -5,6 +5,15 @@ const path = require('path');
 
 const root = path.join(__dirname, '..', '..');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Poll an async predicate instead of guessing a fixed delay (machine load varies).
+async function waitFor(pred, { timeoutMs = 15000, intervalMs = 250 } = {}) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try { if (await pred()) return true; } catch { /* keep polling */ }
+    await sleep(intervalMs);
+  }
+  return false;
+}
 
 async function launchApp(userDataDir, { port = 9400 + Math.floor(Math.random() * 400) } = {}) {
   const child = spawn(require(path.join(root, 'node_modules', 'electron')), ['.', `--remote-debugging-port=${port}`], {
@@ -54,4 +63,4 @@ async function launchApp(userDataDir, { port = 9400 + Math.floor(Math.random() *
   };
 }
 
-module.exports = { launchApp, sleep };
+module.exports = { launchApp, sleep, waitFor };
