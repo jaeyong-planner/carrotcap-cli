@@ -33,6 +33,16 @@ function normalizeUrl(input) {
   return (u.protocol === 'http:' || u.protocol === 'https:') ? u.toString() : null;
 }
 
+// Page-controlled strings end up pasted into an agent terminal. Make them one line of
+// printable text: no C0/DEL/C1 controls (ESC could end a bracketed paste), no line breaks.
+function cleanText(s, max) {
+  return String(s == null ? '' : s)
+    .replace(/[\u0000-\u001F\u007F-\u009F\u{2028}\u{2029}]/gu, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+    .slice(0, max);
+}
+
 function clampRect(r) {
   const n = (v, max) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(max, Math.round(v))) : 0);
   if (!r || typeof r !== 'object') return { x: 0, y: 0, width: 0, height: 0 };
@@ -111,7 +121,7 @@ const CLEAR_SCRIPT  = `(() => { if (window.__ccPickCancel) window.__ccPickCancel
 
 function sanitizePick(v) {
   if (!v || typeof v !== 'object') return null;
-  const str = (s, n) => (typeof s === 'string' ? s.replace(/[\x00-\x1F]/g, ' ').slice(0, n) : '');
+  const str = (s, n) => (typeof s === 'string' ? cleanText(s, n) : '');
   const num = (x) => (typeof x === 'number' && Number.isFinite(x) ? Math.round(x) : 0);
   const r = v.rect || {};
   const vp = v.viewport || {};
@@ -125,7 +135,16 @@ function sanitizePick(v) {
   };
 }
 
-function setupBrowser({ handle, getWindow, resolveAllowedDir, userDataRoot }) {
+const withTimeout = (p, ms, what) => {
+  let timer;
+  return Promise.race([
+    p,
+    new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`${what} timed out`)), ms); })
+  ]).finally(() => clearTimeout(timer));
+};
+
+function setupBrowser({ handle, getWindow, resolveAllowedDir, safeMkdir, writeIfMissing, userDataRoot }) {
+  let sessionReady = false;
   let view = null;
   let device = 'desktop';
   let errors = [];          // { at, level, message, source, line }
@@ -141,8 +160,8 @@ function setupBrowser({ handle, getWindow, resolveAllowedDir, userDataRoot }) {
     const wc = view.webContents;
     send('browser:state', {
       open: true,
-      url: wc.getURL(),
-      title: wc.getTitle(),
+      url: cleanText(wc.getURL(), MAX_URL_LEN),
+      title: cleanText(wc.getTitle(), 200),
       loading: wc.isLoading(),
       canGoBack: wc.canGoBack(),
       canGoForward: wc.canGoForward(),
@@ -155,8 +174,8 @@ function setupBrowser({ handle, getWindow, resolveAllowedDir, userDataRoot }) {
     errors.push({
       at: new Date().toISOString(),
       level,
-      message: String(message || '').slice(0, MAX_ERROR_LEN),
-      source: String(source || '').slice(0, 300),
+      message: cleanText(message, MAX_ERROR_LEN),
+      source: cleanText(source, 300),
       line: Number.isInteger(line) ? line : 0
     });
     if (errors.length > MAX_ERRORS) {
@@ -170,17 +189,25 @@ function setupBrowser({ handle, getWindow, resolveAllowedDir, userDataRoot }) {
   function ensureView() {
     if (view) return view;
     const ses = electronSession.fromPartition(PARTITION);
-    ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
-    ses.setPermissionCheckHandler(() => false);
-    ses.on('will-download', (e) => e.preventDefault());
-    // Failed requests (404 script, 500 API, DNS...) never reach console-message — record
-    // them from the network layer. One listener per event per session; this session is ours.
-    ses.webRequest.onCompleted((d) => {
-      if (d.statusCode >= 400) addError('network', `${d.statusCode} ${d.method} ${d.url}`, d.resourceType || '', 0);
-    });
-    ses.webRequest.onErrorOccurred((d) => {
-      if (d.error !== 'net::ERR_ABORTED') addError('network', `${d.error} ${d.method} ${d.url}`, d.resourceType || '', 0);
-    });
+    // The partition session outlives views: register its handlers once (review task-015).
+    if (!sessionReady) {
+      sessionReady = true;
+      ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
+      ses.setPermissionCheckHandler(() => false);
+      ses.on('will-download', (e) => e.preventDefault());
+      // Never touch local files, whatever the page or a redirect asks for.
+      ses.webRequest.onBeforeRequest((d, cb) => cb({ cancel: /^file:/i.test(d.url) }));
+      // Failed requests (404 script, 500 API, DNS...) never reach console-message — record
+      // them from the network layer. One listener per event per session; this session is ours.
+      ses.webRequest.onCompleted((d) => {
+        if (d.statusCode >= 400) addError('network', `${d.statusCode} ${d.method} ${d.url}`, d.resourceType || '', 0);
+      });
+      ses.webRequest.onErrorOccurred((d) => {
+        if (d.error !== 'net::ERR_ABORTED' && d.error !== 'net::ERR_BLOCKED_BY_CLIENT') {
+          addError('network', `${d.error} ${d.method} ${d.url}`, d.resourceType || '', 0);
+        }
+      });
+    }
     view = new BrowserView({
       webPreferences: { session: ses, sandbox: true, contextIsolation: true, nodeIntegration: false, webviewTag: false }
     });
@@ -192,7 +219,13 @@ function setupBrowser({ handle, getWindow, resolveAllowedDir, userDataRoot }) {
       if (u) wc.loadURL(u).catch(() => {});
       return { action: 'deny' };
     });
+    // http(s) only — for links, server redirects (30x to file: etc.) and, as a last line,
+    // anything that still lands on another scheme.
     wc.on('will-navigate', (e, url) => { if (!normalizeUrl(url)) e.preventDefault(); });
+    wc.on('will-redirect', (e, url) => { if (!normalizeUrl(url)) e.preventDefault(); });
+    wc.on('did-navigate', (_e, url) => {
+      if (!normalizeUrl(url) && url !== 'about:blank') wc.loadURL('about:blank').catch(() => {});
+    });
     wc.on('console-message', (_e, level, message, line, sourceId) => {
       if (level >= 3) addError('error', message, sourceId, line);
     });
@@ -208,12 +241,6 @@ function setupBrowser({ handle, getWindow, resolveAllowedDir, userDataRoot }) {
     view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
     return view;
   }
-
-  // Never let a CDP call or a page load hang an IPC reply.
-  const withTimeout = (p, ms, what) => Promise.race([
-    p,
-    new Promise((_, rej) => setTimeout(() => rej(new Error(`${what} timed out`)), ms))
-  ]);
 
   async function applyDevice(mode) {
     device = mode === 'mobile' ? 'mobile' : 'desktop';
@@ -243,6 +270,7 @@ function setupBrowser({ handle, getWindow, resolveAllowedDir, userDataRoot }) {
     if (!view) return;
     const win = getWindow();
     try { if (win && !win.isDestroyed()) win.removeBrowserView(view); } catch { /* window closing */ }
+    if (debuggerAttached) { try { view.webContents.debugger.detach(); } catch { /* already detached */ } }
     try { view.webContents.close(); } catch { /* already gone */ }
     view = null;
     debuggerAttached = false;
@@ -252,19 +280,29 @@ function setupBrowser({ handle, getWindow, resolveAllowedDir, userDataRoot }) {
   }
 
   // Screenshots: <project>/.carrotcap/browser (self-ignoring), newest 20, max 3 days.
+  // Inside a project the folder goes through the same guards as AIOps setup: every
+  // ancestor must be a real directory (no symlink/junction) and the result must stay
+  // inside the picked workspace — so writing and pruning can never leave it (review C2).
   function shotDir(projectRoot) {
     const real = resolveAllowedDir(projectRoot);
-    const dir = real ? path.join(real, '.carrotcap', 'browser') : path.join(userDataRoot, 'browser-shots');
-    fs.mkdirSync(dir, { recursive: true });
-    if (real) {
-      const gi = path.join(real, '.carrotcap', '.gitignore');
-      if (!fs.existsSync(gi)) fs.writeFileSync(gi, '*\n', 'utf8');
+    if (!real) {
+      const dir = path.join(userDataRoot, 'browser-shots');
+      fs.mkdirSync(dir, { recursive: true });
+      return dir;
     }
+    const dir = path.join(real, '.carrotcap', 'browser');
+    safeMkdir(dir, real); // throws on symlinked ancestors / escape
+    writeIfMissing(path.join(real, '.carrotcap', '.gitignore'), '*\n', real);
     return dir;
   }
   function pruneShots(dir) {
     let files;
-    try { files = fs.readdirSync(dir, { withFileTypes: true }).filter((d) => d.isFile() && /^shot-.*\.png$/.test(d.name)); } catch { return; }
+    try {
+      const lst = fs.lstatSync(dir);
+      if (lst.isSymbolicLink() || !lst.isDirectory()) return;
+      // withFileTypes: isFile() is false for symlinks, so only real files are removed
+      files = fs.readdirSync(dir, { withFileTypes: true }).filter((d) => d.isFile() && /^shot-[0-9TZ-]+\.png$/.test(d.name));
+    } catch { return; }
     const now = Date.now();
     const withTime = files.map((d) => {
       const p = path.join(dir, d.name);
@@ -327,12 +365,13 @@ function setupBrowser({ handle, getWindow, resolveAllowedDir, userDataRoot }) {
     return true;
   });
   handle('browser:errors', () => errors.slice(-MAX_ERRORS));
-  // Everything the agent needs for one chat message; marks the attached errors as reported.
+  // Everything the agent needs for one chat message. Nothing is consumed here: the
+  // renderer calls browser:commit only after the text really reached the terminal.
   handle('browser:context', async (_e, payload) => {
     if (!view) return null;
     const p = (payload && typeof payload === 'object') ? payload : {};
     const wc = view.webContents;
-    const out = { url: wc.getURL(), title: wc.getTitle().slice(0, 200), device };
+    const out = { url: cleanText(wc.getURL(), MAX_URL_LEN), title: cleanText(wc.getTitle(), 200), device };
     if (p.screenshot) {
       try {
         const img = await wc.capturePage();
@@ -348,13 +387,19 @@ function setupBrowser({ handle, getWindow, resolveAllowedDir, userDataRoot }) {
     if (p.includeErrors) {
       out.errors = errors.slice(reportedUpTo).slice(-MAX_ERRORS_SENT);
       out.errorsSkipped = Math.max(0, errors.length - reportedUpTo - out.errors.length);
-      reportedUpTo = errors.length;
+    }
+    out.errorMark = errors.length; // pass back to browser:commit
+    return out;
+  });
+  handle('browser:commit', (_e, mark) => {
+    if (Number.isInteger(mark) && mark > reportedUpTo && mark <= errors.length) {
+      reportedUpTo = mark;
       pushState();
     }
-    return out;
+    return true;
   });
 
   return { destroyView };
 }
 
-module.exports = { setupBrowser, normalizeUrl, sanitizePick, clampRect };
+module.exports = { setupBrowser, normalizeUrl, sanitizePick, clampRect, cleanText };

@@ -694,18 +694,32 @@
       if (composerHistory.length > COMPOSER_HISTORY_MAX) composerHistory.shift();
     }
     // task-015: 브라우저 모드면 주석·콘솔 에러·캡처 경로를 [브라우저 컨텍스트]로 앞에 붙인다.
-    let text = typed;
+    let prepared = { text: typed, commit: () => {} };
     composerSending = true;
     try {
-      if (window.CarrotcapBrowser) text = await window.CarrotcapBrowser.decorate(typed, state.folder.rootPath || null);
+      if (window.CarrotcapBrowser) {
+        prepared = await window.CarrotcapBrowser.decorate(typed, state.folder.rootPath || null, {
+          cli: leaf.cli || null,
+          bracketedPaste: !!(leaf.term.modes && leaf.term.modes.bracketedPasteMode)
+        });
+      }
     } catch (err) {
       console.warn('[carrotcap] browser context failed:', err && err.message);
     } finally {
       composerSending = false;
     }
+    if (prepared.blocked) {
+      // 일반 셸에는 페이지 유래 텍스트를 보내지 않는다 — 입력 내용은 그대로 돌려준다.
+      composerInput.value = typed;
+      autoGrowComposer();
+      composerTarget.textContent = `→ ${prepared.blocked}`;
+      return;
+    }
     const ptyId = leaf.ptyId;
-    if (!ptyId) { composerInput.value = typed; autoGrowComposer(); return; } // 그 사이 세션 종료
+    if (!ptyId) { composerInput.value = typed; autoGrowComposer(); return; } // 그 사이 세션 종료 — 컨텍스트는 소비하지 않음
+    const text = prepared.text;
     if (text) leaf.term.paste(text);
+    prepared.commit(); // 실제로 보낸 뒤에만 주석·에러를 "보냄" 처리
     // Enter는 붙여넣기와 분리해 보낸다 — 붙여넣기 안의 개행으로 취급되어 제출이 안 되는 CLI가 있다.
     // 긴 붙여넣기(브라우저 컨텍스트)는 CLI가 받아들이는 시간을 조금 더 준다. 그 사이 세션이 끝났으면 보내지 않는다.
     const delay = text ? Math.min(600, 60 + Math.floor(text.length / 20)) : 0;

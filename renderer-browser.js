@@ -26,8 +26,15 @@
     pins: [],          // [{ n, selector, tag, text, rect, viewport }]
     newErrors: 0,
     annotating: false,
-    pickToken: 0
+    pickToken: 0,
+    openToken: 0,
+    navPending: false
   };
+  // 에이전트 CLI만 브라우저 컨텍스트를 받는다 — 일반 셸에 붙여넣으면 줄마다 명령으로 실행된다.
+  const AGENT_CLIS = new Set(['claude', 'codex', 'grok']);
+  // 페이지에서 온 문자열은 main에서 한 번 정리되지만, 붙여넣기 직전에 한 번 더 한 줄로 만든다.
+  const oneLine = (s, max = 600) => String(s == null ? '' : s)
+    .replace(/[\u0000-\u001F\u007F-\u009F\u{2028}\u{2029}]/gu, ' ').replace(/\s{2,}/g, ' ').trim().slice(0, max);
 
   // ---- 레이아웃: #browser-frame 위치를 BrowserView bounds로 보낸다 ----
   function sendBounds() {
@@ -45,6 +52,7 @@
 
   function setActive(on) {
     st.active = on;
+    st.openToken++; // 진행 중인 열기 결과는 무효 (닫은 뒤 늦게 도착한 응답이 상태를 되살리지 않게)
     area.classList.toggle('hidden', !on);
     document.body.classList.toggle('browser-mode', on);
     $('#toggle-browser').classList.toggle('active', on);
@@ -61,7 +69,13 @@
   }
 
   async function openUrl() {
+    if (!st.active) return;
+    const token = ++st.openToken;
     const res = await api.browserOpen(urlInput.value);
+    if (token !== st.openToken || !st.active) {
+      if (!st.active) api.browserClose(); // 기다리는 사이 브라우저 모드를 껐다
+      return;
+    }
     if (!res || !res.ok) {
       empty.textContent = (res && res.error) || '열 수 없는 주소입니다.';
       empty.hidden = false;
@@ -161,44 +175,66 @@
     errCount.textContent = String(s.errorCount || 0);
     errCount.classList.toggle('has', st.newErrors > 0);
     if (!consoleEl.classList.contains('hidden')) renderConsole();
-    // 다른 페이지로 이동하면 핀(페이지 DOM)이 사라진다 → 목록도 비우고, 주석 중이면 새 페이지에 다시 건다
+    // 다른 페이지로 이동하면 핀(페이지 DOM)이 사라진다 → 목록을 비우고, 이전 pick(이동으로 null)은
+    // 무시하도록 토큰을 올린 뒤, 로드가 끝나면 주석 오버레이를 새 페이지에 다시 건다.
     if (prevUrl && st.url && prevUrl.split('#')[0] !== st.url.split('#')[0]) {
+      st.pickToken++;
       st.pins = [];
+      st.navPending = true;
       renderPins();
-      if (st.annotating && !s.loading) annotateLoop();
+    }
+    if (st.navPending && !s.loading) {
+      st.navPending = false;
+      if (st.annotating) annotateLoop();
     }
   });
 
   // ---- 채팅 연동: 입력창 전송 직전에 호출 ----
   function fmtRect(r) { return `x=${r.x}, y=${r.y}, ${r.width}×${r.height}`; }
-  async function decorate(text, projectRoot) {
-    if (!st.active || !st.open) return text;
+  // 입력창 전송 직전: 붙일 컨텍스트를 만든다. 아무것도 소비하지 않고,
+  // 터미널에 실제로 보낸 뒤 commit()을 불러야 주석·에러가 "보냄"이 된다.
+  //   반환: { text, commit } | { blocked: '이유' }
+  async function decorate(text, projectRoot, target) {
+    const plain = { text, commit: () => {} };
+    if (!st.active || !st.open) return plain;
     const wantErrors = includeErrors.checked && st.newErrors > 0;
-    if (!st.pins.length && !wantErrors) return text;
+    if (!st.pins.length && !wantErrors) return plain;
+    // 여러 줄 컨텍스트는 에이전트 CLI(bracketed paste를 켜는 대화형 앱)에만 보낸다.
+    // 일반 PowerShell에 붙이면 페이지가 만든 문자열이 명령으로 실행될 수 있다 (review C3).
+    const isAgent = target && AGENT_CLIS.has(target.cli) && target.bracketedPaste;
+    if (!isAgent) {
+      return { blocked: '브라우저 주석·콘솔 에러는 CLAUDE/CODEX 버튼으로 실행한 에이전트 페인에만 보낼 수 있습니다' };
+    }
     const ctx = await api.browserContext({ projectRoot, screenshot: st.pins.length > 0, includeErrors: wantErrors });
-    if (!ctx) return text;
+    if (!ctx) return plain;
+    const pins = st.pins.slice();
     const lines = ['[브라우저 컨텍스트 — CARROTCAP]'];
-    lines.push(`URL: ${ctx.url}${ctx.title ? ` (${ctx.title})` : ''}`);
+    lines.push(`URL: ${oneLine(ctx.url, 2048)}${ctx.title ? ` (${oneLine(ctx.title, 200)})` : ''}`);
     lines.push(`보기: ${ctx.device === 'mobile' ? '모바일 390×844 (터치·모바일 UA)' : 'PC'}`);
-    if (ctx.screenshot) lines.push(`화면 캡처(주석 번호 표시): ${ctx.screenshot}`);
-    if (st.pins.length) {
+    if (ctx.screenshot) lines.push(`화면 캡처(주석 번호 표시): ${oneLine(ctx.screenshot, 1024)}`);
+    if (pins.length) {
       lines.push('주석:');
-      for (const p of st.pins) {
-        lines.push(`  ${p.n}) <${p.tag}> ${p.selector}${p.text ? ` — "${p.text}"` : ''} @ ${fmtRect(p.rect)} (뷰포트 ${p.viewport.width}×${p.viewport.height})`);
+      for (const p of pins) {
+        lines.push(`  ${p.n}) <${oneLine(p.tag, 20)}> ${oneLine(p.selector, 300)}${p.text ? ` — "${oneLine(p.text, 120)}"` : ''} @ ${fmtRect(p.rect)} (뷰포트 ${p.viewport.width}×${p.viewport.height})`);
       }
     }
     if (ctx.errors && ctx.errors.length) {
       lines.push(`콘솔 에러 (이전 전송 이후 ${ctx.errors.length + (ctx.errorsSkipped || 0)}건${ctx.errorsSkipped ? `, 최근 ${ctx.errors.length}건만` : ''}):`);
-      for (const e of ctx.errors) lines.push(`  - [${e.level}] ${e.message}${e.source ? ` (${e.source}${e.line ? ':' + e.line : ''})` : ''}`);
+      for (const e of ctx.errors) {
+        lines.push(`  - [${oneLine(e.level, 10)}] ${oneLine(e.message)}${e.source ? ` (${oneLine(e.source, 300)}${e.line ? ':' + e.line : ''})` : ''}`);
+      }
     }
     lines.push('[요청]');
     lines.push(text || '(주석 위치의 문제를 확인해줘)');
-    // 보낸 주석은 소비된다 — 다음 질문은 새 주석으로
-    st.pickToken++;
-    st.pins = [];
-    api.browserClearPins().then(() => { if (st.annotating) annotateLoop(); });
-    renderPins();
-    return lines.join('\n');
+    const commit = () => {
+      if (wantErrors) api.browserCommit(ctx.errorMark);
+      // 페이지의 핀을 모두 지우므로 목록도 모두 비운다 (둘이 항상 일치하게)
+      st.pins = [];
+      st.pickToken++;
+      api.browserClearPins().then(() => { if (st.annotating) annotateLoop(); });
+      renderPins();
+    };
+    return { text: lines.join('\n'), commit };
   }
 
   // ---- 이벤트 ----

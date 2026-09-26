@@ -1168,6 +1168,9 @@ function createWindow() {
   mainWindow.webContents.on('will-navigate', (e) => e.preventDefault());
   mainWindow.loadFile('index.html');
   mainWindow.on('closed', () => {
+    // The BrowserView belongs to this window; drop our reference so a new window
+    // (macOS activate) starts clean (review task-015).
+    try { browserMode.destroyView(); } catch { /* window already gone */ }
     mainWindow = null;
     for (const [, s] of sessions) {
       disposeReadyGate(s);
@@ -1512,10 +1515,12 @@ handle('app:platform', () => process.platform);
 handle('app:pty-available', () => ptyAvailable);
 
 // Browser mode (task-015): BrowserView + annotations + console errors, see main-browser.js.
-require('./main-browser').setupBrowser({
+const browserMode = require('./main-browser').setupBrowser({
   handle,
   getWindow: () => mainWindow,
   resolveAllowedDir,
+  safeMkdir,
+  writeIfMissing,
   userDataRoot: USER_DATA_ROOT
 });
 

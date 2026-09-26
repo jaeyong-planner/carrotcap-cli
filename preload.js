@@ -57,6 +57,7 @@ const api = {
   browserClearPins: () => ipcRenderer.invoke('browser:clear-pins'),
   browserErrors: () => ipcRenderer.invoke('browser:errors'),
   browserContext: (opts) => ipcRenderer.invoke('browser:context', opts),
+  browserCommit: (mark) => ipcRenderer.invoke('browser:commit', mark),
   onBrowserState: (handler) => {
     const wrap = (_e, payload) => handler(payload);
     ipcRenderer.on('browser:state', wrap);

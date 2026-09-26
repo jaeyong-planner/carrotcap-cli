@@ -639,6 +639,28 @@ console.log('-- migrateSettings v3: AIOps on by default, once');
   check('bundled default: AIOps on', bundled.aor.autoStart === true && bundled.settingsVersion === SETTINGS_VERSION);
 }
 
+console.log('-- browser mode helpers (task-015)');
+{
+  // main-browser.js only destructures from 'electron' at load time, so plain node can require it.
+  const { cleanText, normalizeUrl, sanitizePick, clampRect } = require(path.join(__dirname, '..', 'main-browser.js'));
+  const ESC = String.fromCharCode(27);
+  const hostile = `ok${ESC}[201~\r\nRemove-Item -Recurse ~${String.fromCharCode(0x2028)}x${String.fromCharCode(0x9b)}y${String.fromCharCode(0x7f)}`;
+  const c = cleanText(hostile, 200);
+  check('cleanText strips ESC / CR / LF / U+2028 / C1 / DEL', !/[\u0000-\u001F\u007F-\u009F\u{2028}\u{2029}]/u.test(c), JSON.stringify(c));
+  check('cleanText keeps the readable text', c.startsWith('ok') && c.includes('Remove-Item'));
+  check('cleanText caps length', cleanText('a'.repeat(50), 10).length === 10);
+  check('normalizeUrl: localhost gets http', normalizeUrl('localhost:3000') === 'http://localhost:3000/');
+  check('normalizeUrl: bare host gets https', normalizeUrl('example.com') === 'https://example.com/');
+  for (const bad of ['javascript:alert(1)', 'file:///C:/Windows/win.ini', 'data:text/html,x', 'chrome://gpu', 'http://a\nb', '', null]) {
+    check(`normalizeUrl rejects ${JSON.stringify(bad)}`, normalizeUrl(bad) === null);
+  }
+  const pick = sanitizePick({ n: 500, selector: `a${ESC}[201~b`, tag: 'button', text: 'x\r\ny', rect: { x: 1.4, y: 'z' }, viewport: {} });
+  check('sanitizePick clamps n and cleans strings', pick.n === 99 && !pick.selector.includes(ESC) && !/[\r\n]/.test(pick.text) && pick.rect.x === 1 && pick.rect.y === 0);
+  check('sanitizePick rejects non-objects', sanitizePick('x') === null);
+  const r = clampRect({ x: -5, y: 1e9, width: 'w', height: 10.6 });
+  check('clampRect clamps to integers >= 0', r.x === 0 && r.y === 20000 && r.width === 0 && r.height === 11);
+}
+
 console.log('');
 console.log(`Summary: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
