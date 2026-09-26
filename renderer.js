@@ -676,9 +676,22 @@
     }
     composerInput.focus();
   }
+  // 한 번의 전송(컨텍스트 준비 → 붙여넣기 → Enter → 소비)이 끝날 때까지 다음 전송을 막는다 —
+  // 같은 주석·에러가 두 번 가지 않게 (review r3).
   let composerSending = false;
   async function sendComposer() {
     if (composerSending) return;
+    composerSending = true;
+    const sendBtn = $('#composer-send');
+    sendBtn.disabled = true;
+    try {
+      await sendComposerOnce();
+    } finally {
+      composerSending = false;
+      sendBtn.disabled = false;
+    }
+  }
+  async function sendComposerOnce() {
     const leaf = state.panes.get(state.activePaneId);
     if (!leaf || leaf.type !== 'leaf' || !leaf.ptyId || !leaf.term) {
       // 보낼 곳이 없으면 입력 내용은 지우지 않는다.
@@ -695,7 +708,6 @@
     }
     // task-015: 브라우저 모드면 주석·콘솔 에러·캡처 경로를 [브라우저 컨텍스트]로 앞에 붙인다.
     let prepared = { text: typed, commit: () => {} };
-    composerSending = true;
     try {
       if (window.CarrotcapBrowser) {
         prepared = await window.CarrotcapBrowser.decorate(typed, state.folder.rootPath || null, {
@@ -705,8 +717,6 @@
       }
     } catch (err) {
       console.warn('[carrotcap] browser context failed:', err && err.message);
-    } finally {
-      composerSending = false;
     }
     if (prepared.blocked) {
       // 일반 셸에는 페이지 유래 텍스트를 보내지 않는다 — 입력 내용은 그대로 돌려준다.

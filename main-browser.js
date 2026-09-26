@@ -154,9 +154,10 @@ const withTimeout = (p, ms, what) => {
   ]).finally(() => clearTimeout(timer));
 };
 
-function setupBrowser({ handle, getWindow, resolveAllowedDir, safeMkdir, writeIfMissing, assertAncestorsClean, isPathInsideRoot, userDataRoot }) {
+function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPathInsideRoot, userDataRoot }) {
   let sessionReady = false;
   let openGen = 0;          // bumped by every open/close; late async steps check it (review r2 M5)
+  let pageGen = 0;          // bumped by every main-frame document change; context/commit must match (review r3)
   let view = null;
   let device = 'desktop';
   let errors = [];          // { at, level, message, source, line }
@@ -179,7 +180,8 @@ function setupBrowser({ handle, getWindow, resolveAllowedDir, safeMkdir, writeIf
       canGoForward: wc.canGoForward(),
       device,
       errorCount: errors.length,
-      newErrors: errors.length - reportedUpTo
+      newErrors: errors.length - reportedUpTo,
+      pageGen
     });
   };
   const addError = (level, message, source, line) => {
@@ -236,6 +238,7 @@ function setupBrowser({ handle, getWindow, resolveAllowedDir, safeMkdir, writeIf
     wc.on('will-navigate', (e, url) => { if (!normalizeUrl(url)) e.preventDefault(); });
     wc.on('will-redirect', (e, url) => { if (!normalizeUrl(url)) e.preventDefault(); });
     wc.on('did-navigate', (_e, url) => {
+      pageGen++; // new document: old pins/context no longer apply
       if (!normalizeUrl(url) && url !== 'about:blank') wc.loadURL('about:blank').catch(() => {});
     });
     wc.on('console-message', (_e, level, message, line, sourceId) => {
@@ -280,6 +283,7 @@ function setupBrowser({ handle, getWindow, resolveAllowedDir, safeMkdir, writeIf
 
   function destroyView() {
     openGen++;
+    pageGen++;
     if (!view) return;
     const win = getWindow();
     try { if (win && !win.isDestroyed()) win.removeBrowserView(view); } catch { /* window closing */ }
@@ -296,17 +300,14 @@ function setupBrowser({ handle, getWindow, resolveAllowedDir, safeMkdir, writeIf
   // Inside a project the folder goes through the same guards as AIOps setup: every
   // ancestor must be a real directory (no symlink/junction) and the result must stay
   // inside the picked workspace — so writing and pruning can never leave it (review C2).
-  function shotDir(projectRoot) {
-    const real = resolveAllowedDir(projectRoot);
-    if (!real) {
-      const dir = path.join(userDataRoot, 'browser-shots');
-      fs.mkdirSync(dir, { recursive: true });
-      return { dir, root: userDataRoot };
-    }
-    const dir = path.join(real, '.carrotcap', 'browser');
-    safeMkdir(dir, real); // throws on symlinked ancestors / escape
-    writeIfMissing(path.join(real, '.carrotcap', '.gitignore'), '*\n', real);
-    return { dir, root: real };
+  // Screenshots live in the app's own data dir, never in the project: a project folder
+  // is not trusted (a repo could race a junction into .carrotcap/…), and path-based
+  // Node APIs cannot make that check-then-write atomic (review r3 C2). Bonus: nothing
+  // is left behind in the user's project.
+  function shotDir() {
+    const dir = path.join(userDataRoot, 'browser-shots');
+    safeMkdir(dir, userDataRoot);
+    return { dir, root: userDataRoot };
   }
   // Re-checked immediately before every write and delete: the folder could have been
   // swapped for a junction after shotDir() validated it (review r2, TOCTOU).
@@ -398,8 +399,10 @@ function setupBrowser({ handle, getWindow, resolveAllowedDir, safeMkdir, writeIf
     try { await view.webContents.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD, [{ code: CANCEL_SCRIPT }]); } catch { /* page gone */ }
     return true;
   });
-  handle('browser:clear-pins', async (_e, only) => {
+  handle('browser:clear-pins', async (_e, only, gen) => {
     if (!view) return false;
+    // Removing specific pins is only meaningful on the document they were made on.
+    if (Array.isArray(only) && gen !== pageGen) return false;
     const ns = Array.isArray(only) ? only.filter((n) => Number.isInteger(n) && n >= 1 && n <= 999).slice(0, 100) : null;
     const code = ns ? clearSomeScript(ns) : CLEAR_SCRIPT;
     try { await view.webContents.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD, [{ code }]); } catch { /* page gone */ }
@@ -412,11 +415,16 @@ function setupBrowser({ handle, getWindow, resolveAllowedDir, safeMkdir, writeIf
     if (!view) return null;
     const p = (payload && typeof payload === 'object') ? payload : {};
     const wc = view.webContents;
-    const out = { url: cleanText(wc.getURL(), MAX_URL_LEN), title: cleanText(wc.getTitle(), 200), device };
+    // The renderer's pins belong to the document it saw; if that is no longer the
+    // current one, this context would describe the wrong page (review r3).
+    if (p.gen !== pageGen) return { stale: true };
+    const gen = pageGen;
+    const out = { url: cleanText(wc.getURL(), MAX_URL_LEN), title: cleanText(wc.getTitle(), 200), device, gen };
     if (p.screenshot) {
       try {
         const img = await wc.capturePage();
-        const { dir, root } = shotDir(p.projectRoot);
+        if (gen !== pageGen || !view) return { stale: true }; // navigated while capturing
+        const { dir, root } = shotDir();
         out.screenshot = writeShot(dir, root, img.toPNG());
         pruneShots(dir, root);
       } catch (e) {

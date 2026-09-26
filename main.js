@@ -1529,9 +1529,7 @@ handle('app:pty-available', () => ptyAvailable);
 const browserMode = require('./main-browser').setupBrowser({
   handle,
   getWindow: () => mainWindow,
-  resolveAllowedDir,
   safeMkdir,
-  writeIfMissing,
   assertAncestorsClean,
   isPathInsideRoot,
   userDataRoot: USER_DATA_ROOT

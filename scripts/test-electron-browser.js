@@ -130,9 +130,11 @@ const server = http.createServer((req, res) => {
   const got = Buffer.from(received(), 'latin1').toString('utf8');
   check('context names the pinned element and the request', /#buy/.test(got) && /결제가 안 돼/.test(got) && /boom-on-load/.test(got), JSON.stringify(got.slice(0, 300)));
   check('sent as ONE bracketed paste (exactly one 200~/201~ pair)', got.split('\x1b[200~').length === 2 && got.split('\x1b[201~').length === 2);
-  const shots = fs.existsSync(path.join(project, '.carrotcap', 'browser')) ? fs.readdirSync(path.join(project, '.carrotcap', 'browser')) : [];
-  check('screenshot with pins saved in <project>/.carrotcap/browser', shots.some((f) => /^shot-.*\.png$/.test(f)), shots.join(','));
-  check('.carrotcap ignores itself in git', fs.existsSync(path.join(project, '.carrotcap', '.gitignore')));
+  const shotsDir = path.join(userData, 'browser-shots');
+  const shots = fs.existsSync(shotsDir) ? fs.readdirSync(shotsDir) : [];
+  check('screenshot with pins saved in the app data dir', shots.some((f) => /^shot-.*\.png$/.test(f)), shots.join(','));
+  check('context points the agent at that screenshot', got.includes(shotsDir.replace(/\\/g, '\\')) || /browser-shots/.test(got));
+  check('nothing written into the project folder (review r3 C2)', fs.readdirSync(project).length === 0, fs.readdirSync(project).join(','));
   check('sent pins are consumed (list and page cleared)', await waitFor(async () => (await ev(`document.querySelectorAll('#br-pins .br-pin').length`)) === 0 && (await view.ev(`document.querySelectorAll('[data-cc-pin]').length`)) === 0));
   check('sent errors no longer flagged as new', !(await ev(`document.querySelector('#br-err-count').classList.contains('has')`)));
 
@@ -159,28 +161,32 @@ const server = http.createServer((req, res) => {
   const urls = (await app.targets()).map((t) => t.url);
   check('view never lands on a file: URL', !urls.some((u) => /^file:\/\/\/C:\/Windows/i.test(u)), JSON.stringify(urls));
 
-  console.log('-- symlinked capture folder is refused (review C2)');
+  console.log('-- project junctions are never followed; one send = one context (review C2, r3)');
   const outside = path.join(tmp, 'outside');
   fs.mkdirSync(outside, { recursive: true });
   fs.writeFileSync(path.join(outside, 'shot-2000-01-01T00-00-00-000Z.png'), 'victim');
-  fs.rmSync(path.join(project, '.carrotcap', 'browser'), { recursive: true, force: true });
-  fs.symlinkSync(outside, path.join(project, '.carrotcap', 'browser'), 'junction');
+  fs.mkdirSync(path.join(project, '.carrotcap'), { recursive: true });
+  fs.symlinkSync(outside, path.join(project, '.carrotcap', 'browser'), 'junction'); // hostile repo layout
   await ev(`document.querySelector('#br-url').value = ${JSON.stringify(site)}; document.querySelector('#br-go').click(); true`);
-  await waitFor(async () => (await view.ev(`!!document.querySelector('#buy')`)) === true).catch(() => {});
   const view2 = await app.connect((t) => t.type === 'page' && t.url === site);
+  await waitFor(async () => (await view2.ev(`!!document.querySelector('#buy')`)) === true);
   await ev(`document.querySelector('#br-annotate').classList.contains('active') || document.querySelector('#br-annotate').click(), true`);
-  await sleep(600);
+  await sleep(800);
   const r2 = await view2.ev(`(() => { const b = document.querySelector('#buy').getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; })()`);
   for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
     await view2.send('Input.dispatchMouseEvent', { type, x: r2.x, y: r2.y, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1 });
   }
   await waitFor(async () => (await ev(`document.querySelectorAll('#br-pins .br-pin').length`)) > 0);
   fs.writeFileSync(path.join(tmp, 'agent-received.bin'), '');
-  await ev(`document.querySelector('#composer-input').value = 'pin via junction'; document.querySelector('#composer-send').click(); true`);
-  await waitFor(() => received().includes('\x1b[201~'));
-  check('nothing written through the junction', fs.readdirSync(outside).length === 1, fs.readdirSync(outside).join(','));
+  // Double send: the second click must not deliver the same context again.
+  await ev(`document.querySelector('#composer-input').value = 'pin via junction'; document.querySelector('#composer-send').click(); document.querySelector('#composer-send').click(); true`);
+  await waitFor(() => received().includes('[201~'));
+  await sleep(1500);
+  const once = Buffer.from(received(), 'latin1').toString('utf8');
+  check('double click delivers the context once', once.split('[브라우저 컨텍스트').length === 2, String(once.split('[브라우저 컨텍스트').length - 1));
+  check('nothing written through the project junction', fs.readdirSync(outside).length === 1, fs.readdirSync(outside).join(','));
   check('file behind the junction not pruned', fs.existsSync(path.join(outside, 'shot-2000-01-01T00-00-00-000Z.png')));
-  check('context still sent (without a screenshot)', /pin via junction/.test(Buffer.from(received(), 'latin1').toString('utf8')));
+  check('screenshot still taken (app data dir)', /browser-shots/.test(once));
   view2.close();
 
   console.log('-- close');

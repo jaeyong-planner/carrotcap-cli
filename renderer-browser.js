@@ -28,7 +28,8 @@
     annotating: false,
     pickToken: 0,
     openToken: 0,
-    navPending: false
+    navPending: false,
+    pageGen: -1        // main의 문서 세대 — browser:state로 갱신
   };
   // 에이전트 CLI만 브라우저 컨텍스트를 받는다 — 일반 셸에 붙여넣으면 줄마다 명령으로 실행된다.
   const AGENT_CLIS = new Set(['claude', 'codex', 'grok']);
@@ -178,6 +179,7 @@
     $('#br-back').disabled = !s.canGoBack;
     $('#br-forward').disabled = !s.canGoForward;
     st.newErrors = s.newErrors || 0;
+    if (Number.isInteger(s.pageGen)) st.pageGen = s.pageGen;
     errCount.textContent = String(s.errorCount || 0);
     errCount.classList.toggle('has', st.newErrors > 0);
     if (!consoleEl.classList.contains('hidden')) renderConsole();
@@ -211,8 +213,14 @@
     if (!isAgent) {
       return { blocked: '브라우저 주석·콘솔 에러는 CLAUDE/CODEX 버튼으로 실행한 에이전트 페인에만 보낼 수 있습니다' };
     }
-    const ctx = await api.browserContext({ projectRoot, screenshot: st.pins.length > 0, includeErrors: wantErrors });
+    const ctx = await api.browserContext({ projectRoot, screenshot: st.pins.length > 0, includeErrors: wantErrors, gen: st.pageGen });
     if (!ctx) return plain;
+    if (ctx.stale) {
+      // 준비하는 사이 페이지가 바뀌었다 — 옛 페이지의 주석을 새 페이지 설명으로 보내지 않는다
+      st.pins = [];
+      renderPins();
+      return { blocked: '페이지가 바뀌어 주석이 사라졌습니다 — 새 페이지에서 다시 찍어 주세요' };
+    }
     const pins = st.pins.slice();
     const lines = ['[브라우저 컨텍스트 — CARROTCAP]'];
     lines.push(`URL: ${oneLine(ctx.url, 2048)}${ctx.title ? ` (${oneLine(ctx.title, 200)})` : ''}`);
@@ -237,7 +245,7 @@
       // 이번에 보낸 핀만 지운다 — 전송을 준비하는 사이 새로 찍은 핀은 목록·페이지 모두 남는다 (review r2).
       const sent = pins.map((p) => p.n);
       st.pins = st.pins.filter((p) => !sent.includes(p.n));
-      api.browserClearPins(sent);
+      api.browserClearPins(sent, ctx.gen);
       renderPins();
     };
     return { text: lines.join('\n'), commit, context: true };
