@@ -599,7 +599,26 @@ console.log('-- migrateSettings: settingsVersion must be a real integer (task-01
     const { changed } = migrateSettings({ settingsVersion: v, cli: { gemini: { command: 'gemini', args: [] } } });
     check(`settingsVersion ${JSON.stringify(v)} -> migrates`, changed === true);
   }
-  check('settingsVersion 2 -> no-op', migrateSettings({ settingsVersion: 2, cli: {} }).changed === false);
+  check('current settingsVersion -> no-op', migrateSettings({ settingsVersion: SETTINGS_VERSION, cli: {} }).changed === false);
+}
+
+console.log('-- migrateSettings v3: AIOps on by default, once');
+{
+  // v2 user who never chose (old default false) -> turned on, CLI list untouched
+  const v2 = { settingsVersion: 2, aor: { enabled: true, autoStart: false, engineRoot: 'X' }, cli: { claude: { command: 'claude', args: [] } } };
+  const { settings: s, changed } = migrateSettings(v2);
+  check('v2 -> v3 migrates', changed === true && s.settingsVersion === 3);
+  check('AIOps turned on', s.aor.autoStart === true);
+  check('other aor fields kept', s.aor.enabled === true && s.aor.engineRoot === 'X');
+  check('v2 CLI list untouched (grok not re-added)', Object.keys(s.cli).join() === 'claude');
+  // after v3 the user's own "off" sticks
+  const off = { ...s, aor: { ...s.aor, autoStart: false } };
+  check('user turning AIOps off later is respected', migrateSettings(off).changed === false);
+  // v1 gets both steps
+  const { settings: s1 } = migrateSettings({ cli: { gemini: { command: 'agy', args: [] } } });
+  check('v1 -> both steps (gemini removed, grok added, AIOps on)', !s1.cli.gemini && !!s1.cli.grok && s1.aor.autoStart === true);
+  const bundled = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'settings.json'), 'utf8'));
+  check('bundled default: AIOps on', bundled.aor.autoStart === true && bundled.settingsVersion === SETTINGS_VERSION);
 }
 
 console.log('');

@@ -27,7 +27,7 @@ fs.mkdirSync(userData, { recursive: true });
 // The project is a folder the user already picked (allowlist) and the default project.
 fs.writeFileSync(path.join(userData, 'workspace-state.json'), JSON.stringify({ recentWorkspaces: [fs.realpathSync(project)] }));
 fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({
-  settingsVersion: 2,
+  settingsVersion: 3, // current version: no migration touches this fixture
   aor: { enabled: false, autoStart: false },
   cli: { claude: { command: 'where', args: [] } },
   defaultShell: 'powershell.exe',

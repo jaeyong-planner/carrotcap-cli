@@ -1,5 +1,5 @@
 {
-  "settingsVersion": 2,
+  "settingsVersion": 3,
   "aor": {
     "enabled": true,
     "engineRoot": "",
@@ -8,7 +8,7 @@
       "%USERPROFILE%\\WINDOWS",
       "C:\\WINDOWS\\carrotcap"
     ],
-    "autoStart": false,
+    "autoStart": true,
     "_comment": "engineRoot가 비어 있거나 존재하지 않으면 engineRootCandidates를 순서대로 검사. 모두 실패하면 plain 셸로 폴백하고 헤더에 'AOR-FALLBACK(PLAIN)' 표시. 첫 실행 시에는 사용자가 직접 engineRoot를 채워도 됨."
   },
   "cli": {

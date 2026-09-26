@@ -291,6 +291,11 @@ const PROBE = `(async () => {
   const seededCli = await ev(`window.carrotcap.getSettings().then((s) => Object.keys(s.cli).join(','))`);
   check('seeded settings have no gemini', !/gemini|agy|antigravity/.test(seededCli) && /grok/.test(seededCli), seededCli);
 
+  console.log('-- AOR badge / AIOps default');
+  const engineFound = (await ev(`window.carrotcap.aorStatus()`)).engineFound;
+  check('AOR badge hidden when no engine (shown when present)', (await ev(`document.querySelector('#aor-status').hidden`)) === !engineFound, `engineFound=${engineFound}`);
+  check('AIOps mode checked by default on a fresh profile', (await ev(`document.querySelector('#aor-toggle').checked`)) === true);
+
   console.log('-- renderer errors');
   check('no exceptions / console errors on load', logs.length === 0, logs.join(' | '));
   console.log(`-- user data dir (task-008, ${corruptSettings ? 'corrupt settings' : 'fresh profile'})`);

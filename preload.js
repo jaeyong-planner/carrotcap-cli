@@ -45,6 +45,7 @@ const api = {
   },
 
   cliStatus: () => ipcRenderer.invoke('cli:status'),
+  aorStatus: () => ipcRenderer.invoke('aor:status'),
 
   // 세션 이어하기 (task-013)
   saveHistory: (projectRoot, layout) => ipcRenderer.invoke('history:save', { projectRoot, layout }),

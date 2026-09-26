@@ -75,7 +75,11 @@ npm start
 
 설치되지 않은(PATH에 없는) CLI 버튼은 흐리게 취소선으로 표시됩니다. Gemini·Antigravity는 v0.2.0에서 제거됐고, 기존 설정에서도 자동으로 빠집니다. 명령은 사용자 `settings.json`(아래 9번)의 `cli` 섹션에서 자유롭게 바꿀 수 있습니다.
 
-### 4) AOR 모드
+### 4) AOR 모드 / AIOps 모드
+
+- **AIOps 모드는 기본 ON** (v0.2.0). 프로젝트 폴더를 열고 새 페인이 뜨면 `agents/`·`backlog/`·`logs/`·`scripts/`·`CLAUDE.md` 블록이 자동으로 만들어집니다(이미 있는 파일은 건드리지 않음). 원치 않으면 MODE 패널에서 끄면 되고, 끈 설정은 유지됩니다.
+- **토큰 절감은 AOR 엔진이 있을 때만** 동작합니다(엔진이 터미널 출력을 정리·요약해 Claude에 들어가는 토큰을 줄이고 절감량을 기록). 엔진이 없으면 일반 셸로 열리고 상단 AOR 배지도 숨겨집니다.
+
 
 좌측 **MODE** 패널에서 *"새 페인 AOR 모드로"* 체크 시, 이후 만들어지는 페인은 AOR routed PowerShell로 부팅됩니다. 이 모드에서 `claude` 호출은 자동으로 토큰 메트릭 기록 + Claude Workspace Trust prime이 적용됩니다.
 

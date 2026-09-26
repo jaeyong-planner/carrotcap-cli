@@ -44,7 +44,9 @@
   async function boot() {
     try { state.platform = await api.platform(); } catch { state.platform = 'win32'; }
     state.settings = await api.getSettings();
-    state.aiopsMode = !!(state.settings && state.settings.aor && state.settings.aor.autoStart);
+    try { state.aorEngineFound = !!(await api.aorStatus()).engineFound; } catch { state.aorEngineFound = false; }
+    // AIOps는 기본 ON — 사용자가 끈 경우(autoStart: false)만 끈다.
+    state.aiopsMode = !(state.settings && state.settings.aor && state.settings.aor.autoStart === false);
     // task-005: AOR mode is the underlying routed-shell mode. AIOps implies AOR.
     // Default to true (matches settings defaults `aor.enabled: true`).
     state.aorMode = state.aiopsMode || (state.settings && state.settings.aor && state.settings.aor.enabled !== false);
@@ -66,6 +68,8 @@
   }
 
   function refreshAorBadge() {
+    // AOR 엔진이 없으면 배지 자체를 숨긴다 — "AOR ON"이 켜져 있어도 실제로는 라우팅(토큰 절감)이 없다.
+    aorStatus.hidden = !state.aorEngineFound;
     const label = state.aiopsMode ? 'AIOps ON' : (state.aorMode ? 'AOR ON' : 'PLAIN');
     aorStatus.textContent = label;
     aorStatus.classList.toggle('on', state.aiopsMode || state.aorMode);

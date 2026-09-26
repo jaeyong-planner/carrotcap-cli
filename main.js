@@ -148,10 +148,11 @@ function validateSettings(input) {
   return out;
 }
 
-// task-012: Gemini/Antigravity (Google) CLIs were removed; Grok handles images/videos.
-// Runs once per settings file (settingsVersion) so a user who later deletes grok
-// does not get it back on every launch.
-const SETTINGS_VERSION = 2;
+// Each step runs once per settings file (settingsVersion), so a later user choice
+// (removing grok, unchecking AIOps) is not overridden on every launch.
+//   v2 (task-012): Gemini/Antigravity (Google) CLIs removed; Grok handles images/videos.
+//   v3: AIOps mode on by default (it used to default to off, so nobody had chosen "off").
+const SETTINGS_VERSION = 3;
 const REMOVED_CLI_NAMES = new Set(['gemini', 'antigravity', 'agy']);
 function migrateSettings(settings) {
   if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return { settings, changed: false };
@@ -159,15 +160,21 @@ function migrateSettings(settings) {
   const version = Number.isInteger(settings.settingsVersion) ? settings.settingsVersion : 1;
   if (version >= SETTINGS_VERSION) return { settings, changed: false };
   const next = { ...settings, settingsVersion: SETTINGS_VERSION };
-  const cli = {};
-  const srcCli = (settings.cli && typeof settings.cli === 'object' && !Array.isArray(settings.cli)) ? settings.cli : {};
-  for (const [key, val] of Object.entries(srcCli)) {
-    const cmd = val && typeof val.command === 'string' ? val.command.toLowerCase() : '';
-    if (REMOVED_CLI_NAMES.has(key.toLowerCase()) || REMOVED_CLI_NAMES.has(cmd)) continue;
-    cli[key] = val;
+  if (version < 2) {
+    const cli = {};
+    const srcCli = (settings.cli && typeof settings.cli === 'object' && !Array.isArray(settings.cli)) ? settings.cli : {};
+    for (const [key, val] of Object.entries(srcCli)) {
+      const cmd = val && typeof val.command === 'string' ? val.command.toLowerCase() : '';
+      if (REMOVED_CLI_NAMES.has(key.toLowerCase()) || REMOVED_CLI_NAMES.has(cmd)) continue;
+      cli[key] = val;
+    }
+    if (!cli.grok) cli.grok = { command: 'grok', args: [] };
+    next.cli = cli;
   }
-  if (!cli.grok) cli.grok = { command: 'grok', args: [] };
-  next.cli = cli;
+  if (version < 3) {
+    const aor = (settings.aor && typeof settings.aor === 'object' && !Array.isArray(settings.aor)) ? settings.aor : {};
+    next.aor = { ...aor, autoStart: true };
+  }
   return { settings: next, changed: true };
 }
 
@@ -550,7 +557,7 @@ function buildDefaultSettings() {
         '%USERPROFILE%\\WINDOWS',
         'C:\\WINDOWS\\carrotcap'
       ],
-      autoStart: false
+      autoStart: true
     },
     cli: {
       claude: { command: 'claude', args: [] },
@@ -881,7 +888,7 @@ function resolvePtyArgs(opts) {
         kind: isAiops ? 'aiops' : 'plain',
         note: 'AOR 엔진이 없어 일반 셸로 실행 중 (settings.json의 aor.engineRoot로 지정 가능)'
       };
-      if (isAiops && !aiopsStructure) out.warning = '프로젝트 폴더를 선택하면 AIOps 구조가 만들어집니다.';
+      if (isAiops && !aiopsStructure) out.note = '프로젝트 폴더를 선택하면 AIOps 구조가 자동으로 만들어집니다. ' + out.note;
       return out;
     }
     const shellInit = path.join(engineRoot, 'engine', 'windows', '_internal', 'shell-init.ps1');
@@ -910,8 +917,9 @@ function resolvePtyArgs(opts) {
       ],
       cwd,
       kind: isAiops ? 'aiops' : 'aor',
-      warning: isAiops
-        ? `${aiopsStructure ? 'AIOps project structure is ready.' : 'Select a project folder to create the AIOps project structure.'} Claude codes, Codex reviews, Grok makes images/videos.`
+      // 안내는 툴팁(note)으로만 — 헤더 ⚠·상태줄 경고로 띄우지 않는다.
+      note: isAiops
+        ? `${aiopsStructure ? 'AIOps 구조 준비됨.' : '프로젝트 폴더를 선택하면 AIOps 구조가 자동으로 만들어집니다.'} Claude=코딩, Codex=리뷰, Grok=이미지·영상`
         : undefined
     };
   }
@@ -1418,6 +1426,9 @@ handle('cli:status', async () => {
   cliStatusCache = { at: Date.now(), value: out };
   return out;
 });
+
+// Is a usable AOR engine present? The renderer hides the AOR badge when not.
+handle('aor:status', () => ({ engineFound: !!resolveAorEngineRoot(loadSettings() || {}) }));
 
 handle('app:platform', () => process.platform);
 handle('app:pty-available', () => ptyAvailable);
