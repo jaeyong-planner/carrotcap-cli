@@ -25,12 +25,24 @@ try {
 const { spawn } = require('child_process');
 
 const APP_ROOT = __dirname;
-const SETTINGS_PATH = path.join(APP_ROOT, 'settings.json');
-const CLAUDE_MD_PATH = path.join(APP_ROOT, 'CLAUDE.md');
+// task-008: mutable state lives in a per-user data dir, never next to the code.
+// Packaged builds cannot write into app.asar, and dev runs must not dirty the
+// tracked settings.json / CLAUDE.md. A fixed dir name keeps CARROTCAP separate
+// from other Electron apps (e.g. Cream CLI uses %APPDATA%\cream-cli).
+app.setPath('userData', path.join(app.getPath('appData'), app.isPackaged ? 'carrotcap-cli' : 'carrotcap-cli-dev'));
+const USER_DATA_ROOT = app.getPath('userData');
+try { fs.mkdirSync(USER_DATA_ROOT, { recursive: true }); } catch { /* initUserState retries and logs */ }
+// Bundled, read-only defaults shipped with the app.
+const BUNDLED_SETTINGS_PATH  = path.join(APP_ROOT, 'settings.json');
+const BUNDLED_CLAUDE_MD_PATH = path.join(APP_ROOT, 'CLAUDE.md');
+const SETTINGS_PATH  = path.join(USER_DATA_ROOT, 'settings.json');
+const CLAUDE_MD_PATH = path.join(USER_DATA_ROOT, 'CLAUDE.md');
 // Workspace state is stored separately from settings.json so that the renderer
 // cannot escalate by stuffing arbitrary paths into the allowlist via settings:set.
 // Only the main process reads/writes this file (task-004 reflection).
-const WORKSPACE_STATE_PATH = path.join(APP_ROOT, 'workspace-state.json');
+const WORKSPACE_STATE_PATH = path.join(USER_DATA_ROOT, 'workspace-state.json');
+// v0.1.0 dev runs wrote workspace grants next to the code; migrated once at boot.
+const LEGACY_WORKSPACE_STATE_PATH = path.join(APP_ROOT, 'workspace-state.json');
 
 let mainWindow = null;
 const sessions = new Map(); // ptyId -> { proc, kind }
@@ -184,9 +196,9 @@ function addAllowedWorkspace(p) {
   return real;
 }
 
-function loadWorkspaceState() {
+function loadWorkspaceState(filePath = WORKSPACE_STATE_PATH) {
   try {
-    const raw = fs.readFileSync(WORKSPACE_STATE_PATH, 'utf8');
+    const raw = fs.readFileSync(filePath, 'utf8');
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { recentWorkspaces: [] };
     const recent = Array.isArray(parsed.recentWorkspaces)
@@ -357,17 +369,58 @@ function ensureCliRegistration() {
   }
 }
 
+function readJsonFile(p) {
+  try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; }
+}
+
 function loadSettings() {
-  try {
-    const raw = fs.readFileSync(SETTINGS_PATH, 'utf8');
-    return JSON.parse(raw);
-  } catch (e) {
-    return null;
-  }
+  return readJsonFile(SETTINGS_PATH);
 }
 
 function saveSettings(next) {
+  fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true });
   fs.writeFileSync(SETTINGS_PATH, JSON.stringify(next, null, 2), 'utf8');
+}
+
+function buildDefaultSettings() {
+  return {
+    aor: {
+      enabled: true,
+      engineRoot: '',
+      engineRootCandidates: [
+        '%USERPROFILE%\\Desktop\\WINDOWS\\WINDOWS',
+        '%USERPROFILE%\\WINDOWS',
+        'C:\\WINDOWS\\carrotcap'
+      ],
+      autoStart: false
+    },
+    cli: {
+      claude: { command: 'claude', args: [] },
+      gemini: { command: 'gemini', args: [] },
+      codex: { command: 'codex', args: [] }
+    },
+    defaultShell: defaultShell(),
+    defaultProjectPath: os.homedir(),
+    ui: { theme: 'dark', fontSize: 14, fontFamily: 'Cascadia Code, Consolas, monospace' }
+  };
+}
+
+// task-008: first run seeds the user data dir from the bundled defaults.
+// Existing user files are never overwritten.
+function initUserState() {
+  fs.mkdirSync(USER_DATA_ROOT, { recursive: true });
+  if (!loadSettings()) {
+    const seeded = validateSettings(readJsonFile(BUNDLED_SETTINGS_PATH));
+    saveSettings(seeded.cli && Object.keys(seeded.cli).length ? seeded : buildDefaultSettings());
+  }
+  if (!fs.existsSync(CLAUDE_MD_PATH)) {
+    try { fs.copyFileSync(BUNDLED_CLAUDE_MD_PATH, CLAUDE_MD_PATH); }
+    catch (e) { console.warn('[carrotcap] CLAUDE.md seed failed:', e.message); }
+  }
+  if (!fs.existsSync(WORKSPACE_STATE_PATH) && fs.existsSync(LEGACY_WORKSPACE_STATE_PATH)) {
+    saveWorkspaceState(loadWorkspaceState(LEGACY_WORKSPACE_STATE_PATH));
+    console.log('[carrotcap] migrated workspace-state.json to', WORKSPACE_STATE_PATH);
+  }
 }
 
 function defaultShell() {
@@ -972,7 +1025,10 @@ handle('settings:get', () => loadSettings());
 handle('settings:set', (_e, next) => { saveSettings(validateSettings(next)); return true; });
 
 handle('aor:get-claude-md', () => {
-  try { return fs.readFileSync(CLAUDE_MD_PATH, 'utf8'); } catch { return ''; }
+  for (const p of [CLAUDE_MD_PATH, BUNDLED_CLAUDE_MD_PATH]) {
+    try { return fs.readFileSync(p, 'utf8'); } catch { /* try next */ }
+  }
+  return '';
 });
 handle('aor:set-claude-md', (_e, content) => {
   if (!validateClaudeMdContent(content)) return false;
@@ -1061,30 +1117,8 @@ app.whenReady().then(() => {
   // on any future PC, without re-running the installer.
   try { ensureCliRegistration(); } catch (e) { console.warn('[carrotcap] ensureCliRegistration threw:', e.message); }
 
-  // settings.json이 없으면 디폴트 생성
-  if (!loadSettings()) {
-    const defaults = {
-      aor: {
-        enabled: true,
-        engineRoot: '',
-        engineRootCandidates: [
-          '%USERPROFILE%\\Desktop\\WINDOWS\\WINDOWS',
-          '%USERPROFILE%\\WINDOWS',
-          'C:\\WINDOWS\\carrotcap'
-        ],
-        autoStart: false
-      },
-      cli: {
-        claude: { command: 'claude', args: [] },
-        gemini: { command: 'gemini', args: [] },
-        codex: { command: 'codex', args: [] }
-      },
-      defaultShell: defaultShell(),
-      defaultProjectPath: os.homedir(),
-      ui: { theme: 'dark', fontSize: 14, fontFamily: 'Cascadia Code, Consolas, monospace' }
-    };
-    saveSettings(defaults);
-  }
+  // 사용자 데이터 폴더(settings.json / CLAUDE.md / workspace-state.json) 준비
+  try { initUserState(); } catch (e) { console.warn('[carrotcap] initUserState failed:', e.message); }
   // Seed the workspace allowlist (task-004 reflection) ONLY from workspace-state.json,
   // which is written exclusively by the main process via folder:pick. Settings fields
   // like defaultProjectPath are NOT used as a permission grant — renderer must not be

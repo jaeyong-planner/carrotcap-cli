@@ -45,7 +45,7 @@ npm start
 
 ### 3) CLI 원-클릭
 
-좌측 **QUICK CLI** 패널에서 CLAUDE / GEMINI / CODEX 클릭 → 활성 페인에 명령이 입력되어 즉시 실행됩니다. 명령은 `settings.json`의 `cli` 섹션에서 자유롭게 바꿀 수 있습니다.
+좌측 **QUICK CLI** 패널에서 CLAUDE / GEMINI / CODEX 클릭 → 활성 페인에 명령이 입력되어 즉시 실행됩니다. 명령은 사용자 `settings.json`(아래 9번)의 `cli` 섹션에서 자유롭게 바꿀 수 있습니다.
 
 ### 4) AOR 모드
 
@@ -74,7 +74,18 @@ npm start
 
 ### 8) AOR 컨텍스트 편집
 
-상단 우측의 **AOR** 버튼 → 인-앱 에디터로 `CLAUDE.md`(이 앱 루트의 디폴트 컨텍스트)를 즉시 편집·저장.
+상단 우측의 **AOR** 버튼 → 인-앱 에디터로 사용자 데이터 폴더의 `CLAUDE.md`(디폴트 컨텍스트)를 즉시 편집·저장 (512KB 이하).
+
+### 9) 설정 파일 위치
+
+사용자가 바꾸는 파일은 코드 폴더가 아니라 **사용자 데이터 폴더**에 저장됩니다. 첫 실행 때 번들 기본값(`settings.json`, `CLAUDE.md`)을 복사하고, 이후에는 덮어쓰지 않습니다.
+
+| 실행 방식 | 위치 |
+| --- | --- |
+| 설치본 | `%APPDATA%\carrotcap-cli\` |
+| 개발 (`npm start`) | `%APPDATA%\carrotcap-cli-dev\` |
+
+폴더 안의 파일: `settings.json`(AOR/CLI/UI), `CLAUDE.md`(AOR 컨텍스트), `workspace-state.json`(허용된 작업 폴더 목록 — 앱만 씀). 초기화하려면 앱을 끄고 해당 파일을 지우세요.
 
 ---
 
@@ -87,8 +98,8 @@ npm start
 ├─ index.html       UI 셸
 ├─ renderer.js      탭/페인/사이드바/터미널/드래그앤드롭
 ├─ styles.css       다크 테마
-├─ CLAUDE.md        디폴트 AOR 컨텍스트(편집 가능)
-├─ settings.json    AOR/CLI/UI 디폴트 설정
+├─ CLAUDE.md        번들 디폴트 AOR 컨텍스트 (첫 실행 시 사용자 폴더로 복사)
+├─ settings.json    번들 디폴트 설정 (첫 실행 시 사용자 폴더로 복사)
 ├─ agents/          researcher.md / reviewer.md (AIOps 템플릿 겸 이 저장소의 에이전트 규약)
 ├─ backlog/         task-XXX.md 작업 단위
 ├─ logs/            research/ · review/ 에이전트 산출물 (공유 메모리)
