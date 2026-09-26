@@ -7,16 +7,27 @@ AOR 라우팅이 디폴트로 적용된 데스크톱 터미널.
 
 ## 설치 (Windows)
 
-선결 조건 — Node.js 18+ 그리고 **Visual Studio Build Tools (Desktop Development with C++)**가 필요합니다.  
-Node.js 설치 시 *Tools for Native Modules* 옵션을 체크했다면 이미 갖추어져 있습니다.
+선결 조건 — Node.js 18+ (검증: v22.17.0), git.  
+PTY는 `@homebridge/node-pty-prebuilt-multiarch`의 **프리빌트 바이너리**를 쓰므로 Visual Studio Build Tools는 필요 없습니다.
 
 ```powershell
-cd "C:\Users\carro\Documents\Claude\Projects\터미널 CLI 만들기"
-npm install
+cd "<이 저장소 경로>"
+# 소스가 Google Drive(내 드라이브) 안에 있으므로 node_modules는 Drive 밖에 설치하고 junction으로 연결합니다.
+powershell -ExecutionPolicy Bypass -File scripts\setup-dev.ps1
 npm start
 ```
 
-> `postinstall`에서 `electron-rebuild`가 실행됩니다. 빌드 도구가 없을 경우 자동으로 스킵되며, 이 경우 PTY는 폴백 모드(child_process)로 동작합니다.
+> Drive 밖이라면 `npm ci` 만으로도 됩니다. 프리빌트 바이너리가 현재 Electron ABI와 맞지 않으면 PTY는 폴백 모드(child_process)로 동작하며, 이때 `npm run rebuild`로 재빌드할 수 있습니다.
+
+### 빌드 / 테스트
+
+| 명령 | 설명 |
+| --- | --- |
+| `npm test` | 보안 헬퍼 단위 테스트 (Electron 없이 실행) |
+| `npm run pack` | 설치 없이 `release/win-unpacked/` 생성 |
+| `npm run dist:win` | NSIS 설치 파일 생성 (`release/CARROTCAP-CLI-<ver>-win-x64.exe`) |
+
+> AOR 엔진 바이너리(`AOR/engine/**/bin/`, 약 85MB)는 git에 포함되지 않습니다. 빌드 전 해당 위치에 직접 배치하세요.
 
 ---
 
@@ -40,7 +51,7 @@ npm start
 
 좌측 **MODE** 패널에서 *"새 페인 AOR 모드로"* 체크 시, 이후 만들어지는 페인은 AOR routed PowerShell로 부팅됩니다. 이 모드에서 `claude` 호출은 자동으로 토큰 메트릭 기록 + Claude Workspace Trust prime이 적용됩니다.
 
-> AOR 엔진의 위치는 `settings.json`의 `aor.engineRoot`로 지정합니다. 기본값: `C:\Users\carro\Desktop\WINDOWS\WINDOWS`.
+> AOR 엔진 탐색 순서: ① 번들 `AOR/`(설치본은 `resources\AOR`) ② `settings.json`의 `aor.engineRoot` ③ `aor.engineRootCandidates` ④ `%USERPROFILE%\Desktop\WINDOWS\WINDOWS` 등 기본 위치. 엔진 루트에는 `engine\windows\_internal\shell-init.ps1`이 있어야 하며, 없으면 plain 셸로 폴백합니다.
 
 ### 5) AI DEV FLOW
 
@@ -77,8 +88,13 @@ npm start
 ├─ renderer.js      탭/페인/사이드바/터미널/드래그앤드롭
 ├─ styles.css       다크 테마
 ├─ CLAUDE.md        디폴트 AOR 컨텍스트(편집 가능)
-├─ settings.json    AOR/CLI/UI 설정(편집 가능)
-└─ package.json
+├─ settings.json    AOR/CLI/UI 디폴트 설정
+├─ agents/          researcher.md / reviewer.md (AIOps 템플릿 겸 이 저장소의 에이전트 규약)
+├─ backlog/         task-XXX.md 작업 단위
+├─ logs/            research/ · review/ 에이전트 산출물 (공유 메모리)
+├─ scripts/         setup-dev · run-researcher · run-reviewer · 테스트
+├─ AOR/             번들 AOR 엔진 (extraResources)
+└─ build/           NSIS / pkg 설치 스크립트
 ```
 
 ---
@@ -87,7 +103,8 @@ npm start
 
 | 증상 | 원인 / 해결 |
 | --- | --- |
-| `npm install` 중 native build 실패 | Visual Studio Build Tools 설치. 그래도 실패하면 폴백 모드로 동작은 됩니다 (`window.carrotcap.ptyAvailable()` 가 false). |
+| PTY가 폴백 모드로 동작 | 프리빌트 바이너리 ABI 불일치. `npm run rebuild` (Visual Studio Build Tools 필요). 폴백 모드에서도 동작은 합니다 (`window.carrotcap.ptyAvailable()` 가 false). |
+| `node_modules` 안의 파일이 일부 없음 | Google Drive 동기화 도중 손상된 경우입니다. `scripts\setup-dev.ps1`을 다시 실행하세요. |
 | 새 PowerShell에서 `carrotcap : 인식되지 않습니다` | `release\*.exe`로 **설치 단계**를 안 거친 경우입니다. 설치 후 새 셸을 열어 다시 실행. 또는 `powershell -ExecutionPolicy Bypass -File scripts\repair-cli.ps1` 로 수동 등록. 패키지된 GUI를 한 번만 실행해도 자동 자가복구됩니다. |
 | AOR 모드에서 즉시 종료 | `settings.json` → `aor.engineRoot` 경로가 실제 AOR 엔진 루트인지 확인. 그 안에 `engine\windows\_internal\shell-init.ps1`이 있어야 합니다. |
 | `claude`/`gemini`/`codex` 명령을 찾을 수 없음 | 해당 CLI가 PATH에 등록되어 있어야 합니다. 또는 `settings.json`의 `cli.<key>.command`를 절대경로로 지정. |
