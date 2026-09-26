@@ -490,7 +490,10 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
   function redeemContextToken(token) {
     const t = contextTicket;
     contextTicket = null; // one use, success or not
-    return !!t && typeof token === 'string' && token === t.token && t.view === view && t.gen === pageGen;
+    // A navigation can start before did-start-navigation bumps pageGen, so
+    // re-check the loading state here too (review r10).
+    return !!t && typeof token === 'string' && token === t.token && t.view === view && t.gen === pageGen
+      && !!view && !view.webContents.isDestroyed() && !view.webContents.isLoadingMainFrame();
   }
 
   return { destroyView, redeemContextToken };

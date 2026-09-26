@@ -229,6 +229,14 @@ const server = http.createServer((req, res) => {
   check('same call with a current token succeeds', ok === true && await waitFor(() => received().includes('fresh context')));
   const reuse = await ev(`window.carrotcap.pasteGuarded(${JSON.stringify(agentPty)}, '# replay', ${JSON.stringify(cur2 && cur2.token)})`);
   check('a token works only once', reuse === false);
+  // Redeem right behind a reload request: the IPC can land before
+  // did-start-navigation bumps pageGen (review r10).
+  const cur3 = await ev(`(async () => { for (let g = 0; g < 400; g++) { const c = await window.carrotcap.browserContext({ screenshot: false, includeErrors: false, gen: g }); if (c && !c.stale) return c; } return null; })()`);
+  const racing = await ev(`(() => { window.carrotcap.browserNav('reload'); return window.carrotcap.pasteGuarded(${JSON.stringify(agentPty)}, '# racing context', ${JSON.stringify(cur3 && cur3.token)}); })()`);
+  check('a token redeemed as a navigation starts is refused', !!cur3 && racing === false);
+  await sleep(300);
+  check('nothing from the racing send reached the agent', !received().includes('racing context'));
+  await sleep(1200);
 
   console.log('-- error cursor survives ring-buffer overflow (review r5/r6)');
   await ev(`document.querySelector('#br-url').value = ${JSON.stringify(site + 'flood')}; document.querySelector('#br-go').click(); true`);
