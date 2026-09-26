@@ -1007,13 +1007,16 @@
 
   // 셸 문법은 플랫폼마다 다르다: Windows는 PowerShell, macOS/Linux는 POSIX 셸(bash/zsh).
   const isWin = () => state.platform === 'win32';
+  const CLAUDE_SUBCOMMANDS = new Set(['mcp', 'config', 'update', 'doctor', 'install', 'migrate-installer', 'setup-token', 'plugin', 'plugins', 'auth']);
   function cliCommandLine(key, prompt, extraArgs = []) {
     const cli = state.settings && state.settings.cli && state.settings.cli[key];
     if (!cli) return null;
     const parts = [cli.command, ...(cli.args || []), ...extraArgs];
     // task-017: claude gets the output-compression hook (added on top of the user's own settings)
     // Only when the command really is Claude Code: a custom command/wrapper may not take --settings.
-    if (key === 'claude' && state.compressHook && /^claude(\.exe|\.cmd)?$/i.test(cli.command) && !parts.includes('--settings')) {
+    // Never with the user's own --settings (either form) or a management subcommand (main.js claudeArgsTakeHook).
+    const takesHook = !parts.slice(1).some((a) => a === '--settings' || String(a).startsWith('--settings=') || CLAUDE_SUBCOMMANDS.has(a));
+    if (key === 'claude' && state.compressHook && /^claude(\.exe|\.cmd)?$/i.test(cli.command) && takesHook) {
       parts.splice(1, 0, '--settings', state.compressHook);
     }
     if (prompt) parts.push(prompt);

@@ -78,13 +78,15 @@ module.exports = {
   AIOPS_CLAUDE_BLOCK_END,
   pruneAorRuntime,
   buildCompressHookSettings,
+  claudeArgsTakeHook,
+  resolveAorEngineRoot,
   AOR_RAW_KEEP,
   AOR_REPORT_KEEP,
 };
 `;
-function loadHelpers(appRoot) {
+function loadHelpers(appRoot, proc = process) {
   const mod = { exports: {} };
-  new Function('module', 'require', 'process', 'path', makeWrapper(appRoot))(mod, require, process, path);
+  new Function('module', 'require', 'process', 'path', makeWrapper(appRoot))(mod, require, proc, path);
   return mod.exports;
 }
 const m = { exports: loadHelpers(path.join(__dirname, '..')) };
@@ -99,7 +101,7 @@ const {
   isWithinByteCap, findMissingAiopsTemplates, migrateSettings, SETTINGS_VERSION,
   sanitizeHistoryLayout, applyHistorySnapshot, finalizeHistoryRecord, dropResumableLayouts,
   pickResumableSession, isHistoryExpired, HISTORY_MAX_SESSIONS, sanitizeHistoryRecord,
-  pruneAorRuntime, AOR_RAW_KEEP, AOR_REPORT_KEEP, buildCompressHookSettings
+  pruneAorRuntime, AOR_RAW_KEEP, AOR_REPORT_KEEP, buildCompressHookSettings, claudeArgsTakeHook
 } = m.exports;
 
 let pass = 0;
@@ -715,6 +717,17 @@ console.log('-- compress hook settings (task-017)');
   const r = require('child_process').spawnSync('bash', ['-c', 'for a in ' + cmd + '; do echo "[$a]"; done'], { encoding: 'utf8' });
   const words = r.error ? [] : r.stdout.trim().split(/\r?\n/);
   check('bash splits it into exactly the two paths', words.length === 2 && words[1].includes("o'neil"), r.stdout || String(r.error));
+}
+
+console.log('-- which claude calls get the hook (review task-016 r1)');
+{
+  check('plain launch takes the hook', claudeArgsTakeHook([]) && claudeArgsTakeHook(['--continue']) && claudeArgsTakeHook(['--model', 'opus', 'fix the bug']));
+  check('--settings <file> blocks it', !claudeArgsTakeHook(['--settings', 'x.json']));
+  check('--settings=<file> blocks it', !claudeArgsTakeHook(['--settings=x.json', '--version']));
+  check('subcommand anywhere blocks it', !claudeArgsTakeHook(['mcp', 'list']) && !claudeArgsTakeHook(['--verbose', 'mcp', 'list']) && !claudeArgsTakeHook(['update']));
+  check('non-string args ignored', claudeArgsTakeHook([null, 3, '--continue']) && claudeArgsTakeHook(undefined));
+  const mac = loadHelpers(path.join(__dirname, '..'), { ...process, platform: 'darwin', env: process.env });
+  check('no AOR engine outside Windows (PowerShell scripts)', mac.resolveAorEngineRoot({ aor: { engineRoot: __dirname } }) === null);
 }
 
 console.log('');

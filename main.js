@@ -632,7 +632,7 @@ function bundledAorRoot() {
 // Functions, not constants: this block is also evaluated by the unit tests.
 const hookDir = () => path.join(USER_DATA_ROOT, 'aor-hook');
 const hookSettingsPath = () => path.join(hookDir(), 'claude-settings.json');
-let compressHookCache = null; // { key, value }
+let compressHookCache = null; // { nodePath, hookScript } — reset on settings:set
 function findNodeSync() {
   const { execFileSync } = require('child_process');
   const [file, args] = process.platform === 'win32'
@@ -657,39 +657,65 @@ function hookDirIsSafe() {
     return isPathInsideRoot(fs.realpathSync.native(hookDir()), USER_DATA_ROOT);
   } catch { return false; }
 }
+function hookSettingsFileIsSafe() {
+  try {
+    if (!fs.lstatSync(hookSettingsPath()).isFile() || !hookDirIsSafe()) return false; // a link is not a file to lstat
+    return isPathInsideRoot(fs.realpathSync.native(hookSettingsPath()), fs.realpathSync.native(hookDir()));
+  } catch { return false; }
+}
+// Writes the --settings file if its content differs. Unpredictable temp name + 'wx', so a
+// planted link cannot redirect the write; the result is re-checked (review task-016 r1).
+function writeHookSettings(body) {
+  const file = hookSettingsPath();
+  if (!fs.existsSync(hookDir())) fs.mkdirSync(hookDir(), { recursive: true });
+  if (!hookDirIsSafe()) throw new Error('aor-hook is not a plain directory inside userData');
+  let current = null;
+  if (hookSettingsFileIsSafe()) { try { current = fs.readFileSync(file, 'utf8'); } catch { /* rewrite */ } }
+  if (current !== body) {
+    const tmp = path.join(hookDir(), '.claude-settings.' + require('crypto').randomBytes(6).toString('hex') + '.tmp');
+    try {
+      fs.writeFileSync(tmp, body, { encoding: 'utf8', flag: 'wx' });
+      fs.renameSync(tmp, file);
+    } finally {
+      try { fs.rmSync(tmp, { force: true }); } catch { /* renamed away */ }
+    }
+  }
+  if (!hookSettingsFileIsSafe()) throw new Error('claude-settings.json is not a plain file inside aor-hook');
+}
 // Path of the --settings file, or null when the hook is off or cannot run here.
+// Only the node lookup is cached; the file itself is verified (and rewritten) every call.
 function resolveCompressHook(settings) {
-  const enabled = !(settings && settings.aor && settings.aor.compressHook === false);
-  const key = String(enabled);
-  if (compressHookCache && compressHookCache.key === key) return compressHookCache.value;
-  let value = null;
-  if (enabled) {
+  if (settings && settings.aor && settings.aor.compressHook === false) return null;
+  if (!compressHookCache) {
     const root = bundledAorRoot();
     const hookScript = path.join(root, 'carrotcap', 'compress-hook.js');
     const engine = process.platform === 'win32'
       ? path.join(root, 'engine', 'windows', 'bin', 'aor-engine-win.exe')
       : path.join(root, 'engine', 'macos', 'bin', 'aor-engine-macos');
     const nodePath = fs.existsSync(hookScript) && fs.existsSync(engine) ? findNodeSync() : null;
-    if (nodePath) {
-      const body = JSON.stringify(buildCompressHookSettings(nodePath, hookScript), null, 2);
-      const tmp = `${hookSettingsPath()}.${process.pid}.tmp`;
-      try {
-        if (!fs.existsSync(hookDir())) fs.mkdirSync(hookDir(), { recursive: true });
-        if (!hookDirIsSafe()) throw new Error('aor-hook is not a plain directory inside userData');
-        let current = null;
-        try { current = fs.readFileSync(hookSettingsPath(), 'utf8'); } catch { /* first run */ }
-        if (current !== body) { fs.writeFileSync(tmp, body, 'utf8'); fs.renameSync(tmp, hookSettingsPath()); }
-        value = hookSettingsPath();
-      } catch (e) {
-        try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
-        console.warn('[carrotcap] compress hook unavailable:', e.message);
-      }
-    }
+    compressHookCache = { nodePath, hookScript };
   }
-  compressHookCache = { key, value };
-  return value;
+  const { nodePath, hookScript } = compressHookCache;
+  if (!nodePath) return null;
+  try {
+    writeHookSettings(JSON.stringify(buildCompressHookSettings(nodePath, hookScript), null, 2));
+    return hookSettingsPath();
+  } catch (e) {
+    console.warn('[carrotcap] compress hook unavailable:', e.message);
+    return null;
+  }
+}
+// claude invocations that must not get the hook: the user's own --settings (either form)
+// or any management subcommand anywhere in the arguments (review task-016 r1).
+const CLAUDE_SUBCOMMANDS = new Set(['mcp', 'config', 'update', 'doctor', 'install', 'migrate-installer', 'setup-token', 'plugin', 'plugins', 'auth']);
+function claudeArgsTakeHook(args) {
+  const list = Array.isArray(args) ? args.filter((a) => typeof a === 'string') : [];
+  return !list.some((a) => a === '--settings' || a.startsWith('--settings=') || CLAUDE_SUBCOMMANDS.has(a));
 }
 function resolveAorEngineRoot(settings) {
+  // The bundled engine scripts are PowerShell (Windows only); elsewhere panes open a plain
+  // shell instead of trying to run powershell.exe (review task-016 r1).
+  if (process.platform !== 'win32') return null;
   const candidates = [];
   // Highest priority: bundled AOR shipped with the installer.
   // Production: <install-dir>/resources/AOR (electron-builder extraResources).
@@ -1083,7 +1109,7 @@ function resolvePtyArgs(opts) {
     const cliArgs = Array.isArray(cli.args) ? cli.args.filter((a) => typeof a === 'string') : [];
     // Only when the command really is Claude Code (a custom command may not take --settings).
     const hookSettings = opts.cliKey === 'claude' && /^claude(\.exe|\.cmd)?$/i.test(cli.command) ? resolveCompressHook(settings) : null;
-    if (hookSettings && !cliArgs.includes('--settings')) cliArgs.unshift('--settings', hookSettings);
+    if (hookSettings && claudeArgsTakeHook(cliArgs)) cliArgs.unshift('--settings', hookSettings);
     if (process.platform === 'win32') {
       const pwshLine = '& ' + [pwshSingleQuote(cli.command), ...cliArgs.map(pwshSingleQuote)].join(' ');
       return {

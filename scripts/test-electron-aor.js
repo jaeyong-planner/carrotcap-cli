@@ -77,6 +77,41 @@ fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({
   await waitFor(() => fs.existsSync(argsLog), { timeoutMs: 15000 });
   const args3 = fs.existsSync(argsLog) ? fs.readFileSync(argsLog, 'utf8').split(/\r?\n/).filter(Boolean) : [];
   check("user's own --settings wins", args3.filter((a) => a === '--settings').length === 1 && args3.includes('x.json'), JSON.stringify(args3));
+  const runFake = async (line) => {
+    fs.rmSync(argsLog, { force: true });
+    await type(line);
+    await waitFor(() => fs.existsSync(argsLog), { timeoutMs: 15000 });
+    return fs.existsSync(argsLog) ? fs.readFileSync(argsLog, 'utf8').split(/\r?\n/).filter(Boolean) : [];
+  };
+  const args5 = await runFake(`claude --settings=x.json --version`);
+  // (cmd's `for` splits "--settings=x.json" at "=", so look for the hook path, not the token.)
+  check("user's --settings=<file> form wins too (review r1)", !args5.includes(st.compressHook) && args5.includes('x.json'), JSON.stringify(args5));
+  const args6 = await runFake(`claude --verbose mcp list`);
+  check('subcommand after an option is left alone (review r1)', !args6.includes('--settings') && args6.includes('mcp'), JSON.stringify(args6));
+
+  console.log('-- hook settings file is re-verified (review r1)');
+  fs.rmSync(st.compressHook, { force: true });
+  const st3 = await ev(`window.carrotcap.aorStatus()`);
+  check('deleted settings file is written again', st3.compressHook === st.compressHook && fs.existsSync(st.compressHook));
+  fs.rmSync(st.compressHook, { force: true });
+  fs.mkdirSync(st.compressHook); // something that is not a plain file
+  const st4 = await ev(`window.carrotcap.aorStatus()`);
+  check('a non-file in its place → no hook (not a stale path)', st4.compressHook === null, JSON.stringify(st4));
+  fs.rmSync(st.compressHook, { recursive: true, force: true });
+  const st5 = await ev(`window.carrotcap.aorStatus()`);
+  check('recovers once the path is free', st5.compressHook === st.compressHook && fs.lstatSync(st.compressHook).isFile());
+  check('no temp files left in aor-hook', fs.readdirSync(path.dirname(st.compressHook)).every((n) => !n.endsWith('.tmp')), fs.readdirSync(path.dirname(st.compressHook)).join(','));
+
+  console.log('-- real engine behind the hook');
+  const bigOut = Array.from({ length: 300 }, (_, i) => `  PASS  case ${i} works`).join('\n') + '\n  FAIL  case 301 :: boom\n';
+  const hookScript = h.hooks[0].command.match(/'([^']*compress-hook\.js)'$/)[1];
+  const r = require('child_process').spawnSync(process.execPath, [hookScript], {
+    encoding: 'utf8',
+    input: JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Bash', cwd: project, tool_input: { command: 'npm test' }, tool_response: { stdout: bigOut, stderr: '', interrupted: false, isImage: false, noOutputExpected: false } }),
+  });
+  let replaced = null;
+  try { replaced = JSON.parse(r.stdout).hookSpecificOutput.updatedToolOutput.stdout; } catch { /* checked below */ }
+  check('bundled engine summarizes and keeps the failure line', !!replaced && replaced.includes('[Layer 1]') && replaced.includes('FAIL  case 301 :: boom') && replaced.length < bigOut.length / 3, r.stderr || String(replaced && replaced.length));
 
   fs.rmSync(argsLog, { force: true });
   const clicked = await ev(`(() => { const b = document.querySelector('[data-cli="claude"]'); if (!b) return false; b.click(); return true; })()`);
