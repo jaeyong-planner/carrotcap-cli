@@ -889,6 +889,10 @@ function resolvePtyArgs(opts) {
   if (opts.mode === 'aor' || opts.mode === 'aiops') {
     const isAiops = opts.mode === 'aiops';
     const aiopsStructure = isAiops && requestedProjectRoot ? ensureAiopsProjectStructure(requestedProjectRoot) : null;
+    // A folder IS selected but setup failed (read-only, symlink...): a real problem → warning.
+    const aiopsSetupWarning = isAiops && requestedProjectRoot && !aiopsStructure
+      ? 'AIOps 구조를 만들지 못했습니다 — 프로젝트 폴더의 쓰기 권한이나 심볼릭 링크를 확인하세요.'
+      : undefined;
     const engineRoot = resolveAorEngineRoot(settings);
     if (!engineRoot) {
       // AOR 엔진이 없으면 조용히 plain 셸로 연다 — 엔진이 없는 PC에서는 정상 상태라
@@ -900,7 +904,8 @@ function resolvePtyArgs(opts) {
         kind: isAiops ? 'aiops' : 'plain',
         note: 'AOR 엔진이 없어 일반 셸로 실행 중 (settings.json의 aor.engineRoot로 지정 가능)'
       };
-      if (isAiops && !aiopsStructure) out.note = '프로젝트 폴더를 선택하면 AIOps 구조가 자동으로 만들어집니다. ' + out.note;
+      if (aiopsSetupWarning) out.warning = aiopsSetupWarning;
+      else if (isAiops && !aiopsStructure) out.note = '프로젝트 폴더를 선택하면 AIOps 구조가 자동으로 만들어집니다. ' + out.note;
       return out;
     }
     const shellInit = path.join(engineRoot, 'engine', 'windows', '_internal', 'shell-init.ps1');
@@ -929,7 +934,8 @@ function resolvePtyArgs(opts) {
       ],
       cwd,
       kind: isAiops ? 'aiops' : 'aor',
-      // 안내는 툴팁(note)으로만 — 헤더 ⚠·상태줄 경고로 띄우지 않는다.
+      // 안내는 툴팁(note)으로만 — 실제 실패(aiopsSetupWarning)만 헤더 ⚠·상태줄 경고로.
+      warning: aiopsSetupWarning,
       note: isAiops
         ? `${aiopsStructure ? 'AIOps 구조 준비됨.' : '프로젝트 폴더를 선택하면 AIOps 구조가 자동으로 만들어집니다.'} Claude=코딩, Codex=리뷰, Grok=이미지·영상`
         : undefined
@@ -965,7 +971,20 @@ function resolvePtyArgs(opts) {
   return { file: defaultShell(), args: plainArgs, cwd, kind: 'plain' };
 }
 
+const MAX_SESSIONS = 32; // bounds pre-ready buffers and processes a renderer can create
+
+// Drops the ready-gate timers and any held input (kill, window close, exit).
+function disposeReadyGate(session) {
+  clearTimeout(session.quietTimer);
+  clearTimeout(session.maxTimer);
+  session.quietTimer = null;
+  session.maxTimer = null;
+  session.pending = '';
+  session.pendingBytes = 0;
+}
+
 function spawnSession(rawPayload) {
+  if (sessions.size >= MAX_SESSIONS) return { error: `터미널은 최대 ${MAX_SESSIONS}개까지 열 수 있습니다.` };
   const payload = sanitizeSpawnPayload(rawPayload);
   const settings = loadSettings() || {};
   const resolved = resolvePtyArgs({ ...payload, settings });
@@ -1010,18 +1029,16 @@ function spawnSession(rawPayload) {
   // Ready gate: PowerShell/PSReadLine throws away input that arrives while it is still
   // starting (measured: anything sent in the first ~2s of a new pane was lost). Input is
   // queued until the shell has printed something and then gone quiet, then flushed in order.
-  const session = { proc, kind, ready: false, queue: [], queuedBytes: 0, quietTimer: null, maxTimer: null };
+  // One string buffer (not an array of chunks) so a flood of tiny writes stays bounded.
+  const session = { proc, kind, ready: false, pending: '', pendingBytes: 0, quietTimer: null, maxTimer: null };
   sessions.set(id, session);
   const markReady = () => {
     if (session.ready) return;
+    const pending = session.pending;
+    disposeReadyGate(session);
     session.ready = true;
-    clearTimeout(session.quietTimer);
-    clearTimeout(session.maxTimer);
-    const pending = session.queue;
-    session.queue = [];
-    session.queuedBytes = 0;
-    for (const d of pending) {
-      try { proc.write(d); } catch (err) { console.warn('[carrotcap] pty write fail', err && err.message); }
+    if (pending) {
+      try { proc.write(pending); } catch (err) { console.warn('[carrotcap] pty write fail', err && err.message); }
     }
   };
   session.maxTimer = setTimeout(markReady, PTY_READY_MAX_MS);
@@ -1037,8 +1054,7 @@ function spawnSession(rawPayload) {
   // 폴백 모드일 땐 spawnSession에서 직접 만든 proc도 동일한 onData/onExit 인터페이스를 갖도록 위에서 셋업했음.
   proc.onData(wireData);
   proc.onExit(({ exitCode }) => {
-    clearTimeout(session.quietTimer);
-    clearTimeout(session.maxTimer);
+    disposeReadyGate(session);
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('pty:exit', { id, code: exitCode });
     }
@@ -1135,6 +1151,7 @@ function createWindow() {
   mainWindow.on('closed', () => {
     mainWindow = null;
     for (const [, s] of sessions) {
+      disposeReadyGate(s);
       try { s.proc.kill(); } catch {}
     }
     sessions.clear();
@@ -1244,7 +1261,7 @@ on('pty:write', (_e, { id, data }) => {
   if (!s.ready) {
     // Held until the shell is ready (see spawnSession). Capped like a single write.
     const size = Buffer.byteLength(data, 'utf8');
-    if (s.queuedBytes + size <= MAX_PTY_WRITE_BYTES) { s.queue.push(data); s.queuedBytes += size; }
+    if (s.pendingBytes + size <= MAX_PTY_WRITE_BYTES) { s.pending += data; s.pendingBytes += size; }
     return;
   }
   try {
@@ -1265,6 +1282,7 @@ on('pty:kill', (_e, { id }) => {
   const s = sessions.get(id);
   if (!s) return;
   // Keep the session if kill throws so the pane can retry; onExit removes it.
+  disposeReadyGate(s);
   try { s.proc.kill(); sessions.delete(id); }
   catch (err) { console.warn(`[carrotcap] pty kill fail ${id}:`, err && err.message); }
 });
