@@ -29,7 +29,10 @@ const input = (command, response = {}, extra = {}) => ({
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-hook-'));
 const fakeEngine = path.join(tmpDir, 'engine.exe');
 fs.writeFileSync(fakeEngine, '');
-const rawLog = path.join(tmpDir, '2026-09-26T00-00-00-000Z-abcdef.log');
+// Like the real engine: the raw log is an exact copy of the input, next to the binary.
+const rawDir = path.join(tmpDir, '.router-output', 'raw');
+fs.mkdirSync(rawDir, { recursive: true });
+const rawLog = path.join(rawDir, '2026-09-26T00-00-00-000Z-abcdef.log');
 fs.writeFileSync(rawLog, big);
 const engineCalls = [];
 const reply = (raw) => [
@@ -80,6 +83,16 @@ check('odd engine output → untouched', hook.decide(input('npm test'), {}, { en
 check('summary without a raw: line → untouched (review r2)', hook.decide(input('npm test'), {}, { engine: fakeEngine, run: () => ({ status: 0, stdout: '[Layer 1] Summary\nheadline: x\n' }) }) === null);
 check('raw: log that does not exist → untouched (review r2)', hook.decide(input('npm test'), {}, { engine: fakeEngine, run: () => ({ status: 0, stdout: reply(path.join(tmpDir, 'missing.log')) }) }) === null);
 check('raw: pointing at a directory → untouched (review r2)', hook.decide(input('npm test'), {}, { engine: fakeEngine, run: () => ({ status: 0, stdout: reply(tmpDir) }) }) === null);
+const stale = path.join(rawDir, '2026-01-01T00-00-00-000Z-000000.log');
+fs.writeFileSync(stale, 'an older run\n');
+check('raw: log with other content → untouched (review r3)', hook.decide(input('npm test'), {}, { engine: fakeEngine, run: () => ({ status: 0, stdout: reply(stale) }) }) === null);
+const outside = path.join(tmpDir, 'copy.log');
+fs.writeFileSync(outside, big);
+check('raw: log outside the engine raw folder → untouched, even with the same content (review r3)', hook.decide(input('npm test'), {}, { engine: fakeEngine, run: () => ({ status: 0, stdout: reply(outside) }) }) === null);
+fs.mkdirSync(path.join(rawDir, 'sub'));
+fs.writeFileSync(path.join(rawDir, 'sub', 'x.log'), big);
+check('raw: log in a subfolder → untouched (review r3)', hook.decide(input('npm test'), {}, { engine: fakeEngine, run: () => ({ status: 0, stdout: reply(path.join(rawDir, 'sub', 'x.log')) }) }) === null);
+check('CRLF / BOM differences still match (review r3)', !!hook.rawLogOf(reply(rawLog), '﻿' + big.replace(/\n/g, '\r\n'), fakeEngine));
 if (process.platform !== 'win32') check('temp input file is owner-only (0600)', engineCalls[0].mode === 0o600, String(engineCalls[0].mode));
 check('engine throws → untouched', hook.decide(input('npm test'), {}, { engine: fakeEngine, run: () => { throw new Error('x'); } }) === null);
 const leftovers = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith(`carrotcap-aor-${process.pid}-`));
