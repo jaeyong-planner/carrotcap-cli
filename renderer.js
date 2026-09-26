@@ -644,7 +644,16 @@
   // Enter를 누르면 활성 페인에 붙여넣기(term.paste: bracketed paste 지원) 후 Enter를 보낸다.
   const composer = $('#composer');
   const composerInput = $('#composer-input');
-  const composerTarget = $('#composer-target');
+  const composerNotice = $('#composer-notice');
+  let noticeTimer = null;
+  // 입력칸 옆 라벨 대신, 필요할 때만 입력창 위에 한 줄 알림을 잠깐 띄운다.
+  function showComposerNotice(text, tone = 'warn') {
+    clearTimeout(noticeTimer);
+    composerNotice.textContent = text;
+    composerNotice.classList.toggle('ok', tone === 'ok');
+    composerNotice.hidden = false;
+    noticeTimer = setTimeout(() => { composerNotice.hidden = true; }, 6000);
+  }
   const COMPOSER_HISTORY_MAX = 50;
   const composerHistory = [];
   let composerHistoryIdx = -1;
@@ -660,14 +669,14 @@
   }
   function autoGrowComposer() {
     composerInput.style.height = 'auto';
-    composerInput.style.height = Math.min(composerInput.scrollHeight + 2, 160) + 'px';
+    composerInput.style.height = Math.max(52, Math.min(composerInput.scrollHeight + 2, 200)) + 'px';
   }
+  // 대상 페인은 테두리(활성 페인)로 이미 보인다 — 입력창에는 종료된 경우만 알린다.
   function updateComposerTarget() {
     const leaf = state.panes.get(state.activePaneId);
-    const label = leaf && leaf.type === 'leaf'
-      ? String(leaf.kind || 'plain').toUpperCase() + (leaf.exited ? ' · 종료됨' : '')
-      : '-';
-    composerTarget.textContent = `→ ${label}`;
+    composerInput.placeholder = leaf && leaf.exited
+      ? '이 페인의 세션이 종료됐습니다 — 새 탭/페인에서 보내세요'
+      : '메시지 입력 · Enter 보내기 · Shift+Enter 줄바꿈';
   }
   function focusComposer() {
     if (composer.classList.contains('hidden')) {
@@ -696,7 +705,7 @@
     const leaf = state.panes.get(state.activePaneId);
     if (!leaf || leaf.type !== 'leaf' || !leaf.ptyId || !leaf.term) {
       // 보낼 곳이 없으면 입력 내용은 지우지 않는다.
-      composerTarget.textContent = leaf && leaf.exited ? '→ 세션 종료됨 — 새 탭/페인에서 보내세요' : '→ 활성 터미널 없음';
+      showComposerNotice(leaf && leaf.exited ? '세션 종료됨 — 새 탭/페인에서 보내세요' : '활성 터미널 없음');
       return;
     }
     const typed = composerInput.value;
@@ -723,22 +732,20 @@
       // 일반 셸에는 페이지 유래 텍스트를 보내지 않는다 — 입력 내용은 그대로 돌려준다.
       composerInput.value = typed;
       autoGrowComposer();
-      composerTarget.textContent = `→ ${prepared.blocked}`;
+      showComposerNotice(prepared.blocked);
       return;
     }
     const ptyId = leaf.ptyId;
     if (!ptyId) { composerInput.value = typed; autoGrowComposer(); return; } // 그 사이 세션 종료 — 컨텍스트는 소비하지 않음
     const text = prepared.text;
     if (prepared.context) {
-      // 브라우저 컨텍스트: bracketed paste를 직접 만들어 확인 응답이 있는 IPC로 보낸다.
-      // 두 번 모두 전달됐을 때만 주석·에러를 "보냄" 처리 (review r2 M3).
-      // main이 쓰기 순간에 이 PTY가 bracketed paste(에이전트)인지 다시 확인하고, ESC를 뺀 뒤
-      // paste를 직접 만든다 — 그 사이 에이전트가 끝나 셸로 돌아갔다면 보내지 않는다 (review r5).
-      const okPaste = await api.pasteGuarded(ptyId, text, prepared.token);
-      await new Promise((r) => setTimeout(r, Math.min(600, 60 + Math.floor(text.length / 20))));
-      const okEnter = okPaste && leaf.ptyId === ptyId && await api.writePtyAck(ptyId, '\r');
-      if (okPaste && okEnter) prepared.commit();
-      else { composerInput.value = typed; autoGrowComposer(); composerTarget.textContent = '→ 전송 실패 — 세션을 확인하세요'; }
+      // 브라우저 컨텍스트: main이 쓰기 순간 이 PTY가 bracketed paste(에이전트)인지 확인하고,
+      // ESC를 뺀 paste와 Enter를 한 트랜잭션으로 보낸다 — Enter 직전에도 다시 확인하므로
+      // 그 사이 에이전트가 끝나 셸로 돌아갔다면 보내지 않는다 (review r5·r8).
+      // 둘 다 전달됐을 때만 주석·에러를 "보냄" 처리.
+      const delivered = await api.pasteGuarded(ptyId, text, prepared.token, true);
+      if (delivered) prepared.commit();
+      else { composerInput.value = typed; autoGrowComposer(); showComposerNotice('전송 실패 — 세션을 확인하세요'); }
       return;
     }
     if (text) leaf.term.paste(text);

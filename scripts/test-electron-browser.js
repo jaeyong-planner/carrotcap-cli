@@ -120,7 +120,7 @@ const server = http.createServer((req, res) => {
   const screen = () => ev(`(document.querySelector('.tab-page.active .xterm-rows') || {}).innerText || ''`);
   await ev(`document.querySelector('#composer-input').value = '1번 버튼 눌러도 결제가 안 돼'; document.querySelector('#composer-send').click(); true`);
   await sleep(800);
-  check('send to a plain PowerShell pane is refused', /에이전트 페인에만/.test(await ev(`document.querySelector('#composer-target').textContent`)));
+  check('send to a plain PowerShell pane is refused', /에이전트 페인에만/.test(await ev(`document.querySelector('#composer-notice').textContent`)));
   check('typed text kept in the input box', (await ev(`document.querySelector('#composer-input').value`)) === '1번 버튼 눌러도 결제가 안 돼');
   check('pins not consumed by the refused send', (await ev(`document.querySelectorAll('#br-pins .br-pin').length`)) === 1);
   check('nothing pasted into the shell', !/브라우저 컨텍스트/.test(await screen()));
@@ -275,7 +275,7 @@ const server = http.createServer((req, res) => {
   await ev(`document.querySelector('#composer-input').value = 'Write-Output typed-by-user'; document.querySelector('#composer-send').click(); true`);
   await sleep(2500);
   const after = (await screen()).slice(before.length > 200 ? before.length - 200 : 0);
-  const target = await ev(`document.querySelector('#composer-target').textContent`);
+  const target = await ev(`document.querySelector('#composer-notice').textContent`);
   const refused = /전송 실패|에이전트 페인에만/.test(target);
   // Either main refused (bracketed off in the shell) or, if the shell has bracketed paste on,
   // every context line reached PowerShell as a comment — nothing may run as a command.

@@ -122,11 +122,20 @@
 
         <!-- 입력창 (task-010): 활성 페인으로 보낼 텍스트를 일반 입력칸처럼 편집 -->
         <div id="composer">
-          <span id="composer-target" class="composer-target" title="보낼 대상 페인">→ PLAIN</span>
-          <textarea id="composer-input" rows="1" spellcheck="false"
-                    placeholder="여기에 입력하고 Enter로 활성 터미널에 보내기 · Shift+Enter 줄바꿈 · Ctrl+A 전체 선택 · Esc 터미널로"></textarea>
-          <button id="composer-clear" class="btn-ghost" title="입력창 비우기">지우기</button>
-          <button id="composer-send" class="btn-primary" title="활성 터미널로 보내기 (Enter)">보내기</button>
+          <!-- 알림은 필요할 때만 한 줄로 잠깐 표시 (입력칸 옆에 라벨을 두지 않음) -->
+          <div id="composer-notice" class="composer-notice" role="status" hidden></div>
+          <div class="composer-box">
+            <textarea id="composer-input" rows="1" spellcheck="false"
+                      placeholder="메시지 입력 · Enter 보내기 · Shift+Enter 줄바꿈"></textarea>
+            <div class="composer-actions">
+              <button id="composer-clear" class="icon-btn" title="입력창 비우기" aria-label="입력창 비우기">
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2zm-3 6h12l-1 12H7L6 9zm4 2v8h2v-8h-2zm4 0v8h2v-8h-2z"/></svg>
+              </button>
+              <button id="composer-send" class="icon-btn send" title="보내기 (Enter)" aria-label="보내기">
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M19 5v7H8.8l3.6-3.6L11 7l-6 6 6 6 1.4-1.4L8.8 14H21V5h-2z"/></svg>
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>

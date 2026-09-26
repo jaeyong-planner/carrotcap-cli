@@ -1320,7 +1320,10 @@ handle('pty:write-ack', (_e, payload) => {
 // Browser context (page-derived text): written ONLY if, at this very moment, the app in
 // the PTY has bracketed paste on (an interactive agent, not a bare shell). main builds the
 // paste itself and strips ESC, so the text cannot end the paste early (review r5 C3).
-handle('pty:paste-guarded', (_e, payload) => {
+// With submit: the paste and its Enter are one transaction — the Enter is written only if
+// the same session still has bracketed paste on right then (the agent did not exit in
+// between), and the call reports success only when both went out (review r8).
+handle('pty:paste-guarded', async (_e, payload) => {
   const p = (payload && typeof payload === 'object') ? payload : {};
   if (!isValidPtyId(p.id) || typeof p.text !== 'string') return false;
   const s = sessions.get(p.id);
@@ -1328,7 +1331,12 @@ handle('pty:paste-guarded', (_e, payload) => {
   // The browser page must still be the document this context describes (one-time token).
   if (!browserMode.redeemContextToken(p.token)) return false;
   const body = p.text.replace(/\x1b/g, '').replace(/\r?\n/g, '\r');
-  return writeToSession(p.id, '\x1b[200~' + body + '\x1b[201~');
+  if (!writeToSession(p.id, '\x1b[200~' + body + '\x1b[201~')) return false;
+  if (!p.submit) return true;
+  const delay = Math.min(600, 60 + Math.floor(body.length / 20)); // let the CLI take the paste
+  await new Promise((r) => setTimeout(r, delay));
+  if (sessions.get(p.id) !== s || !s.bracketed) return false;
+  return writeToSession(p.id, '\r');
 });
 on('pty:resize', (_e, { id, cols, rows }) => {
   const s = sessions.get(id);

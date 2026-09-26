@@ -282,7 +282,7 @@ const PROBE = `(async () => {
   await sleep(300);
   check('after the shell exits, input box keeps unsent text',
     (await ev(`document.querySelector('#composer-input').value`)) === 'after-exit');
-  check('exited pane is labelled', /종료됨/.test(await ev(`document.querySelector('#composer-target').textContent`)));
+  check('exited pane is flagged (notice / placeholder)', /종료/.test(await ev(`document.querySelector('#composer-notice').textContent + ' ' + document.querySelector('#composer-input').placeholder`)));
 
   console.log('-- no out-of-band terminal writes (task-011)');
   // Warnings used to be injected into xterm behind ConPTY's back, garbling redraws.

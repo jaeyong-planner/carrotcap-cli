@@ -166,7 +166,9 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
   // old entries and close/reopen clears it). reportedSeq = last seq delivered to the agent.
   let errorSeq = 0;
   let reportedSeq = 0;
-  const newErrorList = () => errors.filter((e) => e.seq > reportedSeq);
+  // Only the current document's errors are 'new' for the agent (review r8): an error is
+  // tagged with the document generation it happened in.
+  const newErrorList = () => errors.filter((e) => e.seq > reportedSeq && e.gen === pageGen);
   let debuggerAttached = false;
 
   const send = (channel, payload) => {
@@ -192,6 +194,7 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
   const addError = (level, message, source, line) => {
     errors.push({
       seq: ++errorSeq,
+      gen: pageGen,
       at: new Date().toISOString(),
       level,
       message: cleanText(message, MAX_ERROR_LEN),

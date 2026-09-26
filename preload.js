@@ -21,7 +21,7 @@ const api = {
   spawnPty: (payload) => ipcRenderer.invoke('pty:spawn', payload),
   writePty: (id, data) => ipcRenderer.send('pty:write', { id, data }),
   writePtyAck: (id, data) => ipcRenderer.invoke('pty:write-ack', { id, data }),
-  pasteGuarded: (id, text, token) => ipcRenderer.invoke('pty:paste-guarded', { id, text, token }),
+  pasteGuarded: (id, text, token, submit = false) => ipcRenderer.invoke('pty:paste-guarded', { id, text, token, submit }),
   resizePty: (id, cols, rows) => ipcRenderer.send('pty:resize', { id, cols, rows }),
   killPty: (id) => ipcRenderer.send('pty:kill', { id }),
 
