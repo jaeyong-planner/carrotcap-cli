@@ -50,8 +50,11 @@ async function listTargets(port) {
   try { return await (await fetch(`http://127.0.0.1:${port}/json`)).json(); } catch { return []; }
 }
 
-async function launchApp(userDataDir, { port = 9400 + Math.floor(Math.random() * 400) } = {}) {
-  const child = spawn(require(path.join(root, 'node_modules', 'electron')), ['.', `--remote-debugging-port=${port}`], {
+// exe: a packaged build to test instead of the dev tree (copy it first — carrotcap.exe self-registers on PATH).
+async function launchApp(userDataDir, { port = 9400 + Math.floor(Math.random() * 400), exe = null } = {}) {
+  const cmd = exe || require(path.join(root, 'node_modules', 'electron'));
+  const args = exe ? [`--remote-debugging-port=${port}`] : ['.', `--remote-debugging-port=${port}`];
+  const child = spawn(cmd, args, {
     cwd: root,
     env: { ...process.env, CARROTCAP_USER_DATA_DIR: userDataDir },
     stdio: ['ignore', 'pipe', 'pipe']
