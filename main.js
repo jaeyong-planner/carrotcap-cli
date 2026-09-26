@@ -1023,8 +1023,10 @@ function spawnSession(rawPayload) {
           try { if (child.stdin && !child.stdin.destroyed) child.stdin.write(String(data)); } catch (e) { /* ignore */ }
         },
         resize: () => {},
+        // Report failure like node-pty does (throw) so pty:kill keeps the session.
         kill: () => {
-          try { child.kill(); } catch (e) { /* ignore */ }
+          if (exited) return;
+          if (!child.kill()) throw new Error('fallback shell did not accept the kill signal');
         },
         // pty.spawn API 모방: onData / onExit
         onData: (cb) => {

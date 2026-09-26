@@ -612,6 +612,9 @@ console.log('-- migrateSettings v3: AIOps on by default, once');
   // v2 without a value -> default on
   const { settings: s } = migrateSettings({ settingsVersion: 2, aor: { enabled: true, engineRoot: 'X' }, cli: { claude: { command: 'claude', args: [] } } });
   check('v2 without a value -> AIOps on', s.aor.autoStart === true);
+  for (const v of [null, 'false', 0, 1]) {
+    check(`v2 non-boolean autoStart ${JSON.stringify(v)} -> on`, migrateSettings({ settingsVersion: 2, aor: { autoStart: v }, cli: {} }).settings.aor.autoStart === true);
+  }
   check('other aor fields kept', s.aor.enabled === true && s.aor.engineRoot === 'X');
   check('v2 CLI list untouched (grok not re-added)', Object.keys(s.cli).join() === 'claude');
   // v1 (pre-v0.2 builds, where off was only the default) -> on
