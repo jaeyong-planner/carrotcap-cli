@@ -296,7 +296,7 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
     pushState();
   }
 
-  // Screenshots: <project>/.carrotcap/browser (self-ignoring), newest 20, max 3 days.
+  // Screenshots: <userData>/browser-shots, newest 20, max 3 days (see shotDir).
   // Inside a project the folder goes through the same guards as AIOps setup: every
   // ancestor must be a real directory (no symlink/junction) and the result must stay
   // inside the picked workspace — so writing and pruning can never leave it (review C2).
@@ -419,18 +419,23 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
     // current one, this context would describe the wrong page (review r3).
     if (p.gen !== pageGen) return { stale: true };
     const gen = pageGen;
+    const capturedView = view;
+    const same = () => view === capturedView && gen === pageGen;
     const out = { url: cleanText(wc.getURL(), MAX_URL_LEN), title: cleanText(wc.getTitle(), 200), device, gen };
     if (p.screenshot) {
       try {
         const img = await wc.capturePage();
-        if (gen !== pageGen || !view) return { stale: true }; // navigated while capturing
+        if (!same()) return { stale: true }; // navigated or closed while capturing
         const { dir, root } = shotDir();
         out.screenshot = writeShot(dir, root, img.toPNG());
         pruneShots(dir, root);
       } catch (e) {
+        // Capture can fail because the view closed / navigated: that context is stale (fail-closed).
+        if (!same()) return { stale: true };
         console.warn('[carrotcap] browser screenshot failed:', e.message);
       }
     }
+    if (!same()) return { stale: true };
     if (p.includeErrors) {
       out.errors = errors.slice(reportedUpTo).slice(-MAX_ERRORS_SENT);
       out.errorsSkipped = Math.max(0, errors.length - reportedUpTo - out.errors.length);
@@ -438,6 +443,9 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
     out.errorMark = errors.length; // pass back to browser:commit
     return out;
   });
+  // Called only after the paste AND the Enter were acknowledged, i.e. these errors were
+  // really delivered. mark counts only errors that existed when the context was built,
+  // so errors of a newer document stay 'new' whatever happened in between.
   handle('browser:commit', (_e, mark) => {
     if (Number.isInteger(mark) && mark > reportedUpTo && mark <= errors.length) {
       reportedUpTo = mark;

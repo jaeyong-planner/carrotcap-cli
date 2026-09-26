@@ -187,6 +187,15 @@ const server = http.createServer((req, res) => {
   check('nothing written through the project junction', fs.readdirSync(outside).length === 1, fs.readdirSync(outside).join(','));
   check('file behind the junction not pruned', fs.existsSync(path.join(outside, 'shot-2000-01-01T00-00-00-000Z.png')));
   check('screenshot still taken (app data dir)', /browser-shots/.test(once));
+
+  console.log('-- same-URL reload drops old pins (review r4)');
+  for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
+    await view2.send('Input.dispatchMouseEvent', { type, x: r2.x, y: r2.y, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1 });
+  }
+  await waitFor(async () => (await ev(`document.querySelectorAll('#br-pins .br-pin').length`)) > 0);
+  await ev(`document.querySelector('#br-reload').click(), true`);
+  check('pins cleared after reloading the same URL', await waitFor(async () => (await ev(`document.querySelectorAll('#br-pins .br-pin').length`)) === 0));
+  check('annotation mode still on after reload', await ev(`document.querySelector('#br-annotate').classList.contains('active')`));
   view2.close();
 
   console.log('-- close');

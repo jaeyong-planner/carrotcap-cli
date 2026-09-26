@@ -173,23 +173,26 @@
 
   api.onBrowserState((s) => {
     if (!s || !s.open) return;
-    const prevUrl = st.url;
     st.url = s.url || '';
     if (document.activeElement !== urlInput && s.url) urlInput.value = s.url;
     $('#br-back').disabled = !s.canGoBack;
     $('#br-forward').disabled = !s.canGoForward;
     st.newErrors = s.newErrors || 0;
-    if (Number.isInteger(s.pageGen)) st.pageGen = s.pageGen;
     errCount.textContent = String(s.errorCount || 0);
     errCount.classList.toggle('has', st.newErrors > 0);
     if (!consoleEl.classList.contains('hidden')) renderConsole();
-    // 다른 페이지로 이동하면 핀(페이지 DOM)이 사라진다 → 목록을 비우고, 이전 pick(이동으로 null)은
-    // 무시하도록 토큰을 올린 뒤, 로드가 끝나면 주석 오버레이를 새 페이지에 다시 건다.
-    if (prevUrl && st.url && prevUrl.split('#')[0] !== st.url.split('#')[0]) {
-      st.pickToken++;
-      st.pins = [];
-      st.navPending = true;
-      renderPins();
+    // 새 문서(이동·같은 URL 새로고침·뒤로가기)면 핀(페이지 DOM)이 사라진다. URL이 아니라 main의
+    // 문서 세대로 판단한다 (review r4). 이전 pick 결과는 토큰으로 무시하고, 로드가 끝나면
+    // 주석 오버레이를 새 문서에 다시 건다.
+    if (Number.isInteger(s.pageGen) && s.pageGen !== st.pageGen) {
+      const firstState = st.pageGen === -1;
+      st.pageGen = s.pageGen;
+      if (!firstState || st.pins.length) {
+        st.pickToken++;
+        st.pins = [];
+        st.navPending = true;
+        renderPins();
+      }
     }
     if (st.navPending && !s.loading) {
       st.navPending = false;
