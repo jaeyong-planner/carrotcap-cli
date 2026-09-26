@@ -34,10 +34,13 @@
 #>
 [CmdletBinding()]
 param(
+    # TaskId/Slug become file names under logs/review: letters, digits, '-', '_' only.
     [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')]
     [string] $TaskId,
 
     [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')]
     [string] $Slug,
 
     [Parameter(Mandatory = $true)]
@@ -102,7 +105,14 @@ if ($Model) {
 # Trailing "-" tells codex to read the prompt from stdin.
 $codexArgs += "-"
 
+# A report left over from an earlier run must never be mistaken for this run's result.
+Remove-Item -LiteralPath $outputPath -Force -ErrorAction SilentlyContinue
+
 $fullPrompt | & codex @codexArgs 2>&1 | Tee-Object -FilePath $stdoutLogPath | Out-Null
+$codexExit = $LASTEXITCODE
+if ($codexExit -ne 0) {
+    throw "Codex exited with code $codexExit. See $stdoutLogPath."
+}
 
 if (-not (Test-Path $outputPath)) {
     throw "Codex did not produce output file: $outputPath. See $stdoutLogPath."
@@ -119,6 +129,7 @@ Write-Host "[reviewer] saved: $outputPath" -ForegroundColor Green
 if ($KeepLog) {
     Write-Host "[reviewer] stdout log: $stdoutLogPath" -ForegroundColor DarkGray
 } else {
-    Remove-Item -LiteralPath $stdoutLogPath -Force -ErrorAction SilentlyContinue
+    try { Remove-Item -LiteralPath $stdoutLogPath -Force -ErrorAction Stop }
+    catch { Write-Warning "[reviewer] could not delete stdout log: $stdoutLogPath ($($_.Exception.Message))" }
 }
 Write-Host "[reviewer] task-id: $TaskId  dispatched-at: $timestampUtc"

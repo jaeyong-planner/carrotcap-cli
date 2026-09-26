@@ -31,3 +31,12 @@
 ## 검증
 - `npm test` 147/147 — layout 정제, 5개 상한, 같은 세션 갱신, finalize(최신만 layout), 제안 대상 선택, dismiss, 30일 만료
 - `npm run test:resume` 18/18 — 실제 앱 3회 실행: 기록 → 강제 종료 → "비정상 종료" 제안 → 이어하기(탭 1·페인 2, `--continue` 입력) → 정상 종료 후 압축 → 새로 시작
+
+## 리뷰 반영 r1 (logs/review/task-012-013_cli-history.md — ⚠️ 조건부 승인, Critical 0 / Major 4 / Minor 3)
+- 010/011 Major 4건은 모두 RESOLVED 확인
+- Major: run-reviewer/run-media `TaskId`·`Slug` 경로 탈출 → `ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')` (`..\`, 절대경로, `.` 거부 확인)
+- Major: run-reviewer가 실패해도 이전 보고서를 성공처럼 저장 → 실행 전 기존 보고서 삭제 + Codex exit code 검사
+- Major: 프로젝트 전환 중 이력 섞임 → 저장 예약·조회·복원·dismiss를 시작 시점의 root에 묶음, 폴더 변경 시 이전 root 예약분 즉시 저장
+- Major: 디스크의 이력 파일 재검증 → `sanitizeHistoryRecord`(세션 id·ISO 시각·task 이름·CLI 목록·layout 8×8·개수 clamp)
+- Minor: settings 저장 시 `cli:status` 캐시 무효화, `settingsVersion`은 정수일 때만 인정, 로그 삭제 실패 시 경고
+- 결과: `npm test` 163/163, smoke 46/46, resume 18/18

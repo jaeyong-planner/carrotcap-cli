@@ -71,6 +71,7 @@ module.exports = {
   pickResumableSession,
   isHistoryExpired,
   HISTORY_MAX_SESSIONS,
+  sanitizeHistoryRecord,
   ensureAiopsProjectStructure,
   findMissingAiopsTemplates,
   AIOPS_CLAUDE_BLOCK_START,
@@ -93,7 +94,7 @@ const {
   ensureAiopsProjectStructure, AIOPS_CLAUDE_BLOCK_START, AIOPS_CLAUDE_BLOCK_END,
   isWithinByteCap, findMissingAiopsTemplates, migrateSettings, SETTINGS_VERSION,
   sanitizeHistoryLayout, applyHistorySnapshot, finalizeHistoryRecord, dropResumableLayouts,
-  pickResumableSession, isHistoryExpired, HISTORY_MAX_SESSIONS
+  pickResumableSession, isHistoryExpired, HISTORY_MAX_SESSIONS, sanitizeHistoryRecord
 } = m.exports;
 
 let pass = 0;
@@ -561,6 +562,44 @@ console.log('-- session history helpers (task-013)');
   check('expired after 30 days', isHistoryExpired({ updatedAt: '2026-08-01T00:00:00Z' }, Date.parse('2026-09-26T00:00:00Z')));
   check('fresh record not expired', !isHistoryExpired({ updatedAt: '2026-09-20T00:00:00Z' }, Date.parse('2026-09-26T00:00:00Z')));
   check('unparsable date counts as expired', isHistoryExpired({ updatedAt: 'x' }, Date.now()));
+}
+
+console.log('-- sanitizeHistoryRecord: files are re-validated on read (task-012/013 review)');
+{
+  const hostile = {
+    projectRoot: 'C:\\p'.repeat(1000),
+    updatedAt: '2026-09-26T10:00:00.000Z',
+    sessions: [
+      { id: 'ok-1', startedAt: '2026-09-26T10:00:00.000Z', clean: 'yes', lastTask: '../../etc', clis: ['claude', 'x;y', '__proto__', 7],
+        layout: { tabs: Array.from({ length: 50 }, () => ({ panes: Array.from({ length: 50 }, () => ({ mode: 'plain', cli: 'claude' })) })) },
+        paneCount: 1e9, extra: 'drop me' },
+      { id: 'BAD ID', startedAt: '2026-09-26T10:00:00.000Z' },
+      { id: 'no-start' },
+      null, 'junk',
+      ...Array.from({ length: 20 }, (_, i) => ({ id: `s-${i}`, startedAt: '2026-09-25T10:00:00.000Z' }))
+    ]
+  };
+  const r = sanitizeHistoryRecord(hostile);
+  const s0 = r.sessions[0];
+  check('projectRoot capped', r.projectRoot.length <= 1024);
+  check('sessions capped', r.sessions.length === HISTORY_MAX_SESSIONS);
+  check('invalid ids / missing startedAt dropped', r.sessions.every((s) => /^[a-z0-9-]+$/.test(s.id) && s.startedAt));
+  check('layout re-capped to 8x8', s0.layout.tabs.length === 8 && s0.layout.tabs.every((t) => t.panes.length === 8));
+  check('clean must be boolean true', s0.clean === false);
+  check('bad lastTask dropped', s0.lastTask === null);
+  check('clis filtered', s0.clis.join() === 'claude');
+  check('counts clamped', s0.paneCount === 64);
+  check('unknown fields dropped', !('extra' in s0));
+  check('non-record -> null', sanitizeHistoryRecord({ sessions: 'x' }) === null && sanitizeHistoryRecord(null) === null);
+}
+
+console.log('-- migrateSettings: settingsVersion must be a real integer (task-012/013 review)');
+{
+  for (const v of ['2', 2.5, null, true, -1]) {
+    const { changed } = migrateSettings({ settingsVersion: v, cli: { gemini: { command: 'gemini', args: [] } } });
+    check(`settingsVersion ${JSON.stringify(v)} -> migrates`, changed === true);
+  }
+  check('settingsVersion 2 -> no-op', migrateSettings({ settingsVersion: 2, cli: {} }).changed === false);
 }
 
 console.log('');

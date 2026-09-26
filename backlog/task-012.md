@@ -33,3 +33,5 @@
 
 ## 한계
 - Grok 이미지/영상 생성은 로그인 전이라 실제 생성은 미검증. 저장 위치는 규약(agents/media.md)으로 지시하며 Grok이 따르는지는 첫 사용 때 확인 필요
+
+## 리뷰 반영 — backlog/task-013.md "리뷰 반영 r1" 참조 (스크립트 경로 검증·exit code·settingsVersion 정수 비교)

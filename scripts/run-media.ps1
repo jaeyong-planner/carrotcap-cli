@@ -37,10 +37,13 @@
 #>
 [CmdletBinding(DefaultParameterSetName = "Inline")]
 param(
+    # TaskId/Slug become file names under logs/media: letters, digits, '-', '_' only.
     [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')]
     [string] $TaskId,
 
     [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')]
     [string] $Slug,
 
     [Parameter(Mandatory = $true, ParameterSetName = "Inline")]
@@ -107,5 +110,6 @@ Write-Host "[media] files: $(Join-Path $projectRoot 'assets\generated')" -Foregr
 if ($KeepLog) {
     Write-Host "[media] grok output: $stdoutPath" -ForegroundColor DarkGray
 } else {
-    Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+    try { Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction Stop }
+    catch { Write-Warning "[media] could not delete stdout log: $stdoutPath ($($_.Exception.Message))" }
 }

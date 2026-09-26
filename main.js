@@ -155,7 +155,9 @@ const SETTINGS_VERSION = 2;
 const REMOVED_CLI_NAMES = new Set(['gemini', 'antigravity', 'agy']);
 function migrateSettings(settings) {
   if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return { settings, changed: false };
-  if ((settings.settingsVersion || 1) >= SETTINGS_VERSION) return { settings, changed: false };
+  // Only a real integer counts as "already migrated" — '2', 2.5, null etc. migrate.
+  const version = Number.isInteger(settings.settingsVersion) ? settings.settingsVersion : 1;
+  if (version >= SETTINGS_VERSION) return { settings, changed: false };
   const next = { ...settings, settingsVersion: SETTINGS_VERSION };
   const cli = {};
   const srcCli = (settings.cli && typeof settings.cli === 'object' && !Array.isArray(settings.cli)) ? settings.cli : {};
@@ -344,6 +346,40 @@ function sanitizeHistoryLayout(input) {
     if (panes.length) tabs.push({ panes });
   }
   return tabs.length ? { tabs } : null;
+}
+
+// Files on disk are re-validated on every read (task-012/013 review): a corrupted or
+// hand-edited record must not reach the renderer unbounded or crash it.
+const ISO_RE = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/;
+function sanitizeHistorySession(s) {
+  if (!s || typeof s !== 'object' || typeof s.id !== 'string' || !/^[a-z0-9-]{1,40}$/.test(s.id)) return null;
+  const iso = (v) => (typeof v === 'string' && ISO_RE.test(v) ? v : null);
+  const out = {
+    id: s.id,
+    startedAt: iso(s.startedAt),
+    endedAt: iso(s.endedAt),
+    clean: s.clean === true,
+    lastTask: (typeof s.lastTask === 'string' && TASK_NAME_RE.test(s.lastTask)) ? s.lastTask : null,
+    tabCount: clampInt(s.tabCount, 0, HISTORY_MAX_TABS, 0),
+    paneCount: clampInt(s.paneCount, 0, HISTORY_MAX_TABS * HISTORY_MAX_PANES, 0),
+    clis: Array.isArray(s.clis)
+      ? s.clis.filter((c) => typeof c === 'string' && CLI_KEY_RE.test(c) && !RESERVED_OBJECT_KEYS.has(c)).slice(0, 8)
+      : []
+  };
+  if (!out.startedAt) return null;
+  const layout = sanitizeHistoryLayout(s.layout);
+  if (layout) out.layout = layout;
+  return out;
+}
+function sanitizeHistoryRecord(rec) {
+  if (!rec || typeof rec !== 'object' || !Array.isArray(rec.sessions)) return null;
+  const sessions = rec.sessions.slice(0, HISTORY_MAX_SESSIONS * 2).map(sanitizeHistorySession).filter(Boolean).slice(0, HISTORY_MAX_SESSIONS);
+  return {
+    v: 1,
+    projectRoot: typeof rec.projectRoot === 'string' ? rec.projectRoot.slice(0, 1024) : null,
+    updatedAt: typeof rec.updatedAt === 'string' && ISO_RE.test(rec.updatedAt) ? rec.updatedAt : null,
+    sessions
+  };
 }
 
 function summarizeLayout(layout) {
@@ -1078,7 +1114,11 @@ function on(channel, fn) {
 }
 
 handle('settings:get', () => loadSettings());
-handle('settings:set', (_e, next) => { saveSettings(validateSettings(next)); return true; });
+handle('settings:set', (_e, next) => {
+  saveSettings(validateSettings(next));
+  cliStatusCache = { at: 0, value: null }; // CLI commands may have changed
+  return true;
+});
 
 handle('aor:get-claude-md', () => {
   for (const p of [CLAUDE_MD_PATH, BUNDLED_CLAUDE_MD_PATH]) {
@@ -1221,8 +1261,7 @@ function historyFileFor(realRoot) {
   return path.join(HISTORY_DIR, `${hash}.json`);
 }
 function readHistory(file) {
-  const rec = readJsonFile(file);
-  return rec && Array.isArray(rec.sessions) ? rec : null;
+  return sanitizeHistoryRecord(readJsonFile(file));
 }
 function writeHistory(file, record) {
   try {

@@ -487,12 +487,21 @@
     }
     return { tabs };
   }
+  // 예약된 저장은 예약한 순간의 프로젝트에 묶는다 — 그 사이 다른 폴더를 열어도 섞이지 않게.
+  let historyPendingRoot = null;
+  function flushHistorySave() {
+    if (!historyPendingRoot) return;
+    clearTimeout(historyTimer);
+    const root = historyPendingRoot;
+    historyPendingRoot = null;
+    api.saveHistory(root, buildLayout()).catch(() => {});
+  }
   function scheduleHistorySave() {
     if (restoring || !state.folder.rootPath) return;
+    if (historyPendingRoot && historyPendingRoot !== state.folder.rootPath) flushHistorySave();
     clearTimeout(historyTimer);
-    historyTimer = setTimeout(() => {
-      api.saveHistory(state.folder.rootPath, buildLayout()).catch(() => {});
-    }, 800);
+    historyPendingRoot = state.folder.rootPath;
+    historyTimer = setTimeout(flushHistorySave, 800);
   }
   function formatWhen(iso) {
     const d = new Date(iso);
@@ -502,10 +511,13 @@
   }
   async function checkResume() {
     resumeBox.classList.add('hidden');
-    if (!state.folder.rootPath) return;
+    const root = state.folder.rootPath;
+    if (!root) return;
     let prev = null;
-    try { prev = await api.getHistory(state.folder.rootPath); } catch { prev = null; }
-    if (!prev || !prev.layout) return;
+    try { prev = await api.getHistory(root); } catch { prev = null; }
+    // 응답이 오는 사이 다른 프로젝트를 열었으면 버린다.
+    if (root !== state.folder.rootPath) return;
+    if (!prev || !prev.layout || !Array.isArray(prev.layout.tabs)) return;
     const paneCount = prev.layout.tabs.reduce((n, t) => n + t.panes.length, 0);
     const parts = [
       `${formatWhen(prev.startedAt)} 세션`,
@@ -516,6 +528,7 @@
     if (prev.lastTask) parts.push(`마지막 ${prev.lastTask}`);
     resumeText.textContent = parts.join(' · ');
     resumeBox.dataset.layout = JSON.stringify(prev.layout);
+    resumeBox.dataset.root = root;
     resumeBox.classList.remove('hidden');
   }
   function whenPtyReady(leaf, timeoutMs = 8000) {
@@ -532,8 +545,10 @@
   async function resumeSession() {
     let layout;
     try { layout = JSON.parse(resumeBox.dataset.layout || 'null'); } catch { layout = null; }
+    const root = resumeBox.dataset.root;
     resumeBox.classList.add('hidden');
-    if (!layout || !Array.isArray(layout.tabs)) return;
+    // 제안이 뜬 뒤 다른 프로젝트로 바꿨다면 복원하지 않는다.
+    if (!layout || !Array.isArray(layout.tabs) || root !== state.folder.rootPath) return;
     // 방금 뜬 빈 탭 하나만 있으면 복원 후 닫는다 (빈 셸이 쌓이지 않게).
     const pristine = state.tabs.length === 1 ? state.tabs[0] : null;
     const pristineLeaf = pristine ? firstLeafIn(state.panes.get(pristine.rootPaneId)) : null;
@@ -554,6 +569,7 @@
       restoring = false;
     }
     for (const [leaf, cli] of launches) {
+      if (root !== state.folder.rootPath) break; // 복원 도중 프로젝트가 바뀜
       if (!cli || state.cliStatus[cli] === false) continue;
       if (!(await whenPtyReady(leaf))) continue;
       const cmd = cliCommandLine(cli, null, RESUME_ARGS[cli] || []);
@@ -562,15 +578,15 @@
       leaf.cli = cli;
     }
     // 복원했으니 이전 세션의 배치 정보는 더 필요 없다 — 지금 세션이 새로 기록된다.
-    api.dismissHistory(state.folder.rootPath).catch(() => {});
-    scheduleHistorySave();
+    api.dismissHistory(root).catch(() => {});
+    if (root === state.folder.rootPath) scheduleHistorySave();
     setFlowStatus('이전 세션을 복원했습니다 — 각 CLI가 마지막 대화를 이어갑니다', 'ok');
   }
   function bindResume() {
     $('#resume-go').onclick = () => resumeSession();
     $('#resume-dismiss').onclick = () => {
       resumeBox.classList.add('hidden');
-      if (state.folder.rootPath) api.dismissHistory(state.folder.rootPath).catch(() => {});
+      if (resumeBox.dataset.root) api.dismissHistory(resumeBox.dataset.root).catch(() => {});
     };
   }
 
@@ -812,6 +828,7 @@
     const changed = state.folder.rootPath !== rootPath;
     if (changed) {
       state.aiopsAutoSetupDone.clear();
+      flushHistorySave(); // 이전 프로젝트 몫의 예약 저장은 이전 프로젝트에 기록
     }
     state.folder.rootPath = rootPath;
     // task-013: 새 프로젝트를 열면 이 프로젝트의 이전 세션을 이어할지 묻는다.
