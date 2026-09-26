@@ -17,6 +17,7 @@
   const annotateBtn = $('#br-annotate');
   const includeErrors = $('#br-include-errors');
   const modal = $('#modal');
+  const MAX_PINS = 20; // main-browser.js MAX_PINS와 같게 유지
 
   const st = {
     active: false,     // browser mode on (layout)
@@ -24,6 +25,7 @@
     device: 'desktop',
     url: '',
     pins: [],          // [{ n, selector, tag, text, rect, viewport }]
+    full: false,       // 주석 상한에 닿음
     newErrors: 0,
     annotating: false,
     pickToken: 0,
@@ -98,12 +100,19 @@
   // ---- 주석 ----
   function renderPins() {
     pinsEl.innerHTML = '';
+    if (st.pins.length < MAX_PINS) st.full = false; // 보내거나 지워서 자리가 나면 안내를 거둔다
     for (const p of st.pins) {
       const el = document.createElement('span');
       el.className = 'br-pin';
       el.textContent = `${p.n} ${p.tag}${p.text ? ` "${p.text}"` : ''}`;
       el.title = p.selector;
       pinsEl.appendChild(el);
+    }
+    if (st.full && st.pins.length) {
+      const hint = document.createElement('span');
+      hint.className = 'muted small';
+      hint.textContent = `주석은 한 번에 ${MAX_PINS}개까지 — 먼저 보내거나 지워 주세요`;
+      pinsEl.appendChild(hint);
     }
     if (!st.pins.length) {
       const hint = document.createElement('span');
@@ -115,15 +124,18 @@
   async function annotateLoop() {
     const token = ++st.pickToken;
     while (st.annotating && token === st.pickToken) {
+      if (st.pins.length >= MAX_PINS) { st.full = true; stopAnnotating(); return; }
       const pick = await api.browserPick();
       if (token !== st.pickToken) return;     // 페이지 이동·지우기 등으로 새 루프가 시작됨
       // 끝난 이유를 구분한다 (review r2 M4): 사용자가 Esc를 누른 경우에만 주석 모드를 끈다.
       if (!pick || pick.cancelled === 'esc') { stopAnnotating(); return; }
+      if (pick.cancelled === 'full') { st.full = true; stopAnnotating(); return; } // main이 센 상한 (review r11)
       if (pick.cancelled === 'cancel') return; // 앱이 취소함 (끄기/지우기가 이미 처리)
       if (pick.cancelled === 'gone') {         // 페이지가 바뀌는 중 — 잠시 뒤 새 페이지에 다시 건다
         await new Promise((r) => setTimeout(r, 500));
         continue;
       }
+      if (st.pins.length >= MAX_PINS) { st.full = true; stopAnnotating(); return; }
       st.pins.push(pick);
       renderPins();
     }
@@ -224,7 +236,7 @@
       renderPins();
       return { blocked: '페이지가 바뀌어 주석이 사라졌습니다 — 새 페이지에서 다시 찍어 주세요' };
     }
-    const pins = st.pins.slice();
+    const pins = st.pins.slice(0, MAX_PINS);
     const lines = ['[브라우저 컨텍스트 — CARROTCAP]'];
     lines.push(`URL: ${oneLine(ctx.url, 2048)}${ctx.title ? ` (${oneLine(ctx.title, 200)})` : ''}`);
     lines.push(`보기: ${ctx.device === 'mobile' ? '모바일 390×844 (터치·모바일 UA)' : 'PC'}`);

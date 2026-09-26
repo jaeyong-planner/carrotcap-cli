@@ -17,6 +17,7 @@ const MAX_ERRORS       = 100;
 const MAX_ERRORS_SENT  = 8;
 const MAX_ERROR_LEN    = 600;
 const MAX_URL_LEN      = 2048;
+const MAX_PINS         = 20;                  // per document; a page must not flood the UI/context (review r11)
 const SHOT_KEEP        = 20;
 const SHOT_MAX_AGE_MS  = 3 * 24 * 60 * 60 * 1000;
 const MOBILE = { width: 390, height: 844, deviceScaleFactor: 3 };
@@ -87,8 +88,9 @@ const PICK_SCRIPT = `(() => new Promise((resolve) => {
     window.__ccPickCancel = null;
     resolve(value);
   };
-  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); done({ cancelled: 'esc' }); } };
+  const onKey = (e) => { if (e.isTrusted && e.key === 'Escape') { e.preventDefault(); done({ cancelled: 'esc' }); } };
   glass.addEventListener('mousemove', (e) => {
+    if (!e.isTrusted) return;
     const el = under(e.clientX, e.clientY);
     if (!el) return;
     const r = el.getBoundingClientRect();
@@ -96,6 +98,7 @@ const PICK_SCRIPT = `(() => new Promise((resolve) => {
   });
   glass.addEventListener('click', (e) => {
     e.preventDefault(); e.stopPropagation();
+    if (!e.isTrusted) return; // page-made clicks never create pins (review r11)
     const el = under(e.clientX, e.clientY);
     if (!el) return done({ cancelled: 'cancel' });
     const r = el.getBoundingClientRect();
@@ -128,7 +131,7 @@ function clearSomeScript(ns) {
     return true; })()`;
 }
 
-const PICK_CANCEL_REASONS = new Set(['esc', 'cancel', 'gone']);
+const PICK_CANCEL_REASONS = new Set(['esc', 'cancel', 'gone', 'full']);
 function sanitizePick(v) {
   if (!v || typeof v !== 'object') return null;
   if (typeof v.cancelled === 'string') return { cancelled: PICK_CANCEL_REASONS.has(v.cancelled) ? v.cancelled : 'cancel' };
@@ -414,11 +417,24 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
     await applyDevice(mode);
     return device;
   });
+  // Live pins on the current document, counted here so the cap holds whatever the renderer does.
+  let pinCount = 0;
+  let pinGen = -1;
+  const syncPinGen = () => { if (pinGen !== pageGen) { pinGen = pageGen; pinCount = 0; } };
   handle('browser:pick', async () => {
     if (!view) return { cancelled: 'gone' };
+    syncPinGen();
+    if (pinCount >= MAX_PINS) return { cancelled: 'full' };
+    const gen = pageGen;
     try {
       const v = await view.webContents.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD, [{ code: PICK_SCRIPT }], true);
-      return sanitizePick(v) || { cancelled: 'gone' };
+      const pick = sanitizePick(v) || { cancelled: 'gone' };
+      if (!pick.cancelled) {
+        syncPinGen();
+        if (gen !== pageGen) return { cancelled: 'gone' }; // made on a document that is gone
+        pinCount++;
+      }
+      return pick;
     } catch { return { cancelled: 'gone' }; } // page navigated / context destroyed
   });
   handle('browser:pick-cancel', async () => {
@@ -430,8 +446,10 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
     if (!view) return false;
     // Removing specific pins is only meaningful on the document they were made on.
     if (Array.isArray(only) && gen !== pageGen) return false;
-    const ns = Array.isArray(only) ? only.filter((n) => Number.isInteger(n) && n >= 1 && n <= 999).slice(0, 100) : null;
+    const ns = Array.isArray(only) ? [...new Set(only.filter((n) => Number.isInteger(n) && n >= 1 && n <= 999))].slice(0, MAX_PINS) : null;
     const code = ns ? clearSomeScript(ns) : CLEAR_SCRIPT;
+    syncPinGen();
+    pinCount = ns ? Math.max(0, pinCount - ns.length) : 0;
     try { await view.webContents.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD, [{ code }]); } catch { /* page gone */ }
     return true;
   });
@@ -499,4 +517,4 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
   return { destroyView, redeemContextToken };
 }
 
-module.exports = { setupBrowser, normalizeUrl, sanitizePick, clampRect, cleanText };
+module.exports = { MAX_PINS, setupBrowser, normalizeUrl, sanitizePick, clampRect, cleanText };

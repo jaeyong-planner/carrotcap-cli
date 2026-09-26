@@ -201,6 +201,36 @@ const server = http.createServer((req, res) => {
   check('pins cleared after reloading the same URL', await waitFor(async () => (await ev(`document.querySelectorAll('#br-pins .br-pin').length`)) === 0));
   check('annotation mode still on after reload', await ev(`document.querySelector('#br-annotate').classList.contains('active')`));
 
+  console.log('-- page-made clicks never create pins; pins are capped (review r11)');
+  await sleep(800);
+  await view2.ev(`(async () => {
+    for (let i = 0; i < 40; i++) {
+      for (const d of document.querySelectorAll('div')) if (d.style.cursor === 'crosshair') d.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: ${r2.x}, clientY: ${r2.y} }));
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    return true;
+  })()`);
+  await sleep(500);
+  check('synthetic clicks from the page add no pin', (await ev(`document.querySelectorAll('#br-pins .br-pin').length`)) === 0
+    && (await view2.ev(`document.querySelectorAll('[data-cc-pin]').length`)) === 0);
+  let made = 0;
+  for (let i = 0; i < 21; i++) {
+    for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
+      await view2.send('Input.dispatchMouseEvent', { type, x: r2.x, y: r2.y, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1 });
+    }
+    const want = Math.min(i + 1, 20);
+    await waitFor(async () => (await ev(`document.querySelectorAll('#br-pins .br-pin').length`)) >= want, { timeoutMs: 3000 });
+    made = await ev(`document.querySelectorAll('#br-pins .br-pin').length`);
+  }
+  await sleep(500);
+  check('pins stop at 20', made === 20 && (await view2.ev(`document.querySelectorAll('[data-cc-pin]').length`)) === 20, String(made));
+  check('annotation mode turns off at the cap', !(await ev(`document.querySelector('#br-annotate').classList.contains('active')`)));
+  await ev(`document.querySelector('#br-clear').click(), true`);
+  await waitFor(async () => (await ev(`document.querySelectorAll('#br-pins .br-pin').length`)) === 0);
+  check('clear removes every pin from the page', await waitFor(async () => (await view2.ev(`document.querySelectorAll('[data-cc-pin]').length`)) === 0));
+  await ev(`document.querySelector('#br-annotate').click(), true`);
+  await sleep(500);
+
   console.log('-- context token is refused after the page changes (review r6)');
   const agentPty = await ev(`document.querySelector('.tab-page.active .pane.active').dataset.ptyId`);
   await for_pin();
