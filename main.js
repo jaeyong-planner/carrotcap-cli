@@ -1002,6 +1002,21 @@ function spawnSession(rawPayload) {
       // 폴백: 진짜 PTY가 아니라 child_process pipe. 인터랙티브 라인 에디터(prompt/history)는 약하지만,
       // 명령 실행+출력은 가능. 키 입력은 그대로 stdin으로 보내고, 사용자에게 echo가 안 보일 수 있음을 경고.
       const child = spawn(file, args, { cwd, env, windowsHide: false, stdio: ['pipe', 'pipe', 'pipe'] });
+      // An unhandled 'error' (spawn failure, EAGAIN, EPIPE on stdin) would crash the main
+      // process. Listen right away; the session reports it as a normal exit.
+      let exitCb = null;
+      let exited = false;
+      const finish = (exitCode) => {
+        if (exited) return;
+        exited = true;
+        if (exitCb) exitCb({ exitCode });
+      };
+      child.on('error', (err) => {
+        console.warn('[carrotcap] fallback shell error:', err && err.message);
+        finish(-1);
+      });
+      if (child.stdin) child.stdin.on('error', () => { /* EPIPE after exit — ignore */ });
+      child.on('exit', (code) => finish(code));
       proc = {
         _child: child,
         write: (data) => {
@@ -1017,7 +1032,8 @@ function spawnSession(rawPayload) {
           child.stderr.on('data', (b) => cb(b.toString()));
         },
         onExit: (cb) => {
-          child.on('exit', (code) => cb({ exitCode: code }));
+          exitCb = cb;
+          if (exited) cb({ exitCode: -1 }); // failed before the listener was attached
         }
       };
     }
@@ -1282,8 +1298,8 @@ on('pty:kill', (_e, { id }) => {
   const s = sessions.get(id);
   if (!s) return;
   // Keep the session if kill throws so the pane can retry; onExit removes it.
-  disposeReadyGate(s);
-  try { s.proc.kill(); sessions.delete(id); }
+  // Dispose the ready gate only once the kill succeeded — a live session must keep it.
+  try { s.proc.kill(); disposeReadyGate(s); sessions.delete(id); }
   catch (err) { console.warn(`[carrotcap] pty kill fail ${id}:`, err && err.message); }
 });
 
