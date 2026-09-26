@@ -253,7 +253,7 @@
       api.browserClearPins(sent, ctx.gen);
       renderPins();
     };
-    return { text: block, commit, context: true };
+    return { text: block, commit, context: true, token: ctx.token };
   }
 
   // ---- 이벤트 ----

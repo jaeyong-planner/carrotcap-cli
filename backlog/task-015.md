@@ -24,7 +24,7 @@
 ## 구현 결과
 - `main-browser.js`(BrowserView·격리 세션·CDP 모바일 에뮬레이션·격리 월드 주석 오버레이·콘솔/네트워크/크래시 에러·캡처 저장/정리), `renderer-browser.js`(툴바·레이아웃 3:2·주석 루프·콘솔 패널·`decorate()`), 입력창 전송 경로에 연결
 - 수정한 문제: 처음 연 뷰에서 CDP 명령이 멈춰 `browser:open`이 응답하지 않음 → 먼저 이동, PC는 debugger 미사용, 모든 CDP·로드에 타임아웃. 404 등 네트워크 실패는 console-message로 오지 않음 → `webRequest`로 수집
-- `npm run test:browser` 24/24 (2회 연속): 레이아웃, javascript: 거부, 페이지에서 앱 브리지 안 보임, 에러 수집·패널, 모바일 innerWidth 390·UA·터치, 주석 핀·selector·페이지 핸들러 미실행, 채팅에 컨텍스트·캡처 파일·자체 .gitignore, 보낸 뒤 핀/새 에러 정리, 닫을 때 뷰 제거
+- `npm run test:browser` 24/24 (2회 연속): 레이아웃, javascript: 거부, 페이지에서 앱 브리지 안 보임, 에러 수집·패널, 모바일 innerWidth 390·UA·터치, 주석 핀·selector·페이지 핸들러 미실행, 채팅에 컨텍스트·캡처 파일(앱 데이터 폴더), 보낸 뒤 핀/새 에러 정리, 닫을 때 뷰 제거
 - 미검증: 모달이 열릴 때 뷰 숨김(코드 경로만), 실제 Claude Code가 캡처 이미지를 읽는 동작
 
 ## Codex 리뷰 경과

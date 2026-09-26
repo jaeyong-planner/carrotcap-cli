@@ -158,6 +158,7 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
   let sessionReady = false;
   let openGen = 0;          // bumped by every open/close; late async steps check it (review r2 M5)
   let pageGen = 0;          // bumped by every main-frame document change; context/commit must match (review r3)
+  let contextTicket = null; // { token, gen, view } of the last context handed out — one use (review r6)
   let view = null;
   let device = 'desktop';
   let errors = [];          // { at, level, message, source, line }
@@ -217,11 +218,12 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
       ses.webRequest.onBeforeRequest((d, cb) => cb({ cancel: /^file:/i.test(d.url) }));
       // Failed requests (404 script, 500 API, DNS...) never reach console-message — record
       // them from the network layer. One listener per event per session; this session is ours.
+      const ours = (d) => !!view && d.webContentsId === view.webContents.id; // not a closed/older view
       ses.webRequest.onCompleted((d) => {
-        if (d.statusCode >= 400) addError('network', `${d.statusCode} ${d.method} ${d.url}`, d.resourceType || '', 0);
+        if (ours(d) && d.statusCode >= 400) addError('network', `${d.statusCode} ${d.method} ${d.url}`, d.resourceType || '', 0);
       });
       ses.webRequest.onErrorOccurred((d) => {
-        if (d.error !== 'net::ERR_ABORTED' && d.error !== 'net::ERR_BLOCKED_BY_CLIENT') {
+        if (ours(d) && d.error !== 'net::ERR_ABORTED' && d.error !== 'net::ERR_BLOCKED_BY_CLIENT') {
           addError('network', `${d.error} ${d.method} ${d.url}`, d.resourceType || '', 0);
         }
       });
@@ -443,6 +445,8 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
       out.errorsSkipped = fresh.length - out.errors.length;
       out.errorMark = fresh.length ? fresh[fresh.length - 1].seq : reportedSeq; // pass back to browser:commit
     }
+    out.token = require('crypto').randomBytes(16).toString('hex');
+    contextTicket = { token: out.token, gen, view: capturedView };
     return out;
   });
   // Called only after the paste AND the Enter were acknowledged, i.e. these errors were
@@ -456,7 +460,15 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
     return true;
   });
 
-  return { destroyView };
+  // Called by main.js inside the same handler that writes the paste (no await in
+  // between), so "the page is still the one the context describes" holds at write time.
+  function redeemContextToken(token) {
+    const t = contextTicket;
+    contextTicket = null; // one use, success or not
+    return !!t && typeof token === 'string' && token === t.token && t.view === view && t.gen === pageGen;
+  }
+
+  return { destroyView, redeemContextToken };
 }
 
 module.exports = { setupBrowser, normalizeUrl, sanitizePick, clampRect, cleanText };

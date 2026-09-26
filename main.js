@@ -1325,6 +1325,8 @@ handle('pty:paste-guarded', (_e, payload) => {
   if (!isValidPtyId(p.id) || typeof p.text !== 'string') return false;
   const s = sessions.get(p.id);
   if (!s || !s.ready || !s.bracketed) return false;
+  // The browser page must still be the document this context describes (one-time token).
+  if (!browserMode.redeemContextToken(p.token)) return false;
   const body = p.text.replace(/\x1b/g, '').replace(/\r?\n/g, '\r');
   return writeToSession(p.id, '\x1b[200~' + body + '\x1b[201~');
 });
