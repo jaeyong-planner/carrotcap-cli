@@ -29,15 +29,19 @@ const input = (command, response = {}, extra = {}) => ({
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-hook-'));
 const fakeEngine = path.join(tmpDir, 'engine.exe');
 fs.writeFileSync(fakeEngine, '');
+const rawLog = path.join(tmpDir, '2026-09-26T00-00-00-000Z-abcdef.log');
+fs.writeFileSync(rawLog, big);
 const engineCalls = [];
-const ENGINE_REPLY = [
+const reply = (raw) => [
   '[Layer 1] Summary', 'command: npm test', 'headline: Summary: 300 passed, 1 failed', '',
-  '[Layer 3] Evidence', String.raw`raw: C:\x\raw\2026-09-26T00-00-00-000Z-abcdef.log`, '',
+  '[Layer 3] Evidence', `raw: ${raw}`, '',
 ].join('\n');
 const fakeRun = (bin, args) => {
   const file = args[args.indexOf('--input') + 1];
-  engineCalls.push({ bin, args, file, input: fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null });
-  return { status: 0, stdout: ENGINE_REPLY };
+  let mode = null;
+  try { mode = fs.statSync(file).mode & 0o777; } catch { /* gone */ }
+  engineCalls.push({ bin, args, file, mode, input: fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null });
+  return { status: 0, stdout: reply(rawLog) };
 };
 const fake = { engine: fakeEngine, run: fakeRun };
 
@@ -73,6 +77,10 @@ check('CARROTCAP_AOR_COMPRESS=0 turns it off', hook.decide(input('npm test'), { 
 check('missing engine → untouched (fail-open)', hook.decide(input('npm test'), {}, { engine: path.join(tmpDir, 'no-such-engine.exe'), run: fakeRun }) === null);
 check('engine error → untouched', hook.decide(input('npm test'), {}, { engine: fakeEngine, run: () => ({ status: 1, stdout: '' }) }) === null);
 check('odd engine output → untouched', hook.decide(input('npm test'), {}, { engine: fakeEngine, run: () => ({ status: 0, stdout: 'hello' }) }) === null);
+check('summary without a raw: line → untouched (review r2)', hook.decide(input('npm test'), {}, { engine: fakeEngine, run: () => ({ status: 0, stdout: '[Layer 1] Summary\nheadline: x\n' }) }) === null);
+check('raw: log that does not exist → untouched (review r2)', hook.decide(input('npm test'), {}, { engine: fakeEngine, run: () => ({ status: 0, stdout: reply(path.join(tmpDir, 'missing.log')) }) }) === null);
+check('raw: pointing at a directory → untouched (review r2)', hook.decide(input('npm test'), {}, { engine: fakeEngine, run: () => ({ status: 0, stdout: reply(tmpDir) }) }) === null);
+if (process.platform !== 'win32') check('temp input file is owner-only (0600)', engineCalls[0].mode === 0o600, String(engineCalls[0].mode));
 check('engine throws → untouched', hook.decide(input('npm test'), {}, { engine: fakeEngine, run: () => { throw new Error('x'); } }) === null);
 const leftovers = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith(`carrotcap-aor-${process.pid}-`));
 check('no temp input files left behind', leftovers.length === 0, leftovers.join(','));
