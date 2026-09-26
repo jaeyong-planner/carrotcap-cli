@@ -173,7 +173,10 @@ function migrateSettings(settings) {
   }
   if (version < 3) {
     const aor = (settings.aor && typeof settings.aor === 'object' && !Array.isArray(settings.aor)) ? settings.aor : {};
-    next.aor = { ...aor, autoStart: true };
+    // v1 files come from builds where "off" was merely the default → turn on.
+    // v2 files may hold a choice the user made in v0.2 → keep a real boolean.
+    const keep = version === 2 && typeof aor.autoStart === 'boolean';
+    next.aor = { ...aor, autoStart: keep ? aor.autoStart : true };
   }
   return { settings: next, changed: true };
 }
@@ -293,6 +296,8 @@ const PTY_MODES = new Set(['plain', 'aor', 'aiops', 'cli']);
 const PTY_ID_RE = /^pty_\d{1,16}_[a-z0-9]{1,16}$/;
 const MAX_PTY_WRITE_BYTES = 1024 * 1024;  // 1MB (UTF-8) per write / clipboard transfer
 const MAX_CLAUDE_MD_BYTES = 512 * 1024;   // 512KB
+const PTY_READY_QUIET_MS  = 700;          // shell printed its prompt and went quiet
+const PTY_READY_MAX_MS    = 10000;        // give up waiting (silent shells)
 
 function clampInt(v, min, max, fallback) {
   if (typeof v !== 'number' || !Number.isFinite(v)) return fallback;
@@ -777,11 +782,18 @@ function ensureAiopsProjectStructure(projectRoot) {
   // task-009: setup documents live in templates/aiops/ (editable, shipped via build.files);
   // media/reviewer contracts come from agents/ (task-005, task-012). writeIfMissing (inside
   // copyTemplateIfMissing) preserves any existing project file.
-  copyTemplateIfMissing(tmpl.supervisor, path.join(agentsDir, 'supervisor.md'), realRoot);
-  copyTemplateIfMissing(tmpl.media, path.join(agentsDir, 'media.md'), realRoot);
-  copyTemplateIfMissing(tmpl.reviewer, path.join(agentsDir, 'reviewer.md'), realRoot);
-  copyTemplateIfMissing(tmpl.task001, path.join(backlogDir, 'task-001.md'), realRoot);
-  copyTemplateIfMissing(tmpl.workflow, path.join(backlogDir, 'workflow.md'), realRoot);
+  // A write-protected project must not break pane creation (AIOps is on by default):
+  // a failed copy ends setup with null like every other refusal path.
+  try {
+    copyTemplateIfMissing(tmpl.supervisor, path.join(agentsDir, 'supervisor.md'), realRoot);
+    copyTemplateIfMissing(tmpl.media, path.join(agentsDir, 'media.md'), realRoot);
+    copyTemplateIfMissing(tmpl.reviewer, path.join(agentsDir, 'reviewer.md'), realRoot);
+    copyTemplateIfMissing(tmpl.task001, path.join(backlogDir, 'task-001.md'), realRoot);
+    copyTemplateIfMissing(tmpl.workflow, path.join(backlogDir, 'workflow.md'), realRoot);
+  } catch (e) {
+    console.warn('[carrotcap] aiops template deployment failed:', e.message);
+    return null;
+  }
 
   // task-005: deploy the helper PowerShell scripts so the project can run the
   // media/reviewer cycle with the same auto-loading and output shaping the
@@ -995,15 +1007,38 @@ function spawnSession(rawPayload) {
   }
 
   const id = `pty_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  sessions.set(id, { proc, kind });
+  // Ready gate: PowerShell/PSReadLine throws away input that arrives while it is still
+  // starting (measured: anything sent in the first ~2s of a new pane was lost). Input is
+  // queued until the shell has printed something and then gone quiet, then flushed in order.
+  const session = { proc, kind, ready: false, queue: [], queuedBytes: 0, quietTimer: null, maxTimer: null };
+  sessions.set(id, session);
+  const markReady = () => {
+    if (session.ready) return;
+    session.ready = true;
+    clearTimeout(session.quietTimer);
+    clearTimeout(session.maxTimer);
+    const pending = session.queue;
+    session.queue = [];
+    session.queuedBytes = 0;
+    for (const d of pending) {
+      try { proc.write(d); } catch (err) { console.warn('[carrotcap] pty write fail', err && err.message); }
+    }
+  };
+  session.maxTimer = setTimeout(markReady, PTY_READY_MAX_MS);
 
   const wireData = (chunk) => {
+    if (!session.ready) {
+      clearTimeout(session.quietTimer);
+      session.quietTimer = setTimeout(markReady, PTY_READY_QUIET_MS);
+    }
     if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.send('pty:data', { id, data: typeof chunk === 'string' ? chunk : chunk.toString() });
   };
   // 폴백 모드일 땐 spawnSession에서 직접 만든 proc도 동일한 onData/onExit 인터페이스를 갖도록 위에서 셋업했음.
   proc.onData(wireData);
   proc.onExit(({ exitCode }) => {
+    clearTimeout(session.quietTimer);
+    clearTimeout(session.maxTimer);
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('pty:exit', { id, code: exitCode });
     }
@@ -1206,6 +1241,12 @@ handle('pty:spawn', (_e, payload) => spawnSession(payload));
 on('pty:write', (_e, { id, data }) => {
   const s = sessions.get(id);
   if (!s || typeof data !== 'string' || !isWithinByteCap(data, MAX_PTY_WRITE_BYTES)) return;
+  if (!s.ready) {
+    // Held until the shell is ready (see spawnSession). Capped like a single write.
+    const size = Buffer.byteLength(data, 'utf8');
+    if (s.queuedBytes + size <= MAX_PTY_WRITE_BYTES) { s.queue.push(data); s.queuedBytes += size; }
+    return;
+  }
   try {
     s.proc.write(data);
   } catch (err) {

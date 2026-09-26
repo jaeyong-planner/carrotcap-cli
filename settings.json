@@ -9,7 +9,7 @@
       "C:\\WINDOWS\\carrotcap"
     ],
     "autoStart": true,
-    "_comment": "engineRoot가 비어 있거나 존재하지 않으면 engineRootCandidates를 순서대로 검사. 모두 실패하면 plain 셸로 폴백하고 헤더에 'AOR-FALLBACK(PLAIN)' 표시. 첫 실행 시에는 사용자가 직접 engineRoot를 채워도 됨."
+    "_comment": "engineRoot가 비어 있거나 존재하지 않으면 engineRootCandidates를 순서대로 검사. 모두 실패하면 경고 없이 일반 셸로 열고(헤더 PLAIN/AIOPS, 사유는 툴팁) 상단 AOR 배지를 숨김. autoStart=AIOps 모드(기본 ON)."
   },
   "cli": {
     "claude": { "command": "claude", "args": [] },

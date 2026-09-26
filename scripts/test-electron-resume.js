@@ -67,14 +67,17 @@ const screen = (app) => app.ev(`[...document.querySelectorAll('.tab-page.active 
   check('resume offer shown', offer.length > 0, offer);
   check('offer says it was not a clean exit', /비정상 종료/.test(offer), offer);
   check('offer shows layout, CLI and last task', /페인 2/.test(offer) && /claude/.test(offer) && /task-042/.test(offer), offer);
-  // The start tab may already be in use: type something there first.
+  // The start tab may already be in use: type something there first (once its shell is up —
+  // the offer can appear before the first pane has a PTY).
+  const startTabText = () => app.ev(`(document.querySelector('.tab-page .xterm-rows') || {}).innerText || ''`);
+  await waitFor(async () => /PS /.test(await startTabText()));
   await app.ev(`document.querySelector('#composer-input').value = 'echo still-alive'; document.querySelector('#composer-send').click(); true`);
-  await sleep(800);
-  const startTabText = () => app.ev(`document.querySelectorAll('.tab-page')[0].querySelector('.xterm-rows').innerText`);
+  await waitFor(async () => /still-alive[\s\S]*still-alive/.test(await startTabText()));
   await app.ev(`(() => { const b = document.querySelector('#resume-go'); b.click(); b.click(); return true; })()`); // double click
   await sleep(4000);
   check('existing start tab is kept (never killed by resume)', (await app.ev(`document.querySelectorAll('.tab').length`)) === 2);
-  check('its shell is still alive', /still-alive/.test(await startTabText()) && !/session ended/.test(await startTabText()));
+  const startText = await startTabText();
+  check('its shell is still alive', /still-alive[\s\S]*still-alive/.test(startText) && !/session ended/.test(startText), JSON.stringify(startText.slice(-200)));
   check('double click restores only once', (await app.ev(`document.querySelectorAll('.pane').length`)) === 3);
   check('restored tab has 2 panes', (await app.ev(`document.querySelectorAll('.tab-page.active .pane').length`)) === 2);
   check('claude pane got its continue command', await waitFor(async () => /'where' '--continue'/.test(await screen(app))));

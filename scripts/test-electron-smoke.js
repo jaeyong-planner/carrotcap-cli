@@ -208,9 +208,20 @@ const PROBE = `(async () => {
   await key('Backspace', 'Backspace', 8);
   await typeText('echo composer-ok');
   await key('Enter', 'Enter', 13, 0, '\r');
-  await sleep(1500);
-  check('Enter sends the text to the active terminal', /composer-ok[\s\S]*composer-ok/.test(await screenText()));
+  // Poll: the shell echo can take a while when the machine is busy.
+  let sent = false;
+  for (let i = 0; i < 40 && !sent; i++) { await sleep(250); sent = /composer-ok[\s\S]*composer-ok/.test(await screenText()); }
+  check('Enter sends the text to the active terminal', sent, sent ? '' : JSON.stringify((await screenText()).slice(-300)));
   check('input box cleared after send', (await ev(`document.querySelector('#composer-input').value`)) === '');
+
+  console.log('-- input right after a new pane opens (ready gate)');
+  // PowerShell drops input typed while it is starting; main queues it until the prompt is up.
+  await key('t', 'KeyT', 84, CTRL | SHIFT);
+  await sleep(100);
+  await ev(`document.querySelector('#composer-input').value = 'echo early-bird'; document.querySelector('#composer-send').click(); true`);
+  let early = false;
+  for (let i = 0; i < 60 && !early; i++) { await sleep(250); early = /early-bird[\s\S]*early-bird/.test(await screenText()); }
+  check('input sent 100ms after opening a tab is not lost', early, early ? '' : JSON.stringify((await screenText()).slice(-200)));
 
   console.log('-- focus recovery (task-010)');
   await ev(`document.querySelector('#new-tab').blur(), document.querySelector('.btn-split').focus(), true`);

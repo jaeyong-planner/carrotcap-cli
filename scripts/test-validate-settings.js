@@ -604,13 +604,18 @@ console.log('-- migrateSettings: settingsVersion must be a real integer (task-01
 
 console.log('-- migrateSettings v3: AIOps on by default, once');
 {
-  // v2 user who never chose (old default false) -> turned on, CLI list untouched
-  const v2 = { settingsVersion: 2, aor: { enabled: true, autoStart: false, engineRoot: 'X' }, cli: { claude: { command: 'claude', args: [] } } };
-  const { settings: s, changed } = migrateSettings(v2);
-  check('v2 -> v3 migrates', changed === true && s.settingsVersion === 3);
-  check('AIOps turned on', s.aor.autoStart === true);
+  // v2 files may hold a real v0.2 choice -> an explicit boolean is kept (review task-014)
+  const v2off = { settingsVersion: 2, aor: { enabled: true, autoStart: false, engineRoot: 'X' }, cli: { claude: { command: 'claude', args: [] } } };
+  const { settings: s2k, changed: c2k } = migrateSettings(v2off);
+  check('v2 -> v3 migrates', c2k === true && s2k.settingsVersion === 3);
+  check('v2 explicit "off" is kept', s2k.aor.autoStart === false);
+  // v2 without a value -> default on
+  const { settings: s } = migrateSettings({ settingsVersion: 2, aor: { enabled: true, engineRoot: 'X' }, cli: { claude: { command: 'claude', args: [] } } });
+  check('v2 without a value -> AIOps on', s.aor.autoStart === true);
   check('other aor fields kept', s.aor.enabled === true && s.aor.engineRoot === 'X');
   check('v2 CLI list untouched (grok not re-added)', Object.keys(s.cli).join() === 'claude');
+  // v1 (pre-v0.2 builds, where off was only the default) -> on
+  check('v1 "off" (old default) -> on', migrateSettings({ aor: { autoStart: false }, cli: {} }).settings.aor.autoStart === true);
   // after v3 the user's own "off" sticks
   const off = { ...s, aor: { ...s.aor, autoStart: false } };
   check('user turning AIOps off later is respected', migrateSettings(off).changed === false);
