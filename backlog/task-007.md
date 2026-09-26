@@ -29,3 +29,8 @@ task-003~005에서 남겨둔 IPC 보안 항목을 닫는다.
 1. `npm test` — 신규 helper 테스트 포함 전부 통과
 2. CDP 스모크: bridge 존재, `require` 미노출, xterm 렌더, PTY 스폰, hostile IPC(비문자열 CLAUDE.md, 600KB, 잘못된 mode/cwd/cols, 잘못된 pty id, window.open) 모두 거부/무해
 3. Codex 리뷰 Critical/Major 0
+
+## 리뷰 반영 (logs/review/task-007_ipc-hardening.md — ⚠️ 조건부 승인, Critical 0 / Major 1 / Minor 4)
+- Major (설치본 CLAUDE.md가 asar 내부) → task-008에서 userData로 이전하여 해결
+- Minor: resize 실패 warn 로그, kill 실패 시 세션 유지, CLAUDE.md 저장 실패 사유 표시(`{ok, error}`), Electron CDP 통합 테스트 `npm run test:smoke` 추가 (16/16 통과)
+- 미검증: subframe 발신 거부(`isTrustedSender`) — CSP `default-src 'none'`로 프레임 자체가 로드되지 않아 재현 불가, 코드 리뷰로 대체

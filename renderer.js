@@ -661,8 +661,8 @@
     $('#modal-close').onclick = () => modal.classList.add('hidden');
     $('#modal-save').onclick = async () => {
       const saved = await api.setClaudeMd(modalText.value);
-      if (!saved) {
-        alert('CLAUDE.md 저장 실패: 512KB 이하의 텍스트만 저장할 수 있습니다.');
+      if (!saved || !saved.ok) {
+        alert(`CLAUDE.md 저장 실패: ${(saved && saved.error) || '알 수 없는 오류'}`);
         return;
       }
       modal.classList.add('hidden');

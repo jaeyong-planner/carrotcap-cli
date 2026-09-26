@@ -1031,13 +1031,15 @@ handle('aor:get-claude-md', () => {
   return '';
 });
 handle('aor:set-claude-md', (_e, content) => {
-  if (!validateClaudeMdContent(content)) return false;
+  if (!validateClaudeMdContent(content)) {
+    return { ok: false, error: '텍스트만, 512KB 이하로 저장할 수 있습니다.' };
+  }
   try {
     fs.writeFileSync(CLAUDE_MD_PATH, content, 'utf8');
-    return true;
+    return { ok: true };
   } catch (err) {
     console.warn('[carrotcap] aor:set-claude-md failed:', err && err.message);
-    return false;
+    return { ok: false, error: `파일 쓰기 실패: ${(err && err.message) || 'unknown'}` };
   }
 });
 
@@ -1101,11 +1103,17 @@ on('pty:write', (_e, { id, data }) => {
 on('pty:resize', (_e, { id, cols, rows }) => {
   const s = sessions.get(id);
   if (!s || !s.proc.resize) return;
-  try { s.proc.resize(clampInt(cols, 2, 1000, 80), clampInt(rows, 1, 500, 24)); } catch {}
+  const c = clampInt(cols, 2, 1000, 80);
+  const r = clampInt(rows, 1, 500, 24);
+  try { s.proc.resize(c, r); }
+  catch (err) { console.warn(`[carrotcap] pty resize fail ${id} ${c}x${r}:`, err && err.message); }
 });
 on('pty:kill', (_e, { id }) => {
   const s = sessions.get(id);
-  if (s) { try { s.proc.kill(); } catch {} sessions.delete(id); }
+  if (!s) return;
+  // Keep the session if kill throws so the pane can retry; onExit removes it.
+  try { s.proc.kill(); sessions.delete(id); }
+  catch (err) { console.warn(`[carrotcap] pty kill fail ${id}:`, err && err.message); }
 });
 
 handle('app:platform', () => process.platform);
