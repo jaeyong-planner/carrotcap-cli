@@ -28,3 +28,15 @@
 ## 테스트
 - `scripts/test-compress-hook.js` 48 (명령 선별, 결과 형태 유지, 실패 줄 보존, fail-open 4종, 프로세스 stdin/stdout)
 - `test:aor` 15 (설정 파일, 환경변수, 래퍼 인자, 서브커맨드 제외, 사용자 --settings 우선, CLI 버튼 1회, 설정 OFF)
+
+## Codex 리뷰 경과 (task-016·017 합동)
+| 회차 | 판정 | 핵심 |
+|---|---|---|
+| r1 | ⚠️ Major 4 | macOS에서 PowerShell 엔진 실행 시도 → Windows 전용, Node importer 캐시 절감 잔존, 훅 설정 파일 재검증·임시 파일, `--settings=`·옵션 뒤 서브커맨드 |
+| r2 | ⚠️ Major 1 | raw 로그 없이 요약만 오면 원본 유실 → `raw:` 파일 확인, 임시 파일 0600 |
+| r3 | ⚠️ Major 1 | 존재만 하는 raw 파일 신뢰 → 엔진 raw 폴더 직속 + sha256 일치할 때만 |
+| r4 | ⚠️ Major 1 | PostToolUse 전환 때 watch 필터 누락 → 복구(`--watch`·`-w`·`--looponfail`·`:watch` 등), 대시보드 전후 합계 |
+| r5 | ✅ 승인 | 신규 이슈 없음 |
+
+## 최종 테스트
+- unit 212 · hook 67 · aor 22(실제 엔진·가짜 claude) · smoke 50 · resume 27 · browser 64
