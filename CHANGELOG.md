@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.2 — 2026-09-28
+
+### ⚙ 설정 패널 · 다크/화이트 테마 (task-026)
+- 좌측 상단 ⚙ 하나로: 화면 테마(다크 / 화이트 / 시스템), 터미널 글꼴 크기(8~32), AOR·AIOps 모드, 브라우저·입력창 보기, AOR 규칙(CLAUDE.md) 편집, 🔑 API 키
+- 화이트 테마: 흰 배경용 색 토큰(글자 대비 WCAG AA 4.5:1 이상 실측)과 흰 배경용 터미널 팔레트 — CLI의 흰/밝은 글자는 읽을 수 있는 회색으로, 굵은 글씨가 옅어지지 않게, 프로그램이 고른 색도 대비 보정
+- 바꾸면 열린 터미널에 바로 적용·저장(`ui.theme`·`ui.fontSize`), 시스템은 Windows 설정 변경도 바로 따라감
+
+### System One 판단 — CLM-8B 우선 · Jev 대체 (task-024·025)
+- SKILLS에 Jev(`typesafe@typesafe-ai`, 별도 마켓·외부 제작) 추가 — 마켓 추가 → 내용 확인 → 동의 → 설치
+- QUICK CLI `JEV`(claude + Jev 스킬), AI DEV FLOW `CLM`(CLM 서버가 켜져 있으면 CLM, 없으면 Jev)
+- `scripts/system-one.js`: 파일을 통째로 읽기 전에 분류·필터·순위·검증을 한 번에 묻는 도구. CLM 서버에 연결이 안 될 때만 Jev로 대체, 서버 응답은 필드별로만 복사(키·본문이 되돌아와도 출력·기록 안 됨), Jev 버전 고정
+- CLAUDE.md §8 "System One 우선 판단" 규칙 — SETUP이 프로젝트에 규칙·`system-one.js`·`setup-clm.sh` 복사
+- API 키 파일 `%USERPROFILE%\.carrotcap\keys.env`(⚙ → 🔑로 메모장 열기) — 저장하면 새 터미널부터 적용, 앱 재시작 불필요
+- CLM 서버: 16GB 이상 GPU의 Linux/WSL에서 `bash scripts/setup-clm.sh install` → `serve`, 주소는 settings.json `systemOne.clmUrl`
+
 ## 0.2.1 — 2026-09-27
 
 ### 터미널 UI 테마 (task-020)

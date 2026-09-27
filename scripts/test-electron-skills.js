@@ -356,6 +356,13 @@ put('skills/typesafe-ai/SKILL.md', '# Build with TypeSafe');
     check('after "마켓 추가" the local copy is inspected (skill 1, v0.5.7)', await waitFor(async () => /스킬 1/.test(await inspectOf('typesafe')) && /v0\.5\.7/.test(await inspectOf('typesafe')), { timeoutMs: 15000 }), await inspectOf('typesafe'));
     check('marketplace added with the fixed argv, project scope, in the project', calls().slice(beforeMk).some((l) => l.includes(fs.realpathSync(project)) && / plugin marketplace add typesafe-ai\/skills --scope project$/.test(l)), JSON.stringify(calls().slice(beforeMk)));
     check('the tick survives the reload', await ev(`document.querySelector('#skills-list input[value="typesafe"]').checked`));
+    // A packaged build asks with a real native dialog (the E2E answer file is dev-tree only),
+    // so the third-party install itself is exercised in the dev tree.
+    if (process.env.CC_APP_EXE) {
+      console.log('  (packaged: the Jev install needs the native consent dialog — covered by the dev-tree run)');
+      await ev(`document.querySelector('#skills-skip').click(), true`);
+      check('cancel closes the window, nothing installed, claude not started', await waitFor(async () => !(await modalOpen()), { timeoutMs: 5000 }) && !calls().some((l) => /plugin install typesafe@/.test(l)) && jevCalls() === 0);
+    } else {
     await ev(`document.querySelector('#skills-third-ok').click(), true`);
     const nAskJ = asked().length;
     await ev(`document.querySelector('#skills-install').click(), true`);
@@ -374,6 +381,7 @@ put('skills/typesafe-ai/SKILL.md', '# Build with TypeSafe');
     await sleep(1000);
     await ev(`document.querySelector('.btn-cli[data-skill="jev"]').click(), true`);
     check('no window; claude started with the Jev skill in the active pane', await waitFor(async () => jevCalls() === 2, { timeoutMs: 15000 }) && !(await modalOpen()));
+    } // dev tree only (packaged: see above)
     const badMk = await ev(`window.carrotcap.skillsAddMarketplace(${JSON.stringify(project)}, 'code-review')`);
     const outMk = await ev(`window.carrotcap.skillsAddMarketplace(${JSON.stringify(tmp)}, 'typesafe')`);
     check('add-marketplace only for catalog entries with their own marketplace, only in allowed folders', badMk.ok === false && outMk.ok === false && /폴더/.test(outMk.error || ''), JSON.stringify([badMk, outMk]));
@@ -390,6 +398,11 @@ put('skills/typesafe-ai/SKILL.md', '# Build with TypeSafe');
     }
 
     console.log('-- task-025: "API 키" button → keys.env');
+    // A packaged build always uses the user's real %USERPROFILE%\.carrotcap\keys.env and opens
+    // Notepad (the test file / no-editor switches are dev-tree only) — never click it there.
+    if (process.env.CC_APP_EXE) {
+      console.log('  (packaged: skipped — it would open the real keys.env; covered by the dev-tree run)');
+    } else {
     const keysFile = process.env.CARROTCAP_KEYS_FILE;
     await ev(`document.querySelector('#keys-open').click(), true`);
     check('the button creates the key file template', await waitFor(async () => fs.existsSync(keysFile), { timeoutMs: 5000 }) && /^TYPESAFE_API_KEY=$/m.test(fs.readFileSync(keysFile, 'utf8')) && /^CLM_API_KEY=$/m.test(fs.readFileSync(keysFile, 'utf8')));
@@ -400,6 +413,7 @@ put('skills/typesafe-ai/SKILL.md', '# Build with TypeSafe');
     const st2 = await ev(`window.carrotcap.jevStatus(${JSON.stringify(project)})`);
     check('a key saved in keys.env counts at once (no restart), as a flag only', st2.apiKey === true && !JSON.stringify(st2).includes('jv_e2e_secret'), JSON.stringify(st2));
     fs.writeFileSync(keysFile, '');
+    } // dev tree only
 
     console.log('-- task-025: CLM button with a CLM server running → CLM, no Jev');
     let clmCode = 404; // first: something answers on the port, but it is not a CLM server
