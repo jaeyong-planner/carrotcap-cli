@@ -79,6 +79,8 @@ const state = () => { try { return JSON.parse(fs.readFileSync(path.join(project,
 
     const inspectOf = (id) => ev(`document.querySelector('#skills-list input[value="${id}"]').closest('.skill-row').querySelector('.skill-inspect').innerText`);
     check('local plugins show what they run (MCP / hook commands)', /MCP 서버 1개/.test(await inspectOf('playwright')) && /훅 1개/.test(await inspectOf('security-guidance')) && /명령 1/.test(await inspectOf('code-review')));
+    check('local plugins show the content scan (review r3)', /보안 점검 \(본문 \d+개 확인\)/.test(await inspectOf('security-guidance')) && /보안 점검/.test(await inspectOf('code-review')));
+    check('npx-fetched MCP code is called out as not checkable here', /외부 패키지를 받아 실행.*npx @playwright\/mcp@latest/.test(await inspectOf('playwright')));
     check('a remote plugin offers "구성 불러오기" before anything else', /구성 불러오기/.test(await inspectOf('superpowers')) && /896224c/.test(await inspectOf('superpowers')));
 
     console.log('-- third-party plugins need explicit consent (review r1)');

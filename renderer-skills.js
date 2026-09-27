@@ -120,6 +120,44 @@
       }
       box.appendChild(det);
     }
+    // what the skill texts and scripts actually do (review r3)
+    const sec = i.security;
+    if (sec && sec.counts) {
+      const names = { network: '네트워크', delete: '파일 삭제', secrets: '환경변수·자격증명', exec: '셸·프로그램 실행' };
+      const secLine = document.createElement('div');
+      secLine.className = 'skill-sec';
+      secLine.textContent = `보안 점검 (본문 ${sec.files}개 확인): ` + Object.keys(names).map((k) => `${names[k]} ${sec.counts[k] || 0}`).join(' · ');
+      box.appendChild(secLine);
+      if (sec.findings && sec.findings.length) {
+        const det = document.createElement('details');
+        const sum = document.createElement('summary');
+        sum.textContent = `점검에 걸린 줄 ${sec.findings.length}${sec.truncated ? '+' : ''}개 보기`;
+        det.appendChild(sum);
+        for (const f of sec.findings) {
+          const d = document.createElement('div');
+          d.className = 'skill-run';
+          d.textContent = `[${f.label}] ${f.file}:${f.line} — ${f.text}`;
+          det.appendChild(d);
+        }
+        box.appendChild(det);
+      }
+    }
+    for (const f of i.runFiles || []) {
+      const det = document.createElement('details');
+      const sum = document.createElement('summary');
+      sum.textContent = `훅이 실행하는 파일 ${f.path} 본문 보기`;
+      const pre = document.createElement('pre');
+      pre.className = 'skill-body';
+      pre.textContent = f.body;
+      det.append(sum, pre);
+      box.appendChild(det);
+    }
+    for (const c of i.external || []) {
+      const d = document.createElement('div');
+      d.className = 'skill-ext';
+      d.textContent = `⚠ 실행할 때 외부 패키지를 받아 실행합니다 (본문은 이 창에서 확인 불가): ${c}`;
+      box.appendChild(d);
+    }
     return box;
   }
   // Third-party picks need an explicit "I checked the source and what it runs".
@@ -141,7 +179,7 @@
       thirdText.textContent = `${unchecked.join(', ')}: 내용을 확인해야 설치할 수 있습니다 ("구성 불러오기" — 마켓 정보가 없으면 설치 불가)`;
     } else {
       thirdOk.disabled = !!(current && current.busy);
-      thirdText.textContent = picked.length ? `외부 제작 항목 ${picked.join(', ')}의 출처와 실행하는 명령을 확인했고 설치에 동의합니다` : '';
+      thirdText.textContent = picked.length ? `외부 제작 항목 ${picked.join(', ')}의 출처, 실행하는 명령, 보안 점검 결과를 확인했고 설치에 동의합니다` : '';
     }
     if (!picked.length) thirdOk.checked = false;
     installBtn.disabled = (current && current.busy) || (picked.length > 0 && !thirdOk.checked);

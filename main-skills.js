@@ -135,7 +135,7 @@ function parseHooks(cfg) {
   for (const [event, groups] of Object.entries(hooks)) {
     for (const g of Array.isArray(groups) ? groups : []) {
       for (const h of (g && Array.isArray(g.hooks)) ? g.hooks : []) {
-        if (h && typeof h.command === 'string') out.push({ event, command: short(h.command) });
+        if (h && typeof h.command === 'string') out.push({ event, command: short(h.command), full: h.command });
       }
     }
   }
@@ -148,7 +148,8 @@ function parseMcp(cfg) {
   if (!servers || typeof servers !== 'object') return out;
   for (const [name, v] of Object.entries(servers)) {
     if (v && typeof v === 'object' && (typeof v.command === 'string' || typeof v.url === 'string')) {
-      out.push({ name, command: short(typeof v.command === 'string' ? [v.command, ...(Array.isArray(v.args) ? v.args : [])].join(' ') : `원격 ${v.url}`) });
+      const full = typeof v.command === 'string' ? [v.command, ...(Array.isArray(v.args) ? v.args : [])].join(' ') : `원격 ${v.url}`;
+      out.push({ name, command: short(full), full });
     }
   }
   return out;
@@ -194,16 +195,31 @@ function inspectPlugin(id, configDir = claudeConfigDir()) {
   } catch { /* none */ }
   out.hooks = [...parseHooks(readJson(path.join(pdir, 'hooks', 'hooks.json'))), ...parseHooks(manifest.hooks && typeof manifest.hooks === 'object' ? manifest.hooks : null)];
   out.mcp = [...parseMcp(readJson(path.join(pdir, '.mcp.json'))), ...parseMcp(manifest.mcpServers && typeof manifest.mcpServers === 'object' ? manifest.mcpServers : null)];
+  try {
+    const files = walkFiles(pdir);
+    let total = 0;
+    const entries = scanTargets(files).map((p) => {
+      const text = fs.readFileSync(path.join(pdir, ...p.split('/')), 'utf8');
+      total += Buffer.byteLength(text, 'utf8');
+      if (total > MAX_SCAN_BYTES) throw new Error('확인할 내용이 너무 큽니다');
+      return { path: p, text };
+    });
+    finishContent(out, files, entries);
+    out.scripts = files.filter((p) => SCRIPT_RE.test(p)).length;
+  } catch (e) {
+    return { available: false, note: `내용을 확인할 수 없습니다 — ${e.message}` };
+  }
   return summarize(out, {
     skills,
     commands: countFiles(path.join(pdir, 'commands'), /\.md$/i),
     agents: countFiles(path.join(pdir, 'agents'), /\.md$/i),
+    scripts: out.scripts,
   });
 }
 
 // ---- remote plugins: read the pinned commit from GitHub before consent (review r2) ----
 const GITHUB_REPO_RE = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/;
-const SCRIPT_RE = /\.(sh|bash|zsh|py|js|mjs|cjs|ts|ps1|psm1|cmd|bat|exe|rb|pl)$/i;
+const SCRIPT_RE = /\.(sh|bash|zsh|py|js|mjs|cjs|ts|ps1|psm1|cmd|bat|rb|pl|php|lua)$/i;
 function fetchText(url, { timeoutMs = 15000, maxBytes = 4 * 1024 * 1024 } = {}) {
   return new Promise((resolve, reject) => {
     if (!/^https:\/\/(api\.github\.com|raw\.githubusercontent\.com)\//.test(url)) return reject(new Error('not a GitHub URL'));
@@ -218,6 +234,111 @@ function fetchText(url, { timeoutMs = 15000, maxBytes = 4 * 1024 * 1024 } = {}) 
     req.on('error', reject);
   });
 }
+// ---- content scan: what the skill texts and scripts actually do (review r3) ----
+// Every SKILL.md / command / agent prompt and every script is read and checked for the
+// risks the user asked about. Files that cannot be read (binaries, too many, fetch errors)
+// make the plugin uninspectable, so it cannot be consented to.
+const BINARY_RE = /\.(exe|dll|so|dylib|node|bin|com|msi|scr|jar|wasm)$/i;
+const PROMPT_RE = /^(skills\/[^/]+\/SKILL\.md|commands\/[^/]+\.md|agents\/[^/]+\.md)$/;
+const MAX_SCAN_FILES = 300;
+const MAX_SCAN_BYTES = 8 * 1024 * 1024;
+const MAX_FINDINGS = 300;
+const HOOK_BODY_CHARS = 6000;
+const RISKS = [
+  { cat: 'network', label: '네트워크', any: /\b(curl|wget|Invoke-WebRequest|Invoke-RestMethod|iwr|irm|ncat|nc\s+-|scp|ssh\s)\b|\bfetch\(|XMLHttpRequest|require\(\s*['"](node:)?(https?|net|dgram|tls)['"]\s*\)|from\s+['"](node:)?(https?|net)['"]|\brequests\.(get|post|put)|urllib|http\.client|\bsocket\./i, script: /https?:\/\//i },
+  { cat: 'delete', label: '파일 삭제', any: /\brm\s+-[a-z]*[rf]|\brmdir\b|\bRemove-Item\b|\brd\s+\/s|\bdel\s+(\/[a-z]\s+)*|\bunlink(Sync)?\(|\bfs\.(rm|rmdir)(Sync)?\(|\brmtree\b|\bos\.remove|\bgit\s+clean\b|\bgit\s+reset\s+--hard/i },
+  { cat: 'secrets', label: '환경변수·자격증명', any: /process\.env|\$env:|\bos\.environ|\bgetenv\b|%[A-Z_]*(KEY|TOKEN|SECRET)%|~\/\.(ssh|aws|npmrc|netrc|config\/gh)|\.git-credentials|\bcredentials?\b|\bkeychain\b/i, cs: /\b[A-Z0-9_]*(API_KEY|TOKEN|SECRET|PASSWORD)\b/ },
+  { cat: 'exec', label: '셸·프로그램 실행', any: /child_process|\bexec(Sync|File)?\(|\bspawn(Sync)?\(|\bsubprocess\b|\bos\.system\b|\beval\s*[( ]|\bStart-Process\b|\bInvoke-Expression\b|\biex\b|\b(bash|sh|zsh)\s+-c\b|\bpowershell(\.exe)?\s+-|\bcmd(\.exe)?\s+\/c\b|\bnpx\s|\bpip\s+install\b|\bnpm\s+(i|install)\b/i },
+];
+function scanTexts(entries) {
+  const counts = Object.fromEntries(RISKS.map((r) => [r.cat, 0]));
+  const findings = [];
+  let bytes = 0;
+  for (const { path: p, text } of entries) {
+    bytes += Buffer.byteLength(text, 'utf8');
+    const isScript = SCRIPT_RE.test(p);
+    const lines = text.split(/\r?\n/);
+    for (let n = 0; n < lines.length; n++) {
+      const line = lines[n];
+      for (const r of RISKS) {
+        if (!(r.any.test(line) || (r.cs && r.cs.test(line)) || (isScript && r.script && r.script.test(line)))) continue;
+        counts[r.cat]++;
+        if (findings.length < MAX_FINDINGS) findings.push({ cat: r.cat, label: r.label, file: p, line: n + 1, text: short(line.trim(), 160) });
+      }
+    }
+  }
+  return { files: entries.length, bytes, counts, findings, truncated: findings.length >= MAX_FINDINGS };
+}
+// plugin files a hook / MCP command runs: ${CLAUDE_PLUGIN_ROOT}/<path> (also bare relative paths)
+function referencedFiles(commands, files) {
+  const out = new Set();
+  const missing = new Set();
+  for (const c of commands) {
+    const re = /\$\{?CLAUDE_PLUGIN_ROOT\}?[\\/]([^\s"'`;|&]+)/g;
+    let m;
+    while ((m = re.exec(c))) {
+      const p = m[1].replace(/\\/g, '/').replace(/^\.\//, '');
+      if (files.includes(p)) out.add(p); else missing.add(p);
+    }
+    for (const tok of c.split(/[\s"'`]+/)) {
+      const p = tok.replace(/^\.\//, '');
+      if (p && !p.includes('CLAUDE_PLUGIN_ROOT') && files.includes(p)) out.add(p);
+    }
+  }
+  return { used: [...out], missing: [...missing] };
+}
+function scanTargets(files) {
+  const bin = files.filter((p) => BINARY_RE.test(p));
+  if (bin.length) throw new Error(`본문을 확인할 수 없는 바이너리 실행 파일이 있습니다: ${bin.slice(0, 3).join(', ')}`);
+  const targets = files.filter((p) => PROMPT_RE.test(p) || SCRIPT_RE.test(p) || /^hooks\//.test(p));
+  if (targets.length > MAX_SCAN_FILES) throw new Error(`확인할 파일이 너무 많습니다 (${targets.length}개)`);
+  return targets;
+}
+// hook/MCP commands → the bodies they run, plus the scan over every prompt and script
+function finishContent(out, files, entries) {
+  const byPath = new Map(entries.map((e) => [e.path, e.text]));
+  const cmds = [...out.hooks.map((h) => h.full || h.command), ...out.mcp.map((m) => m.full || m.command)];
+  const ref = referencedFiles(cmds, files);
+  if (ref.missing.length) throw new Error(`훅이 실행하는 파일을 찾을 수 없습니다: ${ref.missing.slice(0, 3).join(', ')}`);
+  out.runFiles = ref.used.map((p) => {
+    const body = byPath.get(p);
+    if (typeof body !== 'string') throw new Error(`훅이 실행하는 파일을 읽지 못했습니다: ${p}`);
+    return { path: p, body: body.length > HOOK_BODY_CHARS ? body.slice(0, HOOK_BODY_CHARS) + '\n…(생략)' : body };
+  });
+  out.security = scanTexts(entries);
+  // code fetched at run time (npx/uvx/docker ...) is not in the plugin: say so plainly
+  out.external = cmds.filter((c) => /^\s*(npx|uvx|pipx|bunx|pnpm\s+dlx|yarn\s+dlx|docker|podman)\b/i.test(c) || /^원격 /.test(c)).map((c) => short(c));
+  for (const h of out.hooks) delete h.full;
+  for (const m of out.mcp) delete m.full;
+  return out;
+}
+async function mapLimit(items, limit, fn) {
+  const res = new Array(items.length);
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (i < items.length) { const k = i++; res[k] = await fn(items[k]); }
+  }));
+  return res;
+}
+function walkFiles(root, max = 5000) {
+  const out = [];
+  const stack = [''];
+  while (stack.length) {
+    const rel = stack.pop();
+    let ents;
+    try { ents = fs.readdirSync(path.join(root, rel), { withFileTypes: true }); } catch { continue; }
+    for (const d of ents) {
+      if (d.name === '.git') continue;
+      const p = rel ? `${rel}/${d.name}` : d.name;
+      if (d.isDirectory()) stack.push(p);
+      else if (d.isFile()) out.push(p);
+      else if (d.isSymbolicLink()) throw new Error(`링크 파일이 있어 내용을 확인할 수 없습니다: ${p}`);
+      if (out.length > max) throw new Error('파일이 너무 많아 확인할 수 없습니다');
+    }
+  }
+  return out;
+}
+
 async function inspectRemotePlugin(id, { configDir = claudeConfigDir(), fetch = fetchText } = {}) {
   const { entry } = marketEntry(id, configDir);
   const src = entry && entry.source && typeof entry.source === 'object' ? entry.source : null;
@@ -229,7 +350,8 @@ async function inspectRemotePlugin(id, { configDir = claudeConfigDir(), fetch = 
   if (!tree || !Array.isArray(tree.tree)) throw new Error('저장소 목록을 읽지 못했습니다');
   if (tree.truncated) throw new Error('저장소가 너무 커서 전체 목록을 확인할 수 없습니다');
   const files = tree.tree.filter((t) => t && t.type === 'blob' && typeof t.path === 'string').map((t) => t.path);
-  const raw = async (p) => JSON.parse(await fetch(`https://raw.githubusercontent.com/${owner}/${repo}/${sha}/${p.split('/').map(encodeURIComponent).join('/')}`));
+  const rawText = (p) => fetch(`https://raw.githubusercontent.com/${owner}/${repo}/${sha}/${p.split('/').map(encodeURIComponent).join('/')}`);
+  const raw = async (p) => JSON.parse(await rawText(p));
   const manifest = files.includes('.claude-plugin/plugin.json') ? await raw('.claude-plugin/plugin.json') : {};
   const out = { available: true, remote: src.url, pinned: sha, inspected: true, hooks: [], mcp: [], version: manifest.version || null };
   // hooks: hooks/hooks.json, or what plugin.json points to / holds inline
@@ -241,6 +363,16 @@ async function inspectRemotePlugin(id, { configDir = claudeConfigDir(), fetch = 
   if (typeof manifest.mcpServers === 'string') mcpFiles.add(manifest.mcpServers.replace(/^\.\//, ''));
   for (const p of mcpFiles) if (files.includes(p)) out.mcp.push(...parseMcp(await raw(p)));
   if (manifest.mcpServers && typeof manifest.mcpServers === 'object') out.mcp.push(...parseMcp(manifest.mcpServers));
+  const targets = scanTargets(files);
+  let total = 0;
+  const entries = await mapLimit(targets, 6, async (p) => {
+    let text;
+    try { text = await rawText(p); } catch (e) { throw new Error(`${p}을(를) 읽지 못했습니다 (${e.message}) — 확인 전에는 설치할 수 없습니다`); }
+    total += Buffer.byteLength(text, 'utf8');
+    if (total > MAX_SCAN_BYTES) throw new Error('확인할 내용이 너무 큽니다');
+    return { path: p, text };
+  });
+  finishContent(out, files, entries);
   return summarize(out, {
     skills: files.filter((p) => /^skills\/[^/]+\/SKILL\.md$/.test(p)).length,
     commands: files.filter((p) => /^commands\/[^/]+\.md$/.test(p)).length,
@@ -429,5 +561,5 @@ function setupSkills(deps) {
 module.exports = {
   setupSkills, SKILL_CATALOG, PRESETS, MARKETPLACE, SKILLS_BLOCK_START, SKILLS_BLOCK_END,
   sanitizeSkillIds, buildSkillsBlock, mergeSkillsBlock, installArgs, marketplaceAddArgs, inspectPlugin,
-  inspectRemotePlugin, makeRunner, parseHooks, parseMcp,
+  inspectRemotePlugin, makeRunner, parseHooks, parseMcp, scanTexts,
 };

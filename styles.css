@@ -270,6 +270,9 @@ body.browser-mode #work { flex: 2 1 0; min-width: 360px; } /* 브라우저 : 터
 .skill-inspect summary { cursor: pointer; color: var(--accent); }
 .skill-inspect-btn { margin-top: 4px; height: 22px; padding: 0 8px; font-size: 11px; }
 .skill-run { font: 11px var(--mono); color: var(--yellow); padding-left: 12px; user-select: text; word-break: break-all; }
+.skill-sec { color: var(--text-2); margin-top: 2px; }
+.skill-body { font: 11px/1.4 var(--mono); color: var(--text); background: var(--bg); border: 1px solid var(--border-muted); padding: 6px 8px; margin: 4px 0; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all; user-select: text; }
+.skill-ext { color: var(--yellow); margin-top: 2px; }
 .skills-third { display: flex; gap: 6px; align-items: flex-start; color: var(--yellow); }
 .skills-third[hidden] { display: none; }
 .skills-progress { font-family: var(--mono); max-height: 120px; overflow-y: auto; }
