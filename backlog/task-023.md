@@ -85,3 +85,5 @@
 - Major — 외부 제작 항목은 renderer의 동의 표시만으로 설치되지 않음: main이 직접 Windows 기본 확인 창(설치/취소, 기본값 취소)을 띄워 항목·만든 곳·출처·커밋·구성·훅/MCP 명령·보안 점검 수·외부 패키지 경고를 보여 주고, "설치"를 눌러야 CLI 실행. Anthropic 항목만 고르면 묻지 않음
 - E2E: 확인 창 응답은 개발 트리에서만 파일로 대신(`CARROTCAP_TEST_CONFIRM_FILE`, 패키지 앱은 무시). "취소" → 아무 명령도 실행 안 됨, 창 내용 검증. 로컬 이미지 변조·누락 → 실패+되돌리기
 - 테스트: test-skills 80, test:skills 61
+
+## Codex r9 — ✅ 승인 (Critical/Major 없음, 남은 위험은 수용)
