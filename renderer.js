@@ -1154,6 +1154,16 @@
   async function runAiopsFlow(step) {
     const setup = await setupAiopsWorkflow();
     if (!setup) return;
+    // task-023: the first START in a project offers the skills setup (once; "don't ask" sticks)
+    if (step === 'start' && window.CarrotcapSkills && state.folder.rootPath) {
+      try {
+        if (await window.CarrotcapSkills.needsSetup(state.folder.rootPath)) {
+          const r = await window.CarrotcapSkills.open(state.folder.rootPath, { reason: 'start' });
+          if (r && r.action === 'installed') setFlowStatus(`스킬 ${r.installed.length}개 설치 — 이 세션부터 적용됩니다`, 'ok');
+          if (r && r.action === 'closed') return;
+        }
+      } catch (e) { console.warn('[carrotcap] skills setup failed:', e && e.message); }
+    }
 
     const flow = FLOW_STEPS[step];
     if (!flow) return;
@@ -1203,6 +1213,11 @@
       b.onclick = () => runCli(b.dataset.cli);
     });
     $('#aiops-setup').onclick = () => setupAiopsWorkflow();
+    $('#skills-open').onclick = async () => {
+      if (!state.folder.rootPath) { setFlowStatus('프로젝트 폴더를 먼저 선택하세요', 'warn'); return; }
+      const res = await window.CarrotcapSkills.open(state.folder.rootPath, { reason: 'manual' });
+      if (res && res.action === 'installed') setFlowStatus(`스킬 ${res.installed.length}개 설치됨 — 새로 시작하는 claude 세션부터 적용`, 'ok');
+    };
     document.querySelectorAll('.btn-flow[data-flow]').forEach(b => {
       b.onclick = () => runAiopsFlow(b.dataset.flow);
     });

@@ -1817,6 +1817,63 @@ handle('app:platform', () => process.platform);
 handle('app:pty-available', () => ptyAvailable);
 
 // Browser mode (task-015): BrowserView + annotations + console errors, see main-browser.js.
+// Full path of a command on PATH (Windows: only runnable extensions — where.exe also lists
+// extensionless npm shims), or null.
+function findCommandSync(cmd) {
+  if (!CMD_NAME_RE.test(cmd)) return null;
+  const { execFileSync } = require('child_process');
+  const [file, args] = process.platform === 'win32'
+    ? [path.join(getSystem32Path(), 'where.exe'), [cmd]]
+    : ['/usr/bin/which', [cmd]];
+  try {
+    const lines = String(execFileSync(file, args, { timeout: 4000, windowsHide: true, encoding: 'utf8' })).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const ok = process.platform === 'win32' ? lines.find((l) => /\.(exe|cmd|bat)$/i.test(l)) : lines[0];
+    return ok && path.isAbsolute(ok) ? ok : null;
+  } catch { return null; }
+}
+
+require('./main-skills').setupSkills({
+  handle,
+  getWindow: () => mainWindow,
+  loadSettings,
+  resolveAllowedDir,
+  safeRealpath,
+  isPathInsideRoot,
+  assertAncestorsClean,
+  safeMkdir,
+  isAllowedCliCommand,
+  findCommand: findCommandSync,
+  taskkillPath: () => path.join(getSystem32Path(), 'taskkill.exe'),
+  // third-party installs: the user approves in a native dialog shown by main (review r8)
+  confirmThirdParty: async ({ title, detail }) => {
+    // E2E only (never in the packaged app): the answer comes from a file, and each asked dialog is logged
+    if (!app.isPackaged && process.env.CARROTCAP_TEST_CONFIRM_FILE) {
+      fs.appendFileSync(process.env.CARROTCAP_TEST_CONFIRM_FILE + '.log', JSON.stringify({ title, detail }) + '\n');
+      try { return fs.readFileSync(process.env.CARROTCAP_TEST_CONFIRM_FILE, 'utf8').trim() === 'yes'; } catch { return false; }
+    }
+    if (!mainWindow || mainWindow.isDestroyed()) return false;
+    const r = await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      title: 'CARROTCAP CLI — 외부 제작 플러그인',
+      message: title,
+      detail: `${detail}\n\n설치하면 위 명령이 Claude 세션에서 실행될 수 있습니다.`,
+      buttons: ['설치', '취소'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    return r.response === 0;
+  },
+  // E2E only (never in the packaged app): answer GitHub reads from a local { url: text } file
+  ...(!app.isPackaged && process.env.CARROTCAP_TEST_GITHUB_FIXTURE ? {
+    fetchRemote: async (url) => {
+      const map = JSON.parse(fs.readFileSync(process.env.CARROTCAP_TEST_GITHUB_FIXTURE, 'utf8'));
+      if (typeof map[url] !== 'string') throw new Error('HTTP 404');
+      return map[url];
+    },
+  } : {}),
+});
+
 const browserMode = require('./main-browser').setupBrowser({
   handle,
   getWindow: () => mainWindow,

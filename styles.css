@@ -250,6 +250,38 @@ body.browser-mode #work { flex: 2 1 0; min-width: 360px; } /* 브라우저 : 터
 .btn-primary { background: var(--accent); color: var(--on-accent); border: 0; border-radius: 6px; padding: 6px 14px; font-weight: 600; cursor: pointer; }
 .btn-primary:hover { background: var(--accent-2); }
 
+/* 스킬 세팅 창 (task-023) */
+#skills-modal { position: fixed; inset: 0; background: rgba(1, 4, 9, 0.7); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+#skills-modal.hidden { display: none; }
+.skills-card { height: auto; max-height: 86vh; }
+.skills-presets { display: flex; gap: 6px; flex-wrap: wrap; }
+.skills-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--border); border-radius: 6px; padding: 6px; background: var(--bg); }
+.skill-row { display: flex; gap: 10px; align-items: flex-start; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+.skill-row:hover { background: var(--raised); }
+.skill-row input { margin-top: 3px; accent-color: var(--accent); }
+.skill-head { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+.skill-head strong { font-family: var(--mono); color: var(--text); }
+.skill-maker { font-size: 11px; color: var(--text-2); border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; }
+.skill-maker.third { color: var(--yellow); border-color: rgba(210, 153, 34, 0.5); }
+.skill-done { font-size: 11px; color: var(--green); }
+.skill-desc { font-size: 12px; color: var(--text); margin-top: 2px; }
+.skill-src { font: 11px var(--mono); color: var(--text-2); user-select: text; }
+.skill-inspect { font-size: 11px; color: var(--text-2); margin-top: 2px; }
+.skill-inspect summary { cursor: pointer; color: var(--accent); }
+.skill-inspect-btn { margin-top: 4px; height: 22px; padding: 0 8px; font-size: 11px; }
+.skill-run { font: 11px var(--mono); color: var(--yellow); padding-left: 12px; user-select: text; word-break: break-all; }
+.skill-sec { color: var(--text-2); margin-top: 2px; }
+.skill-body { font: 11px/1.4 var(--mono); color: var(--text); background: var(--bg); border: 1px solid var(--border-muted); padding: 6px 8px; margin: 4px 0; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all; user-select: text; }
+.skill-ext { color: var(--yellow); margin-top: 2px; }
+.skills-third { display: flex; gap: 6px; align-items: flex-start; color: var(--yellow); }
+.skills-third[hidden] { display: none; }
+.skills-progress { font-family: var(--mono); max-height: 120px; overflow-y: auto; }
+.skill-progress.ok { color: var(--green); }
+.skill-progress.fail { color: var(--red); }
+.skill-progress.running { color: var(--accent); }
+.skills-actions { display: flex; gap: 6px; justify-content: flex-end; }
+.btn-flow.wide { grid-column: 1 / -1; }
+
 /* ---------- 스크롤바 ---------- */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
