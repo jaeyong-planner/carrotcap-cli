@@ -54,7 +54,8 @@
       "agents/reviewer.md",
       "templates/**/*",
       "scripts/run-media.ps1",
-      "scripts/run-reviewer.ps1"
+      "scripts/run-reviewer.ps1",
+      "fonts/**/*"
     ],
     "extraResources": [
       {

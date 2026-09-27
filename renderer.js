@@ -42,6 +42,14 @@
 
   // ---------- 부트 ----------
   async function boot() {
+    // task-021: xterm measures the cell size when a terminal opens — load the bundled
+    // JetBrains Mono first so the first panes do not keep fallback-font metrics.
+    try {
+      await Promise.race([
+        Promise.all(['400 14px "JetBrains Mono"', '700 14px "JetBrains Mono"'].map((f) => document.fonts.load(f))),
+        new Promise((r) => setTimeout(r, 1500)) // never block startup on a font
+      ]);
+    } catch { /* fallback fonts in the stack */ }
     try { state.platform = await api.platform(); } catch { state.platform = 'win32'; }
     state.settings = await api.getSettings();
     try {

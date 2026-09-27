@@ -108,6 +108,12 @@ const PROBE = `(async () => {
   r.clipBadType = await c.writeClipboard({ x: 1 });
   if (clipBefore && clipBefore.ok) await c.writeClipboard(clipBefore.text);
   r.termMenuApi = typeof c.showTermMenu === 'function' && typeof c.onTermMenuCommand === 'function';
+  // bundled JetBrains Mono (task-021): all four faces loaded from the app, used by xterm
+  await document.fonts.ready;
+  r.fontFaces = [...document.fonts].filter((f) => f.family.replace(/"/g, '') === 'JetBrains Mono').map((f) => f.weight + '/' + f.style + ':' + f.status);
+  r.fontReady = document.fonts.check('400 14px "JetBrains Mono"') && document.fonts.check('700 14px "JetBrains Mono"');
+  const xt = document.querySelector('.xterm-rows');
+  r.xtermFont = xt ? getComputedStyle(xt).fontFamily : '';
   return r;
 })()`;
 
@@ -142,6 +148,10 @@ const PROBE = `(async () => {
   check('xterm rendered', r.xterm >= 1);
   check('pane spawned with a kind label', r.paneKinds.length >= 1, JSON.stringify(r.paneKinds));
   check('native pty available', r.ptyAvailable === true);
+  console.log('-- bundled font (task-021)');
+  check('four JetBrains Mono faces declared', r.fontFaces.length === 4, JSON.stringify(r.fontFaces));
+  check('regular and bold loaded from the app', r.fontReady && r.fontFaces.filter((f) => /^(400|normal)\/normal:loaded$|^(700|bold)\/normal:loaded$/.test(f)).length === 2, JSON.stringify(r.fontFaces));
+  check('terminal uses JetBrains Mono first', /^['"]?JetBrains Mono/.test(r.xtermFont), r.xtermFont);
   console.log('-- hostile IPC');
   check('CLAUDE.md non-string rejected', r.mdObj && r.mdObj.ok === false);
   check('CLAUDE.md > 512KB rejected', r.mdBig && r.mdBig.ok === false);

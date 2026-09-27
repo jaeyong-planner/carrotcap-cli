@@ -2,6 +2,13 @@
  * 색은 기능별로 고정한다: 기본/보조 텍스트는 회색 2단계, 강조는 Cyan 하나,
  * 상태는 Green(성공)·Yellow(경고)·Red(에러)·Cyan(경로·실행 중)만 쓴다.
  * 주황(당근)은 로고와 주석 핀에만 — 페이지 오버레이 핀과 같은 색이어야 알아보기 쉽다. */
+/* JetBrains Mono, bundled with the app (task-021) — SIL OFL 1.1, fonts/jetbrains-mono/OFL.txt.
+ * The installed font of the same name, if any, is not needed. */
+@font-face { font-family: 'JetBrains Mono'; src: url('fonts/jetbrains-mono/JetBrainsMono-Regular.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: block; }
+@font-face { font-family: 'JetBrains Mono'; src: url('fonts/jetbrains-mono/JetBrainsMono-Bold.woff2') format('woff2'); font-weight: 700; font-style: normal; font-display: block; }
+@font-face { font-family: 'JetBrains Mono'; src: url('fonts/jetbrains-mono/JetBrainsMono-Italic.woff2') format('woff2'); font-weight: 400; font-style: italic; font-display: block; }
+@font-face { font-family: 'JetBrains Mono'; src: url('fonts/jetbrains-mono/JetBrainsMono-BoldItalic.woff2') format('woff2'); font-weight: 700; font-style: italic; font-display: block; }
+
 :root {
   /* surfaces */
   --bg: #0D1117;            /* 앱·터미널 바탕 (완전한 검정보다 읽기 편함) */

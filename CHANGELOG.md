@@ -5,6 +5,7 @@
 ### 터미널 UI 테마 (task-020)
 - GitHub Dark 계열 팔레트를 토큰으로(배경 #0D1117·패널 #161B22·테두리 #30363D), 강조는 Cyan 하나, 상태색 Green/Yellow/Red 고정
 - 터미널 ANSI 16색을 같은 팔레트로, 폰트 JetBrains Mono → Cascadia Code → Fira Code → IBM Plex Mono → SF Mono (기존 기본값만 자동 전환)
+- JetBrains Mono(Regular·Bold·Italic·Bold Italic)를 앱에 포함 — 설치하지 않아도 적용 (SIL OFL 1.1, `fonts/jetbrains-mono/OFL.txt`, task-021)
 
 ### 콘솔 에러 → 채팅 첨부 (task-019)
 - "새 콘솔 에러를 채팅에 첨부" 체크박스 → 버튼. 누르면 입력창 위에 읽기 전용 첨부 칩(개수·미리보기·✕)으로 들어가고, 보낼 때 에이전트 페인에만 보호 경로로 전달
