@@ -58,6 +58,7 @@
             <button class="btn-flow" data-flow="start" title="Claude — agents/supervisor.md 절차로 코딩 시작">START</button>
             <button class="btn-flow" data-flow="review" title="Codex — 최근 변경 코드 리뷰">REVIEW</button>
             <button class="btn-flow" data-flow="media" title="Grok — 이미지·영상 요청 대기">MEDIA</button>
+            <button id="skills-open" class="btn-flow wide" title="이 프로젝트에서 Claude가 쓸 스킬(플러그인)을 고르고 설치">SKILLS</button>
           </div>
           <div id="flow-status" class="flow-status muted small">프로젝트 폴더를 선택한 뒤 SETUP을 누르세요</div>
           <!-- 이전 세션 이어하기 (task-013) -->
@@ -161,6 +162,26 @@
   <script src="node_modules/@xterm/xterm/lib/xterm.js"></script>
   <script src="node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
   <script src="node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
+  <!-- 프로젝트 스킬 세팅 (task-023) -->
+  <div id="skills-modal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="skills-title">
+    <div class="modal-card skills-card">
+      <div class="modal-head">
+        <strong id="skills-title">프로젝트 스킬 세팅</strong>
+        <button id="skills-close" class="btn-ghost">닫기</button>
+      </div>
+      <div id="skills-reason" class="small"></div>
+      <div class="muted small">이 프로젝트에만 설치됩니다 (공식 마켓플레이스 claude-plugins-official, --scope project). <span class="skill-maker third">외부 제작</span> 표시는 설치 전 출처를 확인하세요. 새로 시작하는 claude 세션부터 적용됩니다.</div>
+      <div id="skills-presets" class="skills-presets"></div>
+      <div id="skills-list" class="skills-list"></div>
+      <div id="skills-progress" class="skills-progress small"></div>
+      <div class="skills-actions">
+        <button id="skills-install" class="btn-primary">설치</button>
+        <button id="skills-skip" class="btn-ghost">취소</button>
+        <button id="skills-never" class="btn-ghost" hidden>다시 묻지 않음</button>
+      </div>
+    </div>
+  </div>
+  <script src="renderer-skills.js"></script>
   <script src="renderer-browser.js"></script>
   <script src="renderer.js"></script>
 </body>

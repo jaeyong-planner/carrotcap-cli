@@ -67,6 +67,17 @@ const api = {
   },
   aorStatus: () => ipcRenderer.invoke('aor:status'),
 
+  // 프로젝트 스킬 세팅 (task-023)
+  skillsCatalog: () => ipcRenderer.invoke('skills:catalog'),
+  skillsStatus: (projectRoot) => ipcRenderer.invoke('skills:status', projectRoot),
+  skillsSkip: (projectRoot) => ipcRenderer.invoke('skills:skip', projectRoot),
+  skillsInstall: (projectRoot, ids) => ipcRenderer.invoke('skills:install', { projectRoot, ids }),
+  onSkillsProgress: (handler) => {
+    const wrap = (_e, payload) => handler(payload);
+    ipcRenderer.on('skills:progress', wrap);
+    return () => ipcRenderer.removeListener('skills:progress', wrap);
+  },
+
   // 세션 이어하기 (task-013)
   saveHistory: (projectRoot, layout) => ipcRenderer.invoke('history:save', { projectRoot, layout }),
   getHistory: (projectRoot) => ipcRenderer.invoke('history:get', projectRoot),

@@ -19,6 +19,7 @@
   const composerInput = $('#composer-input');
   const attachEl = $('#composer-attach');
   const modal = $('#modal');
+  const skillsModal = $('#skills-modal'); // task-023: the BrowserView would cover it
   const MAX_PINS = 20; // main-browser.js MAX_PINS와 같게 유지
 
   const st = {
@@ -46,7 +47,7 @@
 
   // ---- 레이아웃: #browser-frame 위치를 BrowserView bounds로 보낸다 ----
   function sendBounds() {
-    if (!st.active || !st.open || !modal.classList.contains('hidden')) {
+    if (!st.active || !st.open || !modal.classList.contains('hidden') || (skillsModal && !skillsModal.classList.contains('hidden'))) {
       api.browserBounds({ x: 0, y: 0, width: 0, height: 0 });
       return;
     }
@@ -57,6 +58,7 @@
   window.addEventListener('resize', sendBounds);
   // 모달(CLAUDE.md 편집기)은 DOM이라 네이티브 BrowserView 아래에 깔린다 → 열려 있는 동안 숨김
   new MutationObserver(sendBounds).observe(modal, { attributes: true, attributeFilter: ['class'] });
+  if (skillsModal) new MutationObserver(sendBounds).observe(skillsModal, { attributes: true, attributeFilter: ['class'] });
 
   function setActive(on) {
     st.active = on;

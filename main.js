@@ -1817,6 +1817,34 @@ handle('app:platform', () => process.platform);
 handle('app:pty-available', () => ptyAvailable);
 
 // Browser mode (task-015): BrowserView + annotations + console errors, see main-browser.js.
+// Full path of a command on PATH (Windows: only runnable extensions — where.exe also lists
+// extensionless npm shims), or null.
+function findCommandSync(cmd) {
+  if (!CMD_NAME_RE.test(cmd)) return null;
+  const { execFileSync } = require('child_process');
+  const [file, args] = process.platform === 'win32'
+    ? [path.join(getSystem32Path(), 'where.exe'), [cmd]]
+    : ['/usr/bin/which', [cmd]];
+  try {
+    const lines = String(execFileSync(file, args, { timeout: 4000, windowsHide: true, encoding: 'utf8' })).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const ok = process.platform === 'win32' ? lines.find((l) => /\.(exe|cmd|bat)$/i.test(l)) : lines[0];
+    return ok && path.isAbsolute(ok) ? ok : null;
+  } catch { return null; }
+}
+
+require('./main-skills').setupSkills({
+  handle,
+  getWindow: () => mainWindow,
+  loadSettings,
+  resolveAllowedDir,
+  safeRealpath,
+  isPathInsideRoot,
+  assertAncestorsClean,
+  safeMkdir,
+  isAllowedCliCommand,
+  findCommand: findCommandSync,
+});
+
 const browserMode = require('./main-browser').setupBrowser({
   handle,
   getWindow: () => mainWindow,
