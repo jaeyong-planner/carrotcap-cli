@@ -15,7 +15,8 @@
   const errCount = $('#br-err-count');
   const consoleEl = $('#browser-console');
   const annotateBtn = $('#br-annotate');
-  const includeErrors = $('#br-include-errors');
+  const errorsToChat = $('#br-errors-to-chat');
+  const composerInput = $('#composer-input');
   const modal = $('#modal');
   const MAX_PINS = 20; // main-browser.js MAX_PINS와 같게 유지
 
@@ -27,6 +28,7 @@
     pins: [],          // [{ n, selector, tag, text, rect, viewport }]
     full: false,       // 주석 상한에 닿음
     newErrors: 0,
+    inserted: null,    // { header, mark } — 입력창에 넣은 콘솔 에러 블록 (보낸 뒤 "보냄" 처리)
     annotating: false,
     pickToken: 0,
     openToken: 0,
@@ -65,6 +67,7 @@
       st.open = false;
       st.pins = [];
       renderPins();
+      renderErrorsButton();
     }
     // 오른쪽 터미널 폭이 바뀌었으니 xterm 크기 재계산 (renderer.js의 resize 핸들러)
     setTimeout(() => { window.dispatchEvent(new Event('resize')); sendBounds(); }, 30);
@@ -86,6 +89,7 @@
     }
     st.open = true;
     empty.hidden = true;
+    renderErrorsButton();
     sendBounds();
   }
 
@@ -192,6 +196,7 @@
     st.newErrors = s.newErrors || 0;
     errCount.textContent = String(s.errorCount || 0);
     errCount.classList.toggle('has', st.newErrors > 0);
+    renderErrorsButton();
     if (!consoleEl.classList.contains('hidden')) renderConsole();
     // 새 문서(이동·같은 URL 새로고침·뒤로가기)면 핀(페이지 DOM)이 사라진다. URL이 아니라 main의
     // 문서 세대로 판단한다 (review r4). 이전 pick 결과는 토큰으로 무시하고, 로드가 끝나면
@@ -220,15 +225,17 @@
   async function decorate(text, projectRoot, target) {
     const plain = { text, commit: () => {} };
     if (!st.active || !st.open) return plain;
-    const wantErrors = includeErrors.checked && st.newErrors > 0;
-    if (!st.pins.length && !wantErrors) return plain;
+    // 콘솔 에러는 버튼으로 입력창에 넣은 블록으로만 간다 (task-019). 그 블록이 아직 입력 내용에
+    // 있으면 페이지 유래 텍스트이므로 주석과 같은 보호 경로(에이전트 전용·guarded paste)로 보낸다.
+    const inserted = st.inserted && typeof text === 'string' && text.includes(st.inserted.header) ? st.inserted : null;
+    if (!st.pins.length && !inserted) return plain;
     // 여러 줄 컨텍스트는 에이전트 CLI(bracketed paste를 켜는 대화형 앱)에만 보낸다.
     // 일반 PowerShell에 붙이면 페이지가 만든 문자열이 명령으로 실행될 수 있다 (review C3).
     const isAgent = target && AGENT_CLIS.has(target.cli) && target.bracketedPaste;
     if (!isAgent) {
       return { blocked: '브라우저 주석·콘솔 에러는 CLAUDE/CODEX 버튼으로 실행한 에이전트 페인에만 보낼 수 있습니다' };
     }
-    const ctx = await api.browserContext({ projectRoot, screenshot: st.pins.length > 0, includeErrors: wantErrors, gen: st.pageGen });
+    const ctx = await api.browserContext({ projectRoot, screenshot: st.pins.length > 0, includeErrors: false, gen: st.pageGen });
     if (!ctx) return plain;
     if (ctx.stale) {
       // 준비하는 사이 페이지가 바뀌었다 — 옛 페이지의 주석을 새 페이지 설명으로 보내지 않는다
@@ -247,18 +254,17 @@
         lines.push(`  ${p.n}) <${oneLine(p.tag, 20)}> ${oneLine(p.selector, 300)}${p.text ? ` — "${oneLine(p.text, 120)}"` : ''} @ ${fmtRect(p.rect)} (뷰포트 ${p.viewport.width}×${p.viewport.height})`);
       }
     }
-    if (ctx.errors && ctx.errors.length) {
-      lines.push(`콘솔 에러 (이전 전송 이후 ${ctx.errors.length + (ctx.errorsSkipped || 0)}건${ctx.errorsSkipped ? `, 최근 ${ctx.errors.length}건만` : ''}):`);
-      for (const e of ctx.errors) {
-        lines.push(`  - [${oneLine(e.level, 10)}] ${oneLine(e.message)}${e.source ? ` (${oneLine(e.source, 300)}${e.line ? ':' + e.line : ''})` : ''}`);
-      }
-    }
     lines.push('[요청]');
     // 모든 컨텍스트 줄은 "# "로 시작한다 — 만에 하나 셸이 받더라도 PowerShell·bash 모두 줄 주석이라
     // 실행되지 않는다 (줄바꿈은 이미 제거되어 주석을 벗어날 수 없음). 에이전트에게는 그냥 읽히는 텍스트.
     const block = lines.map((l) => `# ${l}`).join('\n') + '\n' + (text || '(주석 위치의 문제를 확인해줘)');
     const commit = () => {
-      if (wantErrors) api.browserCommit(ctx.errorMark);
+      // 넣은 시점까지의 에러만 "보냄" — 그 뒤에 난 에러는 계속 새 에러로 남는다.
+      if (inserted) {
+        api.browserCommit(inserted.mark);
+        if (st.inserted === inserted) st.inserted = null;
+        renderErrorsButton();
+      }
       // 이번에 보낸 핀만 지운다 — 전송을 준비하는 사이 새로 찍은 핀은 목록·페이지 모두 남는다 (review r2).
       const sent = pins.map((p) => p.n);
       st.pins = st.pins.filter((p) => !sent.includes(p.n));
@@ -268,8 +274,41 @@
     return { text: block, commit, context: true, token: ctx.token };
   }
 
+  // ---- 콘솔 에러 → 입력창 (task-019) ----
+  // 버튼을 누르면 마지막 전송 이후의 새 콘솔 에러를 입력창에 넣는다. 보내기 전에 보고 고칠 수 있고,
+  // 실제로 에이전트에게 전달된 뒤에만 "보냄" 처리된다 (decorate의 commit).
+  function renderErrorsButton() {
+    if (!errorsToChat) return;
+    const n = st.newErrors;
+    errorsToChat.disabled = !st.open || n === 0;
+    errorsToChat.textContent = n > 0 ? `⚠ 새 콘솔 에러 ${n}건 → 채팅에 넣기` : '새 콘솔 에러 없음';
+  }
+  async function insertErrorsToChat() {
+    if (!st.open || !composerInput) return;
+    if (st.inserted && composerInput.value.includes(st.inserted.header)) { composerInput.focus(); return; } // 이미 넣음
+    const ctx = await api.browserContext({ screenshot: false, includeErrors: true, gen: st.pageGen });
+    if (!ctx || ctx.stale || !Array.isArray(ctx.errors) || !ctx.errors.length) { renderErrorsButton(); return; }
+    const total = ctx.errors.length + (ctx.errorsSkipped || 0);
+    const header = `[콘솔 에러 — ${oneLine(ctx.url, 300)} · ${total}건${ctx.errorsSkipped ? `, 최근 ${ctx.errors.length}건만` : ''}]`;
+    const lines = [header];
+    for (const e of ctx.errors) {
+      lines.push(`  - [${oneLine(e.level, 10)}] ${oneLine(e.message)}${e.source ? ` (${oneLine(e.source, 300)}${e.line ? ':' + e.line : ''})` : ''}`);
+    }
+    // 모든 줄은 "# "로 시작 — 페이지가 만든 문자열(main에서 제어문자·줄바꿈 제거)이 만에 하나
+    // 셸로 가더라도 줄 주석이다. 보낼 때는 주석과 같은 보호 경로를 탄다 (decorate).
+    const block = lines.map((l) => `# ${l}`).join('\n');
+    const cur = composerInput.value.replace(/\s+$/, '');
+    composerInput.value = cur ? `${cur}\n${block}\n` : `${block}\n`;
+    st.inserted = { header: `# ${header}`, mark: ctx.errorMark };
+    composerInput.dispatchEvent(new Event('input', { bubbles: true })); // 입력창 높이 맞춤
+    composerInput.focus();
+    composerInput.setSelectionRange(composerInput.value.length, composerInput.value.length);
+  }
+
   // ---- 이벤트 ----
   function bind() {
+    if (errorsToChat) errorsToChat.onclick = () => { insertErrorsToChat().catch(() => renderErrorsButton()); };
+    renderErrorsButton();
     $('#toggle-browser').onclick = () => setActive(!st.active);
     $('#br-go').onclick = openUrl;
     urlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); openUrl(); } });

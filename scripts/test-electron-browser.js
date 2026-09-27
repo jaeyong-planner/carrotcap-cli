@@ -118,10 +118,24 @@ const server = http.createServer((req, res) => {
 
   console.log('-- plain shell never receives browser context (review C3)');
   const screen = () => ev(`(document.querySelector('.tab-page.active .xterm-rows') || {}).innerText || ''`);
-  await ev(`document.querySelector('#composer-input').value = '1번 버튼 눌러도 결제가 안 돼'; document.querySelector('#composer-send').click(); true`);
+  console.log('-- console errors go into the chat input by button (task-019)');
+  check('errors button shows the new-error count', /새 콘솔 에러 \d+건/.test(await ev(`document.querySelector('#br-errors-to-chat').textContent`)) && !(await ev(`document.querySelector('#br-errors-to-chat').disabled`)));
+  await ev(`document.querySelector('#composer-input').value = '1번 버튼 눌러도 결제가 안 돼'; true`);
+  await ev(`document.querySelector('#br-errors-to-chat').click(), true`);
+  const composed = await waitFor(async () => /boom-on-load/.test(await ev(`document.querySelector('#composer-input').value`)))
+    ? await ev(`document.querySelector('#composer-input').value`) : '';
+  check('click puts the new console errors into the input box', /boom-on-load/.test(composed), JSON.stringify(composed.slice(0, 200)));
+  check('typed text kept, error block appended below it', composed.startsWith('1번 버튼 눌러도 결제가 안 돼\n'));
+  check('every inserted line is a "# " comment', composed.split('\n').slice(1).filter(Boolean).every((l) => l.startsWith('# ')), JSON.stringify(composed));
+  await ev(`document.querySelector('#br-errors-to-chat').click(), true`);
+  await sleep(300);
+  check('a second click does not insert the block twice', (await ev(`document.querySelector('#composer-input').value`)).split('[콘솔 에러').length === 2);
+  check('errors stay "new" until actually sent', await ev(`document.querySelector('#br-err-count').classList.contains('has')`));
+
+  await ev(`document.querySelector('#composer-send').click(), true`);
   await sleep(800);
   check('send to a plain PowerShell pane is refused', /에이전트 페인에만/.test(await ev(`document.querySelector('#composer-notice').textContent`)));
-  check('typed text kept in the input box', (await ev(`document.querySelector('#composer-input').value`)) === '1번 버튼 눌러도 결제가 안 돼');
+  check('typed text + error block kept in the input box', (await ev(`document.querySelector('#composer-input').value`)) === composed);
   check('pins not consumed by the refused send', (await ev(`document.querySelectorAll('#br-pins .br-pin').length`)) === 1);
   check('nothing pasted into the shell', !/브라우저 컨텍스트/.test(await screen()));
 
@@ -140,7 +154,8 @@ const server = http.createServer((req, res) => {
   check('context points the agent at that screenshot', got.includes(shotsDir.replace(/\\/g, '\\')) || /browser-shots/.test(got));
   check('nothing written into the project folder (review r3 C2)', fs.readdirSync(project).length === 0, fs.readdirSync(project).join(','));
   check('sent pins are consumed (list and page cleared)', await waitFor(async () => (await ev(`document.querySelectorAll('#br-pins .br-pin').length`)) === 0 && (await view.ev(`document.querySelectorAll('[data-cc-pin]').length`)) === 0));
-  check('sent errors no longer flagged as new', !(await ev(`document.querySelector('#br-err-count').classList.contains('has')`)));
+  check('sent errors no longer flagged as new', await waitFor(async () => !(await ev(`document.querySelector('#br-err-count').classList.contains('has')`))));
+  check('errors button disabled again after sending', await waitFor(async () => await ev(`document.querySelector('#br-errors-to-chat').disabled`)));
 
   console.log('-- hostile page text cannot break out of the paste (review C3)');
   fs.writeFileSync(path.join(tmp, 'agent-received.bin'), '');
@@ -149,7 +164,13 @@ const server = http.createServer((req, res) => {
   await waitFor(async () => (await ev(`window.carrotcap.browserErrors()`)).some((e) => /boom/.test(e.message)));
   await sleep(300);
   if (process.env.CC_DEBUG) console.log('   before send:', await ev(`document.querySelector('#br-err-count').className`), JSON.stringify(await ev(`window.carrotcap.browserErrors()`)).slice(0, 300));
-  await ev(`document.querySelector('#composer-input').value = 'check errors'; document.querySelector('#composer-send').click(); true`);
+  await ev(`document.querySelector('#composer-input').value = 'check errors'; true`);
+  await waitFor(async () => !(await ev(`document.querySelector('#br-errors-to-chat').disabled`)));
+  await ev(`document.querySelector('#br-errors-to-chat').click(), true`);
+  await waitFor(async () => /boom/.test(await ev(`document.querySelector('#composer-input').value`)));
+  const evilComposed = await ev(`document.querySelector('#composer-input').value`);
+  check('hostile error text in the input box is already cleaned (no ESC / CR / C1 / U+2028)', /boom/.test(evilComposed) && !/[\u001b\r\u0080-\u009F\u{2028}\u{2029}]/u.test(evilComposed), JSON.stringify(evilComposed.slice(0, 200)));
+  await ev(`document.querySelector('#composer-send').click(), true`);
   check('agent got the hostile page context', await waitFor(() => received().includes('\x1b[201~')));
   check('annotation mode survived the navigation (review r2 M4)', await ev(`document.querySelector('#br-annotate').classList.contains('active')`));
   const evil = Buffer.from(received(), 'latin1').toString('utf8');

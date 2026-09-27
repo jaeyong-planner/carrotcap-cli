@@ -120,6 +120,9 @@ body.browser-mode #work { flex: 2 1 0; min-width: 360px; } /* 브라우저 : 터
 #browser-empty { position: absolute; top: 40%; left: 0; right: 0; text-align: center; padding: 0 24px; pointer-events: none; }
 .browser-notes { display: flex; align-items: center; gap: 8px; padding: 4px 8px; background: #15151a; border-top: 1px solid #25252e; min-height: 30px; }
 .br-pins { flex: 1; display: flex; gap: 4px; flex-wrap: wrap; overflow: hidden; }
+.br-errors-btn { flex: none; font-size: 12px; white-space: nowrap; }
+.br-errors-btn:not(:disabled) { color: #ff9b9b; border-color: #5a3030; }
+.br-errors-btn:disabled { opacity: .5; cursor: default; }
 .br-pin { font-size: 11px; padding: 2px 6px; border-radius: 10px; background: #2a1d12; color: #ffb27a; border: 1px solid #5a3a20; white-space: nowrap; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
 #browser-console { max-height: 160px; overflow: auto; padding: 4px 8px; background: #120f10; border-top: 1px solid #3a2525; font: 11px 'Cascadia Code', Consolas, monospace; }
 #browser-console.hidden { display: none; }
