@@ -2,6 +2,13 @@
 
 ## 0.2.1 — 2026-09-27
 
+### `carrotcap` 명령 · 원클릭 설치 (task-018)
+- 설치 파일(`CARROTCAP-CLI-Setup-<ver>.exe`)을 더블클릭하면 바로 설치·실행(사용자 단위, 관리자 권한 불필요, 바탕화면·시작 메뉴 바로가기)
+- 터미널에서 `carrotcap` → CARROTCAP CLI (cmd·PowerShell 5.1/7: `WindowsAppscarrotcap.bat`, Git Bash: 확장자 없는 실행기). Cream CLI의 `carrotcap.cmd`보다 우선(PATHEXT 순서)
+- **appId를 `com.carrotcap.carrotcap-cli`로 분리** — 이전 appId가 Cream CLI와 같아 설치 시 Cream이 제거되던 문제(2026-09-27 사고) 해결
+- 설치 폴더 전용화(`Programscarrotcap-cli`), 다른 제품 등록·폴더 밖 경로·junction이 있으면 설치/제거 중단, 실행기는 표시(marker)로 소유권 확인
+- 사용자 PATH를 더 이상 수정하지 않음, 복구 스크립트 `resourcesepair-cli.ps1` 포함
+
 ### AOR 엔진 연결 (task-016)
 - Cream CLI 0.3.2 엔진 스크립트를 번들 — AOR/AIOps 페인이 실제로 엔진 셸로 부팅
 - 대시보드 정직화: Claude 프롬프트 캐시 읽기를 "절감"으로 세던 계산 분리 (기존 3.26억 → 실제 압축 절감 약 3.5만)
