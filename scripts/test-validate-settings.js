@@ -84,6 +84,9 @@ module.exports = {
   LAUNCH_SHIM_NAMES,
   isOwnLaunchShim,
   isCanonicalInstall,
+  applyRendererSettings,
+  ensureBuiltinCli,
+  isAllowedCliCommand,
   AOR_RAW_KEEP,
   AOR_REPORT_KEEP,
 };
@@ -105,7 +108,8 @@ const {
   isWithinByteCap, findMissingAiopsTemplates, migrateSettings, SETTINGS_VERSION,
   sanitizeHistoryLayout, applyHistorySnapshot, finalizeHistoryRecord, dropResumableLayouts,
   pickResumableSession, isHistoryExpired, HISTORY_MAX_SESSIONS, sanitizeHistoryRecord,
-  pruneAorRuntime, AOR_RAW_KEEP, AOR_REPORT_KEEP, buildCompressHookSettings, claudeArgsTakeHook, buildLaunchShims, LAUNCH_SHIM_NAMES, isOwnLaunchShim, isCanonicalInstall
+  pruneAorRuntime, AOR_RAW_KEEP, AOR_REPORT_KEEP, buildCompressHookSettings, claudeArgsTakeHook, buildLaunchShims, LAUNCH_SHIM_NAMES, isOwnLaunchShim, isCanonicalInstall,
+  applyRendererSettings, ensureBuiltinCli, isAllowedCliCommand
 } = m.exports;
 
 let pass = 0;
@@ -784,6 +788,41 @@ if (process.platform === 'win32') {
   fs.rmSync(path.join(lad, 'Programs', 'carrotcap-cli'), { force: true, recursive: false });
   fs.rmSync(viaLink, { force: true, recursive: false });
   fs.rmSync(lad, { recursive: true, force: true });
+}
+
+console.log('-- settings persist: renderer saves never drop what the user set (task-022)');
+{
+  const disk = {
+    settingsVersion: 4,
+    aor: { enabled: true, autoStart: true, engineRoot: 'D:\\my-engine', compressHook: true },
+    cli: { claude: { command: 'claude', args: ['--verbose'] }, codex: { command: 'C:\\tools\\codex.cmd', args: [] }, grok: { command: 'grok', args: [] }, my: { command: 'mycli', args: [] } },
+    ui: { fontFamily: 'D2Coding', fontSize: 15 },
+    defaultShell: 'pwsh.exe',
+    defaultProjectPath: 'C:\\old',
+  };
+  // what the renderer sends: its (possibly stale / partial) copy with the toggles it changed
+  const staleRenderer = { aor: { enabled: false, autoStart: false }, cli: { claude: { command: 'claude', args: [] } }, defaultProjectPath: 'C:\\new', ui: { fontSize: 99 } };
+  const out = applyRendererSettings(disk, staleRenderer);
+  check('renderer toggles applied', out.aor.enabled === false && out.aor.autoStart === false && out.defaultProjectPath === 'C:\\new');
+  check('cli kept exactly as on disk (all four, args, full path)', JSON.stringify(out.cli) === JSON.stringify(disk.cli));
+  check('engine path, fonts, shell, version kept', out.aor.engineRoot === 'D:\\my-engine' && out.aor.compressHook === true && out.ui.fontFamily === 'D2Coding' && out.ui.fontSize === 15 && out.defaultShell === 'pwsh.exe' && out.settingsVersion === 4);
+  check('a save with no cli at all keeps the cli', JSON.stringify(applyRendererSettings(disk, { aor: { enabled: true } }).cli) === JSON.stringify(disk.cli));
+  check('compressHook toggle still works', applyRendererSettings(disk, { aor: { compressHook: false } }).aor.compressHook === false);
+  check('renderer cannot inject a cli entry', !('evil' in applyRendererSettings(disk, { cli: { evil: { command: 'calc', args: [] } } }).cli));
+  check('missing/corrupt disk file: only renderer keys', JSON.stringify(applyRendererSettings(null, { defaultProjectPath: 'C:\\p' })) === '{"defaultProjectPath":"C:\\\\p"}');
+
+  const r1 = ensureBuiltinCli({ cli: { claude: { command: 'claude', args: [] } }, ui: {} });
+  check('missing codex/grok restored', r1.changed && r1.settings.cli.codex.command === 'codex' && r1.settings.cli.grok.command === 'grok' && r1.settings.cli.claude.command === 'claude');
+  const r2 = ensureBuiltinCli(disk);
+  check('complete file untouched', r2.changed === false && r2.settings === disk);
+  const r3 = ensureBuiltinCli({ ui: {} });
+  check('no cli at all -> all three', r3.changed && Object.keys(r3.settings.cli).join() === 'claude,codex,grok');
+  const r4 = ensureBuiltinCli({ cli: { grok: { command: '', args: [] }, claude: { command: 'claude', args: ['-x'] }, codex: { command: 'codex', args: [] } } });
+  check('empty command repaired, others kept', r4.changed && r4.settings.cli.grok.command === 'grok' && r4.settings.cli.claude.args[0] === '-x');
+
+  check('plain command name allowed', isAllowedCliCommand('grok') && isAllowedCliCommand('claude.exe'));
+  check('absolute path to an existing file allowed', isAllowedCliCommand(process.execPath));
+  check('missing file / relative / quotes / newline / folder rejected', !isAllowedCliCommand('C:\\nope\\x.exe') && !isAllowedCliCommand('..\\x.exe') && !isAllowedCliCommand('"C:\\a.exe"') && !isAllowedCliCommand('grok\nrm') && !isAllowedCliCommand(__dirname) && !isAllowedCliCommand(null));
 }
 
 console.log('');

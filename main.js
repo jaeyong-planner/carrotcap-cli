@@ -87,6 +87,49 @@ function clipString(s, maxLen) {
   return String(s).replace(/[\x00-\x1F]/g, '').slice(0, maxLen);
 }
 
+// A CLI command from settings.json: a plain name found on PATH, or — since the renderer can
+// no longer write `cli` (applyRendererSettings) — an absolute path to an existing file the
+// user put there themselves (task-022).
+function isAllowedCliCommand(cmd) {
+  if (typeof cmd !== 'string') return false;
+  if (CMD_NAME_RE.test(cmd)) return true;
+  if (cmd.length > 1024 || /["\x00-\x1F]/.test(cmd) || !path.isAbsolute(cmd)) return false;
+  try { return fs.statSync(cmd).isFile(); } catch { return false; }
+}
+
+// The CLIs every CARROTCAP button relies on; restored if missing (task-022).
+const BUILTIN_CLI = {
+  claude: { command: 'claude', args: [] },
+  codex: { command: 'codex', args: [] },
+  grok: { command: 'grok', args: [] },
+};
+function ensureBuiltinCli(settings) {
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return { settings, changed: false };
+  const cli = (settings.cli && typeof settings.cli === 'object' && !Array.isArray(settings.cli)) ? settings.cli : {};
+  const missing = Object.keys(BUILTIN_CLI).filter((k) => !cli[k] || typeof cli[k] !== 'object' || typeof cli[k].command !== 'string' || !cli[k].command);
+  if (!missing.length && settings.cli === cli) return { settings, changed: false };
+  const next = { ...settings, cli: { ...cli } };
+  for (const k of missing) next.cli[k] = { command: BUILTIN_CLI[k].command, args: [] };
+  return { settings: next, changed: true };
+}
+
+// settings:set applies only what the app's own UI changes; everything else (cli, engine
+// paths, fonts, shell...) is kept exactly as it is on disk, so a value the user set in
+// settings.json once is never overwritten by the renderer's older copy (task-022).
+const RENDERER_AOR_KEYS = ['enabled', 'autoStart', 'consoleShims', 'compressHook'];
+function applyRendererSettings(disk, input) {
+  const base = (disk && typeof disk === 'object' && !Array.isArray(disk)) ? disk : {};
+  const v = validateSettings(input);
+  const next = { ...base };
+  if (v.aor) {
+    const aor = (base.aor && typeof base.aor === 'object' && !Array.isArray(base.aor)) ? { ...base.aor } : {};
+    for (const k of RENDERER_AOR_KEYS) if (k in v.aor) aor[k] = v.aor[k];
+    next.aor = aor;
+  }
+  if (typeof v.defaultProjectPath === 'string') next.defaultProjectPath = v.defaultProjectPath;
+  return next;
+}
+
 function validateSettings(input) {
   // Whitelist-based clone. Unknown keys and malformed values are dropped silently.
   // Threat model: a compromised renderer cannot use settings:set as a write-anywhere
@@ -563,7 +606,15 @@ function loadSettings() {
 
 function saveSettings(next) {
   fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true });
-  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(next, null, 2), 'utf8');
+  // Temp file + rename: a crash mid-write must not leave a half file, which the next start
+  // would treat as corrupt and replace with defaults (task-022).
+  const tmp = `${SETTINGS_PATH}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf8');
+    fs.renameSync(tmp, SETTINGS_PATH);
+  } finally {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* renamed away */ }
+  }
 }
 
 function buildDefaultSettings() {
@@ -608,9 +659,10 @@ function initUserState() {
   }
   {
     const { settings, changed } = migrateSettings(loadSettings());
-    if (changed) {
-      saveSettings(settings);
-      console.log('[carrotcap] settings migrated to version', SETTINGS_VERSION);
+    const repaired = ensureBuiltinCli(settings);
+    if (changed || repaired.changed) {
+      saveSettings(repaired.settings);
+      console.log('[carrotcap] settings migrated to version', SETTINGS_VERSION, repaired.changed ? '(built-in CLIs restored)' : '');
     }
   }
   if (!fs.existsSync(CLAUDE_MD_PATH)) {
@@ -1119,8 +1171,8 @@ function resolvePtyArgs(opts) {
     if (!cli) return { error: `CLI key '${opts.cliKey}' not configured in settings.json` };
     // Defense in depth: validateSettings already enforces these on write, but settings.json
     // could have been edited manually before the validator existed.
-    if (!CMD_NAME_RE.test(cli.command || '')) {
-      return { error: `CLI command '${cli.command}' rejected: must match ${CMD_NAME_RE}` };
+    if (!isAllowedCliCommand(cli.command || '')) {
+      return { error: `CLI command '${cli.command}' rejected: a command name on PATH or an absolute path to an existing file` };
     }
     const cliArgs = Array.isArray(cli.args) ? cli.args.filter((a) => typeof a === 'string') : [];
     // Only when the command really is Claude Code (a custom command may not take --settings).
@@ -1389,9 +1441,14 @@ function on(channel, fn) {
   });
 }
 
-handle('settings:get', () => loadSettings());
+handle('settings:get', () => {
+  // Repair a file that lost a built-in CLI (edited by hand, another build, ...) — task-022
+  const { settings, changed } = ensureBuiltinCli(loadSettings());
+  if (changed) { try { saveSettings(settings); } catch (e) { console.warn('[carrotcap] settings repair failed:', e.message); } }
+  return settings;
+});
 handle('settings:set', (_e, next) => {
-  saveSettings(validateSettings(next));
+  saveSettings(applyRendererSettings(loadSettings(), next));
   cliStatusCache = { at: 0, value: null }; // CLI commands may have changed
   compressHookCache = null;                // aor.compressHook may have changed
   return true;
@@ -1725,7 +1782,7 @@ handle('cli:status', async () => {
   await Promise.all(Object.entries(cli).map(async ([key, val]) => {
     if (!CLI_KEY_RE.test(key) || RESERVED_OBJECT_KEYS.has(key)) return;
     const cmd = val && typeof val.command === 'string' ? val.command : '';
-    out[key] = CMD_NAME_RE.test(cmd) ? await whichCommand(cmd) : false;
+    out[key] = CMD_NAME_RE.test(cmd) ? await whichCommand(cmd) : isAllowedCliCommand(cmd);
   }));
   cliStatusCache = { at: Date.now(), value: out };
   return out;

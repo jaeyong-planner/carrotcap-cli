@@ -41,7 +41,7 @@ fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({
 
   console.log('-- engine boot (task-016)');
   check('pane boots through the AOR engine', await waitFor(async () => /\[AOR\] Ready/.test(await rows()), { timeoutMs: 30000 }));
-  check('console shims off by default', /Console auto-capture off/.test(await rows()));
+  check('console shims off by default', await waitFor(async () => /Console auto-capture off/.test(await rows()), { timeoutMs: 8000 }));
   await sleep(1000);
   await type(`if ($env:PATH -split ';' | Where-Object { $_ -like '*\\shims' }) { 'SHIMS-ON' } else { 'SHIMS-OFF' }`);
   check('shim dir not on PATH', await waitFor(async () => /^SHIMS-OFF/m.test(await rows()), { timeoutMs: 8000 }));
@@ -124,6 +124,19 @@ fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({
   await ev(`window.carrotcap.setSettings(${JSON.stringify({ ...cur, aor: { ...cur.aor, compressHook: false } })})`);
   const st2 = await ev(`window.carrotcap.aorStatus()`);
   check('aor.compressHook=false → no hook', st2.compressHook === null, JSON.stringify(st2));
+
+  console.log('-- settings persist (task-022)');
+  const onDisk = JSON.parse(fs.readFileSync(path.join(userData, 'settings.json'), 'utf8'));
+  check('codex and grok restored on start (file had only claude)', onDisk.cli && onDisk.cli.codex && onDisk.cli.grok && onDisk.cli.claude.command === 'claude', JSON.stringify(onDisk.cli));
+  // A value edited by hand while the app runs survives the next save from the app.
+  onDisk.cli.grok = { command: 'grok', args: ['--hand-edited'] };
+  onDisk.ui = { ...(onDisk.ui || {}), fontSize: 17 };
+  fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify(onDisk, null, 2));
+  await ev(`window.carrotcap.setSettings(${JSON.stringify({ ...cur, aor: { ...cur.aor, autoStart: false } })})`); // the renderer's older copy
+  const after = JSON.parse(fs.readFileSync(path.join(userData, 'settings.json'), 'utf8'));
+  check('hand-edited cli args and font size kept after an app save', after.cli.grok.args[0] === '--hand-edited' && after.ui.fontSize === 17, JSON.stringify({ grok: after.cli.grok, ui: after.ui }));
+  check('the app toggle itself was saved', after.aor.autoStart === false);
+  check('no temp file left next to settings.json', !fs.readdirSync(userData).some((n) => n.startsWith('settings.json.') && n.endsWith('.tmp')));
 
   await app.close();
   console.log('');
