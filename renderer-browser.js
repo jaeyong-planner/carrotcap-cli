@@ -259,7 +259,8 @@
     remove.title = '첨부 빼기';
     remove.setAttribute('aria-label', '콘솔 에러 첨부 빼기');
     remove.textContent = '✕';
-    remove.onclick = () => dropAttachment();
+    // the button disappears with the chip: hand keyboard focus back to the input (review r7)
+    remove.onclick = () => { dropAttachment(); if (composerInput) composerInput.focus(); };
     head.append(title, remove);
     attachEl.appendChild(head);
     for (const l of st.attach.lines.slice(0, MAX_PREVIEW)) {

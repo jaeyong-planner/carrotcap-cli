@@ -132,6 +132,7 @@ const server = http.createServer((req, res) => {
   check('errors stay "new" until actually sent', await ev(`document.querySelector('#br-err-count').classList.contains('has')`));
   await ev(`document.querySelector('#composer-attach-remove').click(), true`);
   check('✕ removes the attachment', (await attachText()) === '' && !(await ev(`window.CarrotcapBrowser.hasAttachment()`)));
+  check('focus goes back to the input after ✕', (await ev(`document.activeElement && document.activeElement.id`)) === 'composer-input');
   await ev(`document.querySelector('#br-errors-to-chat').click(), true`);
   await waitFor(async () => /boom-on-load/.test(await attachText()));
 
