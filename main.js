@@ -2,7 +2,7 @@
 // 책임: BrowserWindow 띄우기, node-pty로 실제 셸 스폰, IPC로 렌더러와 통신,
 //      폴더 다이얼로그/트리/검색, AOR 엔진(routed shell) 통합 진입점.
 
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, Menu, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -23,14 +23,32 @@ try {
   console.warn('[carrotcap] pty load failed, falling back to child_process:', err.message);
 }
 const { spawn } = require('child_process');
+const { clmBaseUrl, CLM_DEFAULT_URL } = require('./scripts/system-one.js'); // task-025
 
 const APP_ROOT = __dirname;
-const SETTINGS_PATH = path.join(APP_ROOT, 'settings.json');
-const CLAUDE_MD_PATH = path.join(APP_ROOT, 'CLAUDE.md');
+// task-008: mutable state lives in a per-user data dir, never next to the code.
+// Packaged builds cannot write into app.asar, and dev runs must not dirty the
+// tracked settings.json / CLAUDE.md. A fixed dir name keeps CARROTCAP separate
+// from other Electron apps (e.g. Cream CLI uses %APPDATA%\cream-cli).
+// CARROTCAP_USER_DATA_DIR (absolute path) isolates test runs (scripts/test-electron-smoke.js).
+const userDataOverride = process.env.CARROTCAP_USER_DATA_DIR;
+const USER_DATA_ROOT = (userDataOverride && path.isAbsolute(userDataOverride))
+  ? userDataOverride
+  : path.join(app.getPath('appData'), app.isPackaged ? 'carrotcap-cli' : 'carrotcap-cli-dev');
+// app.setPath may throw for a directory that does not exist yet (fresh profile).
+try { fs.mkdirSync(USER_DATA_ROOT, { recursive: true }); } catch { /* setPath/initUserState surface it */ }
+app.setPath('userData', USER_DATA_ROOT);
+// Bundled, read-only defaults shipped with the app.
+const BUNDLED_SETTINGS_PATH  = path.join(APP_ROOT, 'settings.json');
+const BUNDLED_CLAUDE_MD_PATH = path.join(APP_ROOT, 'CLAUDE.md');
+const SETTINGS_PATH  = path.join(USER_DATA_ROOT, 'settings.json');
+const CLAUDE_MD_PATH = path.join(USER_DATA_ROOT, 'CLAUDE.md');
 // Workspace state is stored separately from settings.json so that the renderer
 // cannot escalate by stuffing arbitrary paths into the allowlist via settings:set.
 // Only the main process reads/writes this file (task-004 reflection).
-const WORKSPACE_STATE_PATH = path.join(APP_ROOT, 'workspace-state.json');
+const WORKSPACE_STATE_PATH = path.join(USER_DATA_ROOT, 'workspace-state.json');
+// v0.1.0 dev runs wrote workspace grants next to the code; migrated once at boot.
+const LEGACY_WORKSPACE_STATE_PATH = path.join(APP_ROOT, 'workspace-state.json');
 
 let mainWindow = null;
 const sessions = new Map(); // ptyId -> { proc, kind }
@@ -39,16 +57,13 @@ const sessions = new Map(); // ptyId -> { proc, kind }
 // Hardens IPC inputs and shell invocations against a compromised renderer.
 //   validateSettings: whitelist-based settings sanitizer (Critical #2)
 //   pwshSingleQuote / posixShellQuote: shell-safe argument escaping (Critical #3)
-//   getRegExePath / getPowerShellExePath: PATH-poisoning resistant launchers (Major M1)
+//   getPowerShellExePath: PATH-poisoning resistant launcher (Major M1)
 function getSystem32Path() {
   // Defense in depth: even if SystemRoot is poisoned with a relative or empty
   // value, fall back to the canonical absolute path.
   const envRoot = process.env.SystemRoot;
   const root = (typeof envRoot === 'string' && path.isAbsolute(envRoot)) ? envRoot : 'C:\\Windows';
   return path.join(root, 'System32');
-}
-function getRegExePath() {
-  return path.join(getSystem32Path(), 'reg.exe');
 }
 function getPowerShellExePath() {
   return path.join(getSystem32Path(), 'WindowsPowerShell', 'v1.0', 'powershell.exe');
@@ -73,6 +88,81 @@ function clipString(s, maxLen) {
   return String(s).replace(/[\x00-\x1F]/g, '').slice(0, maxLen);
 }
 
+// Temp file + rename: a crash or failure mid-write leaves the old file as it was, never a
+// half file (which the next start would treat as corrupt and reset to defaults). task-022
+function writeJsonAtomic(file, value, io = fs) {
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    io.writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8');
+    io.renameSync(tmp, file);
+  } finally {
+    try { io.rmSync(tmp, { force: true }); } catch { /* renamed away */ }
+  }
+}
+
+// A CLI command from settings.json: a plain name found on PATH, or — since the renderer can
+// no longer write `cli` (applyRendererSettings) — an absolute path to an existing file the
+// user put there themselves (task-022).
+function isAllowedCliCommand(cmd) {
+  if (typeof cmd !== 'string') return false;
+  if (CMD_NAME_RE.test(cmd)) return true;
+  if (cmd.length > 1024 || /["\x00-\x1F]/.test(cmd) || !path.isAbsolute(cmd)) return false;
+  try { return fs.statSync(cmd).isFile(); } catch { return false; }
+}
+
+// The CLIs every CARROTCAP button relies on; restored if missing (task-022).
+const BUILTIN_CLI = {
+  claude: { command: 'claude', args: [] },
+  codex: { command: 'codex', args: [] },
+  grok: { command: 'grok', args: [] },
+};
+function ensureBuiltinCli(settings) {
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return { settings, changed: false };
+  const cli = (settings.cli && typeof settings.cli === 'object' && !Array.isArray(settings.cli)) ? settings.cli : {};
+  const missing = Object.keys(BUILTIN_CLI).filter((k) => !cli[k] || typeof cli[k] !== 'object' || typeof cli[k].command !== 'string' || !cli[k].command);
+  if (!missing.length && settings.cli === cli) return { settings, changed: false };
+  const next = { ...settings, cli: { ...cli } };
+  for (const k of missing) next.cli[k] = { command: BUILTIN_CLI[k].command, args: [] };
+  return { settings: next, changed: true };
+}
+
+// settings:set applies only what the app's own UI changes; everything else (cli, engine
+// paths, fonts, shell...) is kept exactly as it is on disk, so a value the user set in
+// settings.json once is never overwritten by the renderer's older copy (task-022).
+const RENDERER_AOR_KEYS = ['enabled', 'autoStart', 'consoleShims', 'compressHook'];
+function applyRendererSettings(disk, input) {
+  const base = (disk && typeof disk === 'object' && !Array.isArray(disk)) ? disk : {};
+  const v = validateSettings(input);
+  const next = { ...base };
+  if (v.aor) {
+    const aor = (base.aor && typeof base.aor === 'object' && !Array.isArray(base.aor)) ? { ...base.aor } : {};
+    for (const k of RENDERER_AOR_KEYS) if (k in v.aor) aor[k] = v.aor[k];
+    next.aor = aor;
+  }
+  if (typeof v.defaultProjectPath === 'string') next.defaultProjectPath = v.defaultProjectPath;
+  // task-026: the settings panel changes the theme and the terminal font size (fontFamily stays as on disk)
+  if (v.ui && ('theme' in v.ui || 'fontSize' in v.ui)) {
+    const ui = (base.ui && typeof base.ui === 'object' && !Array.isArray(base.ui)) ? { ...base.ui } : {};
+    if ('theme' in v.ui) ui.theme = v.ui.theme;
+    if ('fontSize' in v.ui) ui.fontSize = v.ui.fontSize;
+    next.ui = ui;
+  }
+  return next;
+}
+
+// task-026: theme → the window's own background (before the page paints) and native widgets
+function uiThemeOf(settings) {
+  const t = settings && settings.ui && settings.ui.theme;
+  return UI_THEMES.includes(t) ? t : 'dark';
+}
+const WINDOW_BG = { dark: '#0D1117', light: '#FFFFFF' };
+function applyNativeTheme(settings) {
+  const pref = uiThemeOf(settings);
+  try { nativeTheme.themeSource = pref; } catch { /* not in tests */ }
+  const dark = pref === 'dark' || (pref === 'system' && nativeTheme && nativeTheme.shouldUseDarkColors);
+  return dark ? WINDOW_BG.dark : WINDOW_BG.light;
+}
+
 function validateSettings(input) {
   // Whitelist-based clone. Unknown keys and malformed values are dropped silently.
   // Threat model: a compromised renderer cannot use settings:set as a write-anywhere
@@ -84,6 +174,8 @@ function validateSettings(input) {
     const aor = {};
     if ('enabled' in input.aor)   aor.enabled = !!input.aor.enabled;
     if ('autoStart' in input.aor) aor.autoStart = !!input.aor.autoStart;
+    if ('consoleShims' in input.aor) aor.consoleShims = !!input.aor.consoleShims;
+    if ('compressHook' in input.aor) aor.compressHook = !!input.aor.compressHook;
     if (typeof input.aor.engineRoot === 'string') aor.engineRoot = clipString(input.aor.engineRoot, 1024);
     if (Array.isArray(input.aor.engineRootCandidates)) {
       aor.engineRootCandidates = input.aor.engineRootCandidates
@@ -110,6 +202,9 @@ function validateSettings(input) {
     out.cli = cli;
   }
 
+  if (Number.isInteger(input.settingsVersion) && input.settingsVersion > 0 && input.settingsVersion < 1000) {
+    out.settingsVersion = input.settingsVersion;
+  }
   if (typeof input.defaultShell === 'string')       out.defaultShell = clipString(input.defaultShell, 256);
   if (typeof input.defaultProjectPath === 'string') out.defaultProjectPath = clipString(input.defaultProjectPath, 1024);
   // recentWorkspaces is INTENTIONALLY NOT in this whitelist. It is workspace
@@ -118,14 +213,97 @@ function validateSettings(input) {
   if (input.ui && typeof input.ui === 'object' && !Array.isArray(input.ui)) {
     const ui = {};
     if (typeof input.ui.theme === 'string' && UI_THEMES.includes(input.ui.theme)) ui.theme = input.ui.theme;
-    if (typeof input.ui.fontSize === 'number' && Number.isFinite(input.ui.fontSize) && input.ui.fontSize >= 8 && input.ui.fontSize <= 64) {
+    if (typeof input.ui.fontSize === 'number' && Number.isFinite(input.ui.fontSize) && input.ui.fontSize >= 8 && input.ui.fontSize <= 32) {
       ui.fontSize = Math.floor(input.ui.fontSize);
     }
     if (typeof input.ui.fontFamily === 'string') ui.fontFamily = clipString(input.ui.fontFamily, 256);
     out.ui = ui;
   }
 
+  // task-025: CLM-8B server used by scripts/system-one.js (same URL rules as the script:
+  // http only on loopback, anything remote over https, no credentials/query)
+  if (input.systemOne && typeof input.systemOne === 'object' && !Array.isArray(input.systemOne)) {
+    const so = {};
+    const clm = typeof input.systemOne.clmUrl === 'string' ? clmBaseUrl(input.systemOne.clmUrl) : null;
+    if (clm) so.clmUrl = clm;
+    out.systemOne = so;
+  }
+
   return out;
+}
+
+// task-025: API keys the user keeps in %USERPROFILE%\.carrotcap\keys.env (KEY=value per line,
+// # comments). Read on every terminal spawn, so a key typed in works without restarting the
+// app. Only these names are read; values go into terminal env only (never to the renderer).
+const USER_KEY_NAMES = ['TYPESAFE_API_KEY', 'CLM_API_KEY'];
+function userKeysPath() {
+  // dev tree / E2E only: a different file (the packaged app always uses the profile file)
+  if (!app.isPackaged && process.env.CARROTCAP_KEYS_FILE) return process.env.CARROTCAP_KEYS_FILE;
+  return path.join(os.homedir(), '.carrotcap', 'keys.env');
+}
+function loadUserKeys() {
+  let text;
+  try {
+    const p = userKeysPath();
+    const st = fs.lstatSync(p);
+    if (!st.isFile() || st.size > 64 * 1024) return {};
+    text = fs.readFileSync(p, 'utf8');
+  } catch { return {}; }
+  const out = {};
+  for (const line of text.replace(/^﻿/, '').split(/\r?\n/)) {
+    const m = /^\s*([A-Z_]+)\s*=\s*(.*?)\s*$/.exec(line);
+    if (!m || !USER_KEY_NAMES.includes(m[1])) continue;
+    const v = m[2].replace(/^(['"])(.*)\1$/, '$2').trim();
+    if (v && v.length <= 512 && !/[\s\0]/.test(v)) out[m[1]] = v;
+  }
+  return out;
+}
+
+// CLM server base URL from settings (default: clm-serve on this machine).
+function resolveClmUrl(settings) {
+  const s = settings && settings.systemOne && typeof settings.systemOne.clmUrl === 'string' ? clmBaseUrl(settings.systemOne.clmUrl) : null;
+  return s || CLM_DEFAULT_URL;
+}
+
+// Each step runs once per settings file (settingsVersion), so a later user choice
+// (removing grok, unchecking AIOps) is not overridden on every launch.
+//   v2 (task-012): Gemini/Antigravity (Google) CLIs removed; Grok handles images/videos.
+//   v3: AIOps mode on by default (it used to default to off, so nobody had chosen "off").
+const SETTINGS_VERSION = 4;
+// Terminal font order (task-020): JetBrains Mono first, then the Windows/macOS fallbacks.
+const DEFAULT_MONO_FONT = "'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'IBM Plex Mono', 'SF Mono', Consolas, monospace";
+const OLD_DEFAULT_MONO_FONT = 'Cascadia Code, Consolas, monospace';
+const REMOVED_CLI_NAMES = new Set(['gemini', 'antigravity', 'agy']);
+function migrateSettings(settings) {
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return { settings, changed: false };
+  // Only a real integer counts as "already migrated" — '2', 2.5, null etc. migrate.
+  const version = Number.isInteger(settings.settingsVersion) ? settings.settingsVersion : 1;
+  if (version >= SETTINGS_VERSION) return { settings, changed: false };
+  const next = { ...settings, settingsVersion: SETTINGS_VERSION };
+  if (version < 2) {
+    const cli = {};
+    const srcCli = (settings.cli && typeof settings.cli === 'object' && !Array.isArray(settings.cli)) ? settings.cli : {};
+    for (const [key, val] of Object.entries(srcCli)) {
+      const cmd = val && typeof val.command === 'string' ? val.command.toLowerCase() : '';
+      if (REMOVED_CLI_NAMES.has(key.toLowerCase()) || REMOVED_CLI_NAMES.has(cmd)) continue;
+      cli[key] = val;
+    }
+    if (!cli.grok) cli.grok = { command: 'grok', args: [] };
+    next.cli = cli;
+  }
+  if (version < 3) {
+    const aor = (settings.aor && typeof settings.aor === 'object' && !Array.isArray(settings.aor)) ? settings.aor : {};
+    // v1 files come from builds where "off" was merely the default → turn on.
+    // v2 files may hold a choice the user made in v0.2 → keep a real boolean.
+    const keep = version === 2 && typeof aor.autoStart === 'boolean';
+    next.aor = { ...aor, autoStart: keep ? aor.autoStart : true };
+  }
+  if (version < 4) {
+    // Only the untouched old default moves to the new font order; a chosen font stays.
+    const ui = (settings.ui && typeof settings.ui === 'object' && !Array.isArray(settings.ui)) ? settings.ui : null;
+    if (ui && (ui.fontFamily === OLD_DEFAULT_MONO_FONT || ui.fontFamily === undefined)) next.ui = { ...ui, fontFamily: DEFAULT_MONO_FONT };
+  }
+  return { settings: next, changed: true };
 }
 
 function pwshSingleQuote(s) {
@@ -184,9 +362,9 @@ function addAllowedWorkspace(p) {
   return real;
 }
 
-function loadWorkspaceState() {
+function loadWorkspaceState(filePath = WORKSPACE_STATE_PATH) {
   try {
-    const raw = fs.readFileSync(WORKSPACE_STATE_PATH, 'utf8');
+    const raw = fs.readFileSync(filePath, 'utf8');
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { recentWorkspaces: [] };
     const recent = Array.isArray(parsed.recentWorkspaces)
@@ -197,8 +375,8 @@ function loadWorkspaceState() {
 }
 
 function saveWorkspaceState(state) {
-  try { fs.writeFileSync(WORKSPACE_STATE_PATH, JSON.stringify(state, null, 2), 'utf8'); }
-  catch (e) { console.warn('[carrotcap] saveWorkspaceState failed:', e.message); }
+  try { fs.writeFileSync(WORKSPACE_STATE_PATH, JSON.stringify(state, null, 2), 'utf8'); return true; }
+  catch (e) { console.warn('[carrotcap] saveWorkspaceState failed:', e.message); return false; }
 }
 
 function getTemplateRoot() {
@@ -211,16 +389,13 @@ function getTemplateRoot() {
 function copyTemplateIfMissing(sourcePath, destPath, projectRoot) {
   // Reads a template from the bundled app and writes it to the project workspace
   // via writeIfMissing (which already enforces ancestor symlink + post-write realpath).
-  // Silently skips when the template is missing in this build (warn for diagnostics).
-  if (!fs.existsSync(sourcePath)) {
-    console.warn('[carrotcap] aiops template missing:', sourcePath);
-    return false;
-  }
+  // Returns true (written) / false (destination already exists — kept as is).
+  // A missing or unreadable template THROWS so callers never report a partial setup
+  // as success (Codex task-014 r5).
   let content;
   try { content = fs.readFileSync(sourcePath, 'utf8'); }
   catch (e) {
-    console.warn('[carrotcap] aiops template read failed:', sourcePath, e.message);
-    return false;
+    throw new Error(`aiops template unreadable: ${sourcePath} (${e.message})`);
   }
   return writeIfMissing(destPath, content, projectRoot);
 }
@@ -237,89 +412,335 @@ function persistRecentWorkspace(real) {
   state.recentWorkspaces = filtered.slice(0, MAX_RECENT_WORKSPACES);
   saveWorkspaceState(state);
 }
+
+// IPC payload validation (task-007): pty:* and aor:set-claude-md.
+const PTY_MODES = new Set(['plain', 'aor', 'aiops', 'cli']);
+const PTY_ID_RE = /^pty_\d{1,16}_[a-z0-9]{1,16}$/;
+const MAX_PTY_WRITE_BYTES = 1024 * 1024;  // 1MB (UTF-8) per write / clipboard transfer
+const MAX_CLAUDE_MD_BYTES = 512 * 1024;   // 512KB
+const PTY_READY_QUIET_MS  = 700;          // shell printed its prompt and went quiet
+const PTY_READY_MAX_MS    = 10000;        // give up waiting (silent shells)
+
+function clampInt(v, min, max, fallback) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(v)));
+}
+
+function resolveAllowedDir(p) {
+  // Returns the canonical realpath of p only if it is an existing directory
+  // inside an allowed workspace; otherwise null.
+  if (typeof p !== 'string' || !p || !isPathInsideAllowedWorkspace(p)) return null;
+  const real = safeRealpath(p);
+  if (!real) return null;
+  try { return fs.statSync(real).isDirectory() ? real : null; } catch { return null; }
+}
+
+function sanitizeSpawnPayload(input) {
+  // Whitelist clone of the renderer's pty:spawn payload. cwd outside the
+  // workspace allowlist is dropped (spawn falls back to the home directory) so
+  // AIOps auto-setup can never write outside a folder the user picked.
+  const p = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+  const out = {
+    mode: PTY_MODES.has(p.mode) ? p.mode : 'plain',
+    cols: clampInt(p.cols, 2, 1000, 80),
+    rows: clampInt(p.rows, 1, 500, 24)
+  };
+  if (typeof p.cliKey === 'string' && CLI_KEY_RE.test(p.cliKey) && !RESERVED_OBJECT_KEYS.has(p.cliKey)) {
+    out.cliKey = p.cliKey;
+  }
+  const cwd = resolveAllowedDir(p.cwd);
+  if (cwd) out.cwd = cwd;
+  return out;
+}
+
+function isValidPtyId(id) {
+  return typeof id === 'string' && PTY_ID_RE.test(id);
+}
+
+// ---- Session history (task-013) — pure helpers, file I/O lives near the IPC handlers ----
+// Stores only what is needed to resume: tab/pane layout, which CLI ran in each pane,
+// the last backlog task and timestamps. No terminal output, no keystrokes.
+const HISTORY_MAX_SESSIONS   = 5;
+const HISTORY_MAX_TABS       = 8;
+const HISTORY_MAX_PANES      = 8;
+const HISTORY_RETENTION_MS   = 30 * 24 * 60 * 60 * 1000;
+const TASK_NAME_RE           = /^task-[A-Za-z0-9._-]{1,60}$/;
+
+function sanitizeHistoryLayout(input) {
+  if (!input || typeof input !== 'object' || !Array.isArray(input.tabs)) return null;
+  const tabs = [];
+  for (const t of input.tabs.slice(0, HISTORY_MAX_TABS)) {
+    if (!t || !Array.isArray(t.panes)) continue;
+    const panes = [];
+    for (const p of t.panes.slice(0, HISTORY_MAX_PANES)) {
+      if (!p || typeof p !== 'object') continue;
+      const cli = (typeof p.cli === 'string' && CLI_KEY_RE.test(p.cli) && !RESERVED_OBJECT_KEYS.has(p.cli)) ? p.cli : null;
+      panes.push({ mode: PTY_MODES.has(p.mode) ? p.mode : 'plain', cli });
+    }
+    if (panes.length) tabs.push({ panes });
+  }
+  return tabs.length ? { tabs } : null;
+}
+
+// Files on disk are re-validated on every read (task-012/013 review): a corrupted or
+// hand-edited record must not reach the renderer unbounded or crash it.
+const ISO_RE = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/;
+function sanitizeHistorySession(s) {
+  if (!s || typeof s !== 'object' || typeof s.id !== 'string' || !/^[a-z0-9-]{1,40}$/.test(s.id)) return null;
+  const iso = (v) => (typeof v === 'string' && ISO_RE.test(v) ? v : null);
+  const out = {
+    id: s.id,
+    startedAt: iso(s.startedAt),
+    endedAt: iso(s.endedAt),
+    clean: s.clean === true,
+    lastTask: (typeof s.lastTask === 'string' && TASK_NAME_RE.test(s.lastTask)) ? s.lastTask : null,
+    tabCount: clampInt(s.tabCount, 0, HISTORY_MAX_TABS, 0),
+    paneCount: clampInt(s.paneCount, 0, HISTORY_MAX_TABS * HISTORY_MAX_PANES, 0),
+    clis: Array.isArray(s.clis)
+      ? s.clis.filter((c) => typeof c === 'string' && CLI_KEY_RE.test(c) && !RESERVED_OBJECT_KEYS.has(c)).slice(0, 8)
+      : []
+  };
+  if (!out.startedAt) return null;
+  const layout = sanitizeHistoryLayout(s.layout);
+  if (layout) out.layout = layout;
+  return out;
+}
+function sanitizeHistoryRecord(rec) {
+  if (!rec || typeof rec !== 'object' || !Array.isArray(rec.sessions)) return null;
+  const sessions = rec.sessions.slice(0, HISTORY_MAX_SESSIONS * 2).map(sanitizeHistorySession).filter(Boolean).slice(0, HISTORY_MAX_SESSIONS);
+  return {
+    v: 1,
+    projectRoot: typeof rec.projectRoot === 'string' ? rec.projectRoot.slice(0, 1024) : null,
+    updatedAt: typeof rec.updatedAt === 'string' && ISO_RE.test(rec.updatedAt) ? rec.updatedAt : null,
+    sessions
+  };
+}
+
+function summarizeLayout(layout) {
+  const clis = new Set();
+  let paneCount = 0;
+  for (const t of (layout && layout.tabs) || []) {
+    for (const p of t.panes) { paneCount++; if (p.cli) clis.add(p.cli); }
+  }
+  return { tabCount: ((layout && layout.tabs) || []).length, paneCount, clis: [...clis].sort() };
+}
+
+function applyHistorySnapshot(record, { sessionId, projectRoot, layout, nowIso, lastTask }) {
+  const base = (record && Array.isArray(record.sessions)) ? record : { v: 1, sessions: [] };
+  const sessions = base.sessions.filter((s) => s && s.id !== sessionId);
+  const prev = base.sessions.find((s) => s && s.id === sessionId);
+  sessions.unshift({
+    id: sessionId,
+    startedAt: prev ? prev.startedAt : nowIso,
+    endedAt: null,
+    clean: false,
+    lastTask: (typeof lastTask === 'string' && TASK_NAME_RE.test(lastTask)) ? lastTask : (prev ? prev.lastTask || null : null),
+    ...summarizeLayout(layout),
+    layout
+  });
+  return { v: 1, projectRoot, updatedAt: nowIso, sessions: sessions.slice(0, HISTORY_MAX_SESSIONS) };
+}
+
+// Clean end of an app run: close this run's sessions, keep the layout only on the
+// newest session (the one a later resume would use), cap the list.
+function finalizeHistoryRecord(record, currentIds, nowIso) {
+  if (!record || !Array.isArray(record.sessions)) return record;
+  const sessions = record.sessions
+    .filter(Boolean)
+    .map((s) => (currentIds.has(s.id) ? { ...s, endedAt: nowIso, clean: true } : { ...s }))
+    .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))
+    .slice(0, HISTORY_MAX_SESSIONS)
+    .map((s, i) => { if (i > 0) delete s.layout; return s; });
+  return { ...record, updatedAt: nowIso, sessions };
+}
+
+function dropResumableLayouts(record, keepIds) {
+  if (!record || !Array.isArray(record.sessions)) return record;
+  return {
+    ...record,
+    sessions: record.sessions.map((s) => {
+      if (!s || keepIds.has(s.id)) return s;
+      const { layout, ...rest } = s;
+      return rest;
+    })
+  };
+}
+
+function pickResumableSession(record, excludeIds) {
+  if (!record || !Array.isArray(record.sessions)) return null;
+  const s = record.sessions.find((x) => x && !excludeIds.has(x.id) && x.layout && x.layout.tabs && x.layout.tabs.length);
+  if (!s) return null;
+  return { startedAt: s.startedAt, endedAt: s.endedAt, clean: !!s.clean, lastTask: s.lastTask || null, clis: s.clis || [], layout: s.layout };
+}
+
+function isHistoryExpired(record, nowMs) {
+  const t = Date.parse(record && record.updatedAt);
+  return !Number.isFinite(t) || nowMs - t > HISTORY_RETENTION_MS;
+}
+
+function isWithinByteCap(s, maxBytes) {
+  // Cheap reject first: a UTF-8 string is never shorter in bytes than in UTF-16 units.
+  return typeof s === 'string' && s.length <= maxBytes && Buffer.byteLength(s, 'utf8') <= maxBytes;
+}
+
+function validateClaudeMdContent(content) {
+  if (typeof content !== 'string') return false;
+  if (content.includes('\x00')) return false;
+  return isWithinByteCap(content, MAX_CLAUDE_MD_BYTES);
+}
 // ---------- end security helpers ----------
 
-// Self-heal the global `carrotcap` / `aor` CLI registration on every packaged launch.
-// Why: NSIS installer can fail to create the shim (antivirus quarantine, locked
-// WindowsApps folder, sysadmin running a portable copy, manual exe copy, etc.).
-// A user who can launch the GUI from Start Menu must always end up with a
-// working command afterwards in any new shell.
+// `carrotcap` in any terminal opens THIS app (task-018).
+// Cream CLI (a separate product) rewrites WindowsApps\carrotcap.cmd + aor.cmd on every
+// launch, and WindowsApps sits in the machine PATH before anything we could add to the
+// user PATH. Within one folder Windows tries PATHEXT in order (.COM;.EXE;.BAT;.CMD), so
+// our carrotcap.bat wins over Cream's carrotcap.cmd in cmd / PowerShell 5.1 / pwsh 7,
+// and an extensionless `carrotcap` covers Git Bash. Cream's files (and `aor`) are never
+// touched. The user PATH is not edited: it is long on this kind of machine and a
+// truncating write would be destructive. Assumes the default PATHEXT order and
+// WindowsApps on PATH (Windows 10/11 defaults).
+// Ownership (review task-018 r1): our launchers carry LAUNCH_SHIM_MARK on line 2 —
+// byte-identical to what build/installer.nsh writes. A same-named file without it, a
+// link or a folder is never overwritten.
+const LAUNCH_SHIM_NAMES = ['carrotcap.bat', 'carrotcap'];
+const LAUNCH_SHIM_MARK = 'CARROTCAP-CLI-LAUNCHER';
+function buildLaunchShims(exePath) {
+  if (typeof exePath !== 'string' || !path.win32.isAbsolute(exePath) || /["\r\n]/.test(exePath)) return null;
+  const shq = (s) => "'" + s.replace(/'/g, "'\\''") + "'";
+  return {
+    // cmd expands %NAME% even inside quotes: a literal % is written as %%.
+    // DisableDelayedExpansion: under `cmd /V:ON` a ! in the path would otherwise expand.
+    'carrotcap.bat': `@echo off\r\nrem ${LAUNCH_SHIM_MARK}\r\nsetlocal DisableDelayedExpansion\r\nstart "" "${exePath.replace(/%/g, '%%')}" %*\r\n`,
+    carrotcap: `#!/bin/sh\n# ${LAUNCH_SHIM_MARK}\n${shq(exePath.replace(/\\/g, '/'))} "$@" >/dev/null 2>&1 &\n`,
+  };
+}
+// true when `content` is one of our launchers (marker on the second line).
+function isOwnLaunchShim(content) {
+  if (typeof content !== 'string') return false;
+  const second = content.split('\n')[1];
+  return typeof second === 'string' && ['rem ', '# '].some((p) => second.replace(/\r$/, '') === p + LAUNCH_SHIM_MARK);
+}
+// Only the installed copy may (re)register the command — an old copy elsewhere must not
+// repoint `carrotcap` at itself. realpath == the canonical path also rules out links on
+// the way (review task-018 r4).
+function isCanonicalInstall(exePath, localAppData) {
+  if (typeof exePath !== 'string' || typeof localAppData !== 'string' || !localAppData) return false;
+  const canonical = path.win32.join(localAppData, 'Programs', 'carrotcap-cli', 'carrotcap.exe');
+  let real;
+  try { real = fs.realpathSync.native(exePath); } catch { return false; }
+  return real.toLowerCase() === canonical.toLowerCase() && exePath.toLowerCase() === canonical.toLowerCase();
+}
+// Problem found by the last self-heal (shown by the renderer via aor:status), or null.
+let cliRegistrationProblem = null;
+// Self-heal the `carrotcap` command on every launch of the installed app (installer may
+// have been blocked, a launcher deleted...).
 function ensureCliRegistration() {
   if (process.platform !== 'win32') return;
-  if (!app.isPackaged) return; // dev runs (npm start) shouldn't poke registry/PATH
+  if (!app.isPackaged) return; // dev runs (npm start) must not touch the user's commands
   if (!process.env.LOCALAPPDATA) return;
   const exePath = process.execPath;
-  if (!/carrotcap\.exe$/i.test(exePath)) return; // safety: only when running the real binary
-
-  const { execFileSync } = require('child_process');
-
-  // 1) Shim: %LOCALAPPDATA%\Microsoft\WindowsApps\carrotcap.cmd and aor.cmd
-  //    This folder is on the per-user PATH by default on Windows 10/11.
+  if (!isCanonicalInstall(exePath, process.env.LOCALAPPDATA)) return;
+  const shims = buildLaunchShims(exePath);
+  if (!shims) return;
+  const problems = [];
   try {
     const shimDir = path.join(process.env.LOCALAPPDATA, 'Microsoft', 'WindowsApps');
-    const expected = `@echo off\r\nstart "" "${exePath}" %*\r\n`;
     if (!fs.existsSync(shimDir)) fs.mkdirSync(shimDir, { recursive: true });
-    for (const name of ['carrotcap.cmd', 'aor.cmd']) {
+    for (const name of LAUNCH_SHIM_NAMES) {
       const shimPath = path.join(shimDir, name);
-      let needWrite = true;
-      if (fs.existsSync(shimPath)) {
-        try {
-          const current = fs.readFileSync(shimPath, 'utf8');
-          if (current === expected) needWrite = false;
-        } catch (_) { /* unreadable -> rewrite */ }
+      let current = null;
+      let exists = true;
+      try {
+        if (!fs.lstatSync(shimPath).isFile()) { problems.push(`${shimPath} is a folder or link`); continue; }
+      } catch { exists = false; }
+      if (exists) {
+        try { current = fs.readFileSync(shimPath, 'utf8'); } catch (e) { problems.push(`${shimPath}: ${e.message}`); continue; }
+        if (!isOwnLaunchShim(current)) { problems.push(`${shimPath} belongs to another program`); continue; }
       }
-      if (needWrite) {
-        fs.writeFileSync(shimPath, expected, 'utf8');
+      if (current !== shims[name]) {
+        fs.writeFileSync(shimPath, shims[name], 'utf8');
         console.log('[carrotcap] CLI shim ensured:', shimPath);
       }
     }
   } catch (err) {
-    console.warn('[carrotcap] CLI shim self-heal failed:', err.message);
+    problems.push(err.message);
   }
+  cliRegistrationProblem = problems.length
+    ? `${problems.join('; ')} — fix it, then run: powershell -ExecutionPolicy Bypass -File "${path.join(process.resourcesPath, 'repair-cli.ps1')}"`
+    : null;
+  if (cliRegistrationProblem) console.warn('[carrotcap] carrotcap command not fully registered:', cliRegistrationProblem);
+}
 
-  // 2) PATH fallback: append install dir to HKCU\Environment\Path if missing.
-  //    Belt-and-suspenders for environments where WindowsApps is not on PATH.
-  try {
-    const installDir = path.dirname(exePath);
-    const regExe  = getRegExePath();
-    const pwshExe = getPowerShellExePath();
-    let current = '';
-    try {
-      const out = execFileSync(regExe, ['query', 'HKCU\\Environment', '/v', 'Path'], { encoding: 'utf8' });
-      const m = out.match(/Path\s+REG_(?:EXPAND_)?SZ\s+(.*)/);
-      if (m) current = m[1].trim();
-    } catch (_) { /* Path value may not exist yet */ }
-    const norm = (s) => s.replace(/[\\/]+$/, '').toLowerCase();
-    const parts = current.split(';').map((s) => s.trim()).filter(Boolean);
-    const already = parts.some((p) => norm(p) === norm(installDir));
-    if (!already) {
-      const next = current ? `${current};${installDir}` : installDir;
-      execFileSync(regExe, ['add', 'HKCU\\Environment', '/v', 'Path', '/t', 'REG_EXPAND_SZ', '/d', next, '/f'], { stdio: 'ignore' });
-      console.log('[carrotcap] added install dir to user PATH:', installDir);
-      // Notify shells/Explorer of env change. Best-effort; do not fail launch on error.
-      try {
-        execFileSync(pwshExe, [
-          '-NoProfile', '-NonInteractive', '-Command',
-          "$sig='[DllImport(\"user32.dll\", SetLastError=true, CharSet=CharSet.Auto)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);'; $t=Add-Type -MemberDefinition $sig -Name Win32SendMessageTimeout -Namespace Win32Functions -PassThru; [UIntPtr]$out=[UIntPtr]::Zero; [void]$t::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 3000, [ref]$out)"
-        ], { stdio: 'ignore' });
-      } catch (_) { /* broadcast is best-effort */ }
-    }
-  } catch (err) {
-    console.warn('[carrotcap] PATH self-heal failed:', err.message);
-  }
+function readJsonFile(p) {
+  try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; }
 }
 
 function loadSettings() {
-  try {
-    const raw = fs.readFileSync(SETTINGS_PATH, 'utf8');
-    return JSON.parse(raw);
-  } catch (e) {
-    return null;
-  }
+  return readJsonFile(SETTINGS_PATH);
 }
 
 function saveSettings(next) {
-  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(next, null, 2), 'utf8');
+  fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true });
+  writeJsonAtomic(SETTINGS_PATH, next);
+}
+
+function buildDefaultSettings() {
+  return {
+    settingsVersion: SETTINGS_VERSION,
+    aor: {
+      enabled: true,
+      engineRoot: '',
+      engineRootCandidates: [
+        '%USERPROFILE%\\Desktop\\WINDOWS\\WINDOWS',
+        '%USERPROFILE%\\WINDOWS',
+        'C:\\WINDOWS\\carrotcap'
+      ],
+      autoStart: true,
+      consoleShims: false,
+      compressHook: true
+    },
+    cli: {
+      claude: { command: 'claude', args: [] },
+      codex: { command: 'codex', args: [] },
+      grok: { command: 'grok', args: [] }
+    },
+    defaultShell: defaultShell(),
+    defaultProjectPath: os.homedir(),
+    ui: { theme: 'dark', fontSize: 14, fontFamily: DEFAULT_MONO_FONT }
+  };
+}
+
+// task-008: first run seeds the user data dir from the bundled defaults.
+// Existing user files are never overwritten.
+function initUserState() {
+  fs.mkdirSync(USER_DATA_ROOT, { recursive: true });
+  if (fs.existsSync(SETTINGS_PATH) && !loadSettings()) {
+    // Unreadable/corrupt user settings: keep the original for recovery, then re-seed.
+    const backup = `${SETTINGS_PATH}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    fs.renameSync(SETTINGS_PATH, backup);
+    console.warn('[carrotcap] settings.json was unreadable; backed up to', backup);
+  }
+  if (!fs.existsSync(SETTINGS_PATH)) {
+    const seeded = validateSettings(readJsonFile(BUNDLED_SETTINGS_PATH));
+    saveSettings(seeded.cli && Object.keys(seeded.cli).length ? seeded : buildDefaultSettings());
+  }
+  {
+    const { settings, changed } = migrateSettings(loadSettings());
+    const repaired = ensureBuiltinCli(settings);
+    if (changed || repaired.changed) {
+      saveSettings(repaired.settings);
+      console.log('[carrotcap] settings migrated to version', SETTINGS_VERSION, repaired.changed ? '(built-in CLIs restored)' : '');
+    }
+  }
+  if (!fs.existsSync(CLAUDE_MD_PATH)) {
+    try { fs.copyFileSync(BUNDLED_CLAUDE_MD_PATH, CLAUDE_MD_PATH); }
+    catch (e) { console.warn('[carrotcap] CLAUDE.md seed failed:', e.message); }
+  }
+  if (!fs.existsSync(WORKSPACE_STATE_PATH) && fs.existsSync(LEGACY_WORKSPACE_STATE_PATH)) {
+    if (saveWorkspaceState(loadWorkspaceState(LEGACY_WORKSPACE_STATE_PATH))) {
+      console.log('[carrotcap] migrated workspace-state.json to', WORKSPACE_STATE_PATH);
+    }
+  }
 }
 
 function defaultShell() {
@@ -333,15 +754,108 @@ function expandEnv(p) {
   if (!p || typeof p !== 'string') return p;
   return p.replace(/%([^%]+)%/g, (_, name) => process.env[name] || '');
 }
+const aorPrunedAt = new Map();
+function bundledAorRoot() {
+  return app.isPackaged ? path.join(process.resourcesPath, 'AOR') : path.join(APP_ROOT, 'AOR');
+}
+
+// ---- Output-compression hook for Claude Code (task-017) ----
+// A claude started from CARROTCAP gets `--settings <file>` holding one PostToolUse hook
+// (AOR/carrotcap/compress-hook.js) that routes noisy test/build/install output through
+// the AOR engine. The user's own ~/.claude settings are never touched; hooks from
+// --settings are added on top of theirs. Needs node on PATH (the hook is a node script).
+// Functions, not constants: this block is also evaluated by the unit tests.
+const hookDir = () => path.join(USER_DATA_ROOT, 'aor-hook');
+const hookSettingsPath = () => path.join(hookDir(), 'claude-settings.json');
+let compressHookCache = null; // { nodePath, hookScript } — reset on settings:set
+function findNodeSync() {
+  const { execFileSync } = require('child_process');
+  const [file, args] = process.platform === 'win32'
+    ? [path.join(getSystem32Path(), 'where.exe'), ['node']]
+    : ['/usr/bin/which', ['node']];
+  try {
+    const out = execFileSync(file, args, { timeout: 3000, windowsHide: true, encoding: 'utf8' });
+    const first = String(out).split(/\r?\n/).map((l) => l.trim())
+      .find((l) => l && path.isAbsolute(l) && /[\\/]node(\.exe)?$/i.test(l));
+    return first && fs.existsSync(first) ? first : null;
+  } catch { return null; }
+}
+function buildCompressHookSettings(nodePath, hookScript) {
+  // Hook commands run in Git Bash on Windows / sh elsewhere: single-quoted, forward slashes.
+  const q = (p) => "'" + String(p).replace(/\\/g, '/').replace(/'/g, "'\\''") + "'";
+  return { hooks: { PostToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `${q(nodePath)} ${q(hookScript)}`, timeout: 30 }] }] } };
+}
+function hookDirIsSafe() {
+  try {
+    const lst = fs.lstatSync(hookDir());
+    if (lst.isSymbolicLink() || !lst.isDirectory()) return false;
+    return isPathInsideRoot(fs.realpathSync.native(hookDir()), USER_DATA_ROOT);
+  } catch { return false; }
+}
+function hookSettingsFileIsSafe() {
+  try {
+    if (!fs.lstatSync(hookSettingsPath()).isFile() || !hookDirIsSafe()) return false; // a link is not a file to lstat
+    return isPathInsideRoot(fs.realpathSync.native(hookSettingsPath()), fs.realpathSync.native(hookDir()));
+  } catch { return false; }
+}
+// Writes the --settings file if its content differs. Unpredictable temp name + 'wx', so a
+// planted link cannot redirect the write; the result is re-checked (review task-016 r1).
+function writeHookSettings(body) {
+  const file = hookSettingsPath();
+  if (!fs.existsSync(hookDir())) fs.mkdirSync(hookDir(), { recursive: true });
+  if (!hookDirIsSafe()) throw new Error('aor-hook is not a plain directory inside userData');
+  let current = null;
+  if (hookSettingsFileIsSafe()) { try { current = fs.readFileSync(file, 'utf8'); } catch { /* rewrite */ } }
+  if (current !== body) {
+    const tmp = path.join(hookDir(), '.claude-settings.' + require('crypto').randomBytes(6).toString('hex') + '.tmp');
+    try {
+      fs.writeFileSync(tmp, body, { encoding: 'utf8', flag: 'wx' });
+      fs.renameSync(tmp, file);
+    } finally {
+      try { fs.rmSync(tmp, { force: true }); } catch { /* renamed away */ }
+    }
+  }
+  if (!hookSettingsFileIsSafe()) throw new Error('claude-settings.json is not a plain file inside aor-hook');
+}
+// Path of the --settings file, or null when the hook is off or cannot run here.
+// Only the node lookup is cached; the file itself is verified (and rewritten) every call.
+function resolveCompressHook(settings) {
+  if (settings && settings.aor && settings.aor.compressHook === false) return null;
+  if (!compressHookCache) {
+    const root = bundledAorRoot();
+    const hookScript = path.join(root, 'carrotcap', 'compress-hook.js');
+    const engine = process.platform === 'win32'
+      ? path.join(root, 'engine', 'windows', 'bin', 'aor-engine-win.exe')
+      : path.join(root, 'engine', 'macos', 'bin', 'aor-engine-macos');
+    const nodePath = fs.existsSync(hookScript) && fs.existsSync(engine) ? findNodeSync() : null;
+    compressHookCache = { nodePath, hookScript };
+  }
+  const { nodePath, hookScript } = compressHookCache;
+  if (!nodePath) return null;
+  try {
+    writeHookSettings(JSON.stringify(buildCompressHookSettings(nodePath, hookScript), null, 2));
+    return hookSettingsPath();
+  } catch (e) {
+    console.warn('[carrotcap] compress hook unavailable:', e.message);
+    return null;
+  }
+}
+// claude invocations that must not get the hook: the user's own --settings (either form)
+// or any management subcommand anywhere in the arguments (review task-016 r1).
+const CLAUDE_SUBCOMMANDS = new Set(['mcp', 'config', 'update', 'doctor', 'install', 'migrate-installer', 'setup-token', 'plugin', 'plugins', 'auth']);
+function claudeArgsTakeHook(args) {
+  const list = Array.isArray(args) ? args.filter((a) => typeof a === 'string') : [];
+  return !list.some((a) => a === '--settings' || a.startsWith('--settings=') || CLAUDE_SUBCOMMANDS.has(a));
+}
 function resolveAorEngineRoot(settings) {
+  // The bundled engine scripts are PowerShell (Windows only); elsewhere panes open a plain
+  // shell instead of trying to run powershell.exe (review task-016 r1).
+  if (process.platform !== 'win32') return null;
   const candidates = [];
   // Highest priority: bundled AOR shipped with the installer.
   // Production: <install-dir>/resources/AOR (electron-builder extraResources).
   // Development: <repo>/AOR.
-  const bundledAor = app.isPackaged
-    ? path.join(process.resourcesPath, 'AOR')
-    : path.join(APP_ROOT, 'AOR');
-  candidates.push(bundledAor);
+  candidates.push(bundledAorRoot());
   // User overrides from settings.
   if (settings && settings.aor && settings.aor.engineRoot) candidates.push(settings.aor.engineRoot);
   if (settings && settings.aor && Array.isArray(settings.aor.engineRootCandidates)) {
@@ -455,6 +969,51 @@ function safeMkdir(dirPath, projectRoot) {
     }
   }
 }
+// AOR engine runtime (task-016): the engine keeps a raw log per compressed command,
+// a metrics line per command and a report per session. Keep what the dashboard and
+// "read the full log" need, drop the rest. Only plain files with the engine's own
+// name patterns are touched; links are never followed.
+const AOR_RAW_KEEP = 200;
+const AOR_RAW_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const AOR_REPORT_KEEP = 20;
+const AOR_METRICS_MAX_AGE_DAYS = 30;
+function pruneAorRuntime(runtimeRoot, now = Date.now()) {
+  const removed = { raw: 0, reports: 0, metrics: 0 };
+  try { if (!fs.lstatSync(runtimeRoot).isDirectory()) return removed; } catch { return removed; }
+  const realRoot = safeRealpath(runtimeRoot);
+  if (!realRoot) return removed;
+  const listFiles = (sub, re) => {
+    const dir = path.join(runtimeRoot, sub);
+    try { if (!fs.lstatSync(dir).isDirectory()) return []; } catch { return []; } // a junction is not a directory to lstat
+    let ents;
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return []; }
+    return ents.filter((d) => d.isFile() && re.test(d.name)).map((d) => {
+      const p = path.join(dir, d.name);
+      let t = 0;
+      try { t = fs.lstatSync(p).mtimeMs; } catch { /* vanished */ }
+      return { p, name: d.name, t };
+    }).sort((a, b) => b.t - a.t);
+  };
+  const rm = (f, key) => {
+    try {
+      if (!fs.lstatSync(f.p).isFile() || !isPathInsideRoot(fs.realpathSync.native(f.p), realRoot)) return;
+      fs.rmSync(f.p, { force: true });
+      removed[key]++;
+    } catch { /* next time */ }
+  };
+  listFiles('raw', /^[0-9TZ-]+-[0-9a-f]{6,64}\.log$/).forEach((f, i) => {
+    if (i >= AOR_RAW_KEEP || now - f.t > AOR_RAW_MAX_AGE_MS) rm(f, 'raw');
+  });
+  listFiles('reports', /^session-report-\d{8}-\d{6}\.txt$/).forEach((f, i) => {
+    if (i >= AOR_REPORT_KEEP) rm(f, 'reports');
+  });
+  const cutoff = now - AOR_METRICS_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+  listFiles('metrics', /^\d{4}-\d{2}-\d{2}\.jsonl$/).forEach((f) => {
+    const day = Date.parse(f.name.slice(0, 10) + 'T00:00:00Z');
+    if (Number.isFinite(day) && day < cutoff) rm(f, 'metrics');
+  });
+  return removed;
+}
 // ---------- end aiops fs helpers ----------
 
 function ensureAiopsProjectStructure(projectRoot) {
@@ -464,14 +1023,29 @@ function ensureAiopsProjectStructure(projectRoot) {
   const realRoot = safeRealpath(projectRoot);
   if (!realRoot || !fs.existsSync(realRoot)) return null;
 
+  // task-009 review: verify every bundled template BEFORE writing anything, so a
+  // broken build never leaves a half-created structure reported as success.
+  const missing = findMissingAiopsTemplates();
+  if (missing.length) {
+    console.warn('[carrotcap] aiops setup refused: missing templates:', missing.join(', '));
+    return null;
+  }
+  const tmpl = getAiopsTemplateSources();
+  let aiopsBlockBody;
+  try { aiopsBlockBody = fs.readFileSync(tmpl.claudeBlock, 'utf8'); }
+  catch (e) {
+    console.warn('[carrotcap] aiops setup refused: CLAUDE block template unreadable:', e.message);
+    return null;
+  }
+
   const agentsDir = path.join(realRoot, 'agents');
   const logsDir = path.join(realRoot, 'logs');
-  const researchLogsDir = path.join(logsDir, 'research');
+  const mediaLogsDir = path.join(logsDir, 'media');
   const reviewLogsDir = path.join(logsDir, 'review');
   const backlogDir = path.join(realRoot, 'backlog');
   try {
     safeMkdir(agentsDir, realRoot);
-    safeMkdir(researchLogsDir, realRoot);
+    safeMkdir(mediaLogsDir, realRoot);
     safeMkdir(reviewLogsDir, realRoot);
     safeMkdir(backlogDir, realRoot);
   } catch (e) {
@@ -479,148 +1053,43 @@ function ensureAiopsProjectStructure(projectRoot) {
     return null;
   }
 
-  writeIfMissing(path.join(agentsDir, 'supervisor.md'), `# Claude Code Supervisor
-
-당신은 이 프로젝트의 PM이자 메인 코딩 에이전트다.
-
-## 목표
-사용자 요청을 backlog/의 작은 TASK로 나누고, 필요한 경우 Gemini 리서처와 Codex 리뷰어를 호출해 정해진 절차로 개발을 진행한다.
-
-## 진행 절차
-1. backlog/를 읽고 사용자 요청, 완료 기준, 리스크를 정리한다.
-2. 큰 작업은 backlog/task-XXX.md 단위로 쪼갠다.
-3. 외부 문서, 버전 변경, API 변경 조사가 필요하면 Gemini에게 agents/researcher.md 기준으로 리서치를 요청한다.
-4. 리서치 결과가 있으면 logs/research/의 최신 로그를 읽고 구현 범위를 조정한다.
-5. Claude Code가 직접 코드 수정과 테스트를 수행한다.
-6. 변경 규모가 크거나 위험하면 Codex에게 agents/reviewer.md 기준으로 리뷰를 요청한다.
-7. logs/review/의 최신 리뷰를 반영하고 최종 결과를 요약한다.
-
-## 금지사항
-- 리서처에게 프로덕션 코드 작성을 시키지 않는다.
-- 리뷰어에게 기능 구현을 시키지 않는다.
-- 큰 작업을 한 세션에서 뭉개서 처리하지 않는다.
-- 로그 없이 리서치/리뷰 결과를 잊어버리지 않는다.
-
-## 완료 조건
-- TASK별 완료 여부가 분명해야 한다.
-- 실행한 테스트와 실패한 테스트가 기록되어야 한다.
-- 최종 요약에는 변경 파일, 검증 결과, 남은 리스크가 포함되어야 한다.
-`, realRoot);
-
-  // task-005: deploy the rich researcher.md / reviewer.md from the bundled
-  // app templates instead of the prior embedded short version. writeIfMissing
-  // (called inside copyTemplateIfMissing) preserves any existing project file.
-  const templateRoot = getTemplateRoot();
-  copyTemplateIfMissing(
-    path.join(templateRoot, 'agents', 'researcher.md'),
-    path.join(agentsDir, 'researcher.md'),
-    realRoot
-  );
-  copyTemplateIfMissing(
-    path.join(templateRoot, 'agents', 'reviewer.md'),
-    path.join(agentsDir, 'reviewer.md'),
-    realRoot
-  );
-
-  writeIfMissing(path.join(backlogDir, 'task-001.md'), `# task-001
-
-## 작업 목적
-- 여기에 사용자 요청과 완료 기준을 적는다.
-
-## 범위
-- 구현할 것:
-- 구현하지 않을 것:
-
-## 협업 로그
-- Research: logs/research/
-- Review: logs/review/
-`, realRoot);
-
-  writeIfMissing(path.join(backlogDir, 'workflow.md'), `# AI Agent Development Workflow
-
-## 역할
-- Claude Code: PM / 코더 / 최종 판단
-- Gemini: 리서처 / 공식 문서 조사 / 마이그레이션 조사
-- Codex: 리뷰어 / 버그 탐지 / 품질 검토
-- logs/: 공유 메모리
-
-## TASK 분해 규칙
-1. 사용자 요청을 독립적으로 검증 가능한 작업으로 나눈다.
-2. 각 TASK에는 목적, 범위, 완료 기준, 검증 방법을 적는다.
-3. 외부 정보가 필요한 TASK는 research 로그를 먼저 만든다.
-4. 코드 변경 TASK는 구현 후 review 로그를 만든다.
-
-## 실행 순서
-1. Setup: agents/, logs/, backlog/ 구조를 준비한다.
-2. Start: Claude Supervisor가 backlog/를 읽고 TASK를 분해한다.
-3. Research: 필요한 조사만 Gemini Researcher에게 맡기고 logs/research/에 저장한다.
-4. Build: Claude Code가 직접 구현한다.
-5. Review: Codex Reviewer가 변경사항을 검토하고 logs/review/에 저장한다.
-6. Reflect: Claude Code가 리뷰를 반영하고 최종 보고한다.
-
-## 버튼별 명령
-- START: claude < agents/supervisor.md
-- RESEARCH: gemini < agents/researcher.md
-- REVIEW: codex < agents/reviewer.md
-`, realRoot);
+  // task-009: setup documents live in templates/aiops/ (editable, shipped via build.files);
+  // media/reviewer contracts come from agents/ (task-005, task-012). writeIfMissing (inside
+  // copyTemplateIfMissing) preserves any existing project file.
+  // A write-protected project must not break pane creation (AIOps is on by default):
+  // a failed copy ends setup with null like every other refusal path.
+  try {
+    copyTemplateIfMissing(tmpl.supervisor, path.join(agentsDir, 'supervisor.md'), realRoot);
+    copyTemplateIfMissing(tmpl.media, path.join(agentsDir, 'media.md'), realRoot);
+    copyTemplateIfMissing(tmpl.reviewer, path.join(agentsDir, 'reviewer.md'), realRoot);
+    copyTemplateIfMissing(tmpl.task001, path.join(backlogDir, 'task-001.md'), realRoot);
+    copyTemplateIfMissing(tmpl.workflow, path.join(backlogDir, 'workflow.md'), realRoot);
+  } catch (e) {
+    console.warn('[carrotcap] aiops template deployment failed:', e.message);
+    return null;
+  }
 
   // task-005: deploy the helper PowerShell scripts so the project can run the
-  // researcher/reviewer cycle with the same auto-loading and output shaping the
+  // media/reviewer cycle with the same auto-loading and output shaping the
   // PM uses. The scripts are copy-only (no template variables); writeIfMissing
   // preserves any user-modified project copy.
   const projectScriptsDir = path.join(realRoot, 'scripts');
+  let warning;
   try {
     safeMkdir(projectScriptsDir, realRoot);
-    const tmplScripts = path.join(getTemplateRoot(), 'scripts');
-    copyTemplateIfMissing(
-      path.join(tmplScripts, 'run-researcher.ps1'),
-      path.join(projectScriptsDir, 'run-researcher.ps1'),
-      realRoot
-    );
-    copyTemplateIfMissing(
-      path.join(tmplScripts, 'run-reviewer.ps1'),
-      path.join(projectScriptsDir, 'run-reviewer.ps1'),
-      realRoot
-    );
+    copyTemplateIfMissing(tmpl.runMedia, path.join(projectScriptsDir, 'run-media.ps1'), realRoot);
+    copyTemplateIfMissing(tmpl.runReviewer, path.join(projectScriptsDir, 'run-reviewer.ps1'), realRoot);
+    copyTemplateIfMissing(tmpl.systemOne, path.join(projectScriptsDir, 'system-one.js'), realRoot); // task-025
+    copyTemplateIfMissing(tmpl.setupClm, path.join(projectScriptsDir, 'setup-clm.sh'), realRoot);
   } catch (e) {
-    // Non-fatal: setup continues with the agents/logs/backlog structure even if
-    // scripts/ deployment fails (e.g. existing symlink at projectRoot/scripts).
+    // Non-fatal (e.g. projectRoot/scripts is a symlink): the agents/logs/backlog
+    // structure still works, but the caller must tell the user (Codex task-014 r6).
     console.warn('[carrotcap] aiops scripts deployment failed:', e.message);
+    warning = 'AIOps 구조는 만들었지만 scripts/run-media.ps1·run-reviewer.ps1·system-one.js·setup-clm.sh를 복사하지 못했습니다 (scripts 폴더 권한/링크 확인).';
   }
 
   const claudePath = path.join(realRoot, 'CLAUDE.md');
-  const aiopsBlock = `${AIOPS_CLAUDE_BLOCK_START}
-# Claude Code Supervisor Rules
-
-당신은 이 프로젝트의 PM이자 메인 코딩 에이전트다.
-
-## 역할
-1. backlog/를 읽고 작업 목적과 완료 기준을 파악한다.
-2. 외부 문서, 버전 변경, API 변경 조사가 필요하면 Gemini 리서처에게 agents/researcher.md 지침으로 요청한다.
-3. 코드 수정 후 중요한 변경사항은 Codex 리뷰어에게 agents/reviewer.md 지침으로 리뷰를 요청한다.
-4. researcher/reviewer 결과는 logs/research/와 logs/review/의 작업 일지를 읽고 판단한다.
-5. 최종 수정과 최종 판단은 Claude Code가 직접 수행한다.
-
-## 금지사항
-- 리서처에게 프로덕션 코드 작성을 시키지 않는다.
-- 리뷰어에게 기능 구현을 시키지 않는다.
-- 모든 판단을 단일 세션에서 독단적으로 끝내지 않는다.
-- 큰 작업은 반드시 작은 단위로 나눈다.
-
-## 작업 순서
-1. 백로그 분석
-2. 필요 시 Gemini 리서치 요청
-3. 코드베이스 확인
-4. 구현
-5. 필요 시 Codex 코드 리뷰 요청
-6. 리뷰 반영
-7. 최종 요약
-
-## CLI 운영 예시
-- Research: gemini < agents/researcher.md
-- Review: codex < agents/reviewer.md
-${AIOPS_CLAUDE_BLOCK_END}
-`;
+  const aiopsBlock = `${AIOPS_CLAUDE_BLOCK_START}\n${aiopsBlockBody.replace(/\s*$/, '\n')}${AIOPS_CLAUDE_BLOCK_END}\n`;
 
   // task-004-r3 reflection: apply the same ancestor guard to CLAUDE.md write
   // since this block bypasses writeIfMissing.
@@ -663,42 +1132,84 @@ ${AIOPS_CLAUDE_BLOCK_END}
       return null;
     }
   }
-  return { agentsDir, logsDir, backlogDir, claudePath, root: realRoot };
+  return warning
+    ? { agentsDir, logsDir, backlogDir, claudePath, root: realRoot, warning }
+    : { agentsDir, logsDir, backlogDir, claudePath, root: realRoot };
+}
+
+// Bundled sources copied by ensureAiopsProjectStructure (task-009 review).
+function getAiopsTemplateSources() {
+  const root = getTemplateRoot();
+  return {
+    supervisor:    path.join(root, 'templates', 'aiops', 'supervisor.md'),
+    task001:       path.join(root, 'templates', 'aiops', 'task-001.md'),
+    workflow:      path.join(root, 'templates', 'aiops', 'workflow.md'),
+    claudeBlock:   path.join(root, 'templates', 'aiops', 'CLAUDE-block.md'),
+    media:         path.join(root, 'agents', 'media.md'),
+    reviewer:      path.join(root, 'agents', 'reviewer.md'),
+    runMedia:      path.join(root, 'scripts', 'run-media.ps1'),
+    runReviewer:   path.join(root, 'scripts', 'run-reviewer.ps1'),
+    systemOne:     path.join(root, 'scripts', 'system-one.js'),
+    setupClm:      path.join(root, 'scripts', 'setup-clm.sh')
+  };
+}
+
+function findMissingAiopsTemplates() {
+  const root = getTemplateRoot();
+  return Object.values(getAiopsTemplateSources())
+    .filter((p) => !fs.existsSync(p))
+    .map((p) => path.relative(root, p));
 }
 
 function resolvePtyArgs(opts) {
   // opts: { mode: 'plain' | 'aor' | 'aiops' | 'cli', cliKey?, cwd, settings }
   const settings = opts.settings || {};
-  const requestedProjectRoot =
-    opts.cwd && fs.existsSync(opts.cwd)
-      ? opts.cwd
-      : (settings.defaultProjectPath && fs.existsSync(settings.defaultProjectPath) ? settings.defaultProjectPath : null);
+  // task-007: both sources must be inside the workspace allowlist — AIOps mode
+  // writes project files under this root.
+  const requestedProjectRoot = resolveAllowedDir(opts.cwd) || resolveAllowedDir(settings.defaultProjectPath);
   const cwd = requestedProjectRoot || os.homedir();
   if (opts.mode === 'aor' || opts.mode === 'aiops') {
     const isAiops = opts.mode === 'aiops';
     const aiopsStructure = isAiops && requestedProjectRoot ? ensureAiopsProjectStructure(requestedProjectRoot) : null;
+    // A folder IS selected but setup failed (read-only, symlink...): a real problem → warning.
+    const aiopsSetupWarning = isAiops && requestedProjectRoot && !aiopsStructure
+      ? 'AIOps 구조를 만들지 못했습니다 — 프로젝트 폴더의 쓰기 권한이나 심볼릭 링크를 확인하세요.'
+      : (aiopsStructure && aiopsStructure.warning) || undefined;
     const engineRoot = resolveAorEngineRoot(settings);
     if (!engineRoot) {
-      // AOR 부팅 불가 → plain 셸로 폴백하되 kind에 사유 표시. 사용자 페인이 죽지 않게.
-      return {
+      // AOR 엔진이 없으면 조용히 plain 셸로 연다 — 엔진이 없는 PC에서는 정상 상태라
+      // 경고를 띄우지 않는다. 사유는 페인 헤더 툴팁(note)으로만 남긴다.
+      const out = {
         file: defaultShell(),
         args: process.platform === 'win32' ? ['-NoLogo'] : [],
         cwd,
-        kind: isAiops ? 'aiops-fallback(plain)' : 'aor-fallback(plain)',
-        warning: isAiops
-          ? `${aiopsStructure ? 'AIOps project structure is ready.' : 'Select a project folder to create the AIOps project structure.'} AOR engineRoot not found — falling back to plain shell. Configure aor.engineRoot in settings.json.`
-          : 'AOR engineRoot not found — falling back to plain shell. Configure aor.engineRoot in settings.json.'
+        kind: isAiops ? 'aiops' : 'plain',
+        note: 'AOR 엔진이 없어 일반 셸로 실행 중 (settings.json의 aor.engineRoot로 지정 가능)'
       };
+      if (aiopsSetupWarning) out.warning = aiopsSetupWarning;
+      else if (isAiops && !aiopsStructure) out.note = '프로젝트 폴더를 선택하면 AIOps 구조가 자동으로 만들어집니다. ' + out.note;
+      return out;
     }
     const shellInit = path.join(engineRoot, 'engine', 'windows', '_internal', 'shell-init.ps1');
     const invoke = path.join(engineRoot, 'engine', 'windows', '_internal', 'invoke-aor.ps1');
     const claudeInt = path.join(engineRoot, 'engine', 'windows', '_internal', 'claude-integration.ps1');
-    const shimDir = path.join(engineRoot, 'engine', 'windows', 'shims');
+    // Console shims (npm/git/node/python → engine) buffer a command's whole output
+    // until it exits — a dev server shows nothing — and only compress what the human
+    // sees, never what an agent reads. Off unless aor.consoleShims is true (task-016).
+    const shimDir = settings.aor && settings.aor.consoleShims === true
+      ? path.join(engineRoot, 'engine', 'windows', 'shims')
+      : '';
     const runtimeRoot = path.join(engineRoot, 'engine', 'windows', 'bin', '.router-output');
     const sessionFile = path.join(runtimeRoot, 'session-status.json');
     const reportsDir = path.join(runtimeRoot, 'reports');
     fs.mkdirSync(reportsDir, { recursive: true });
     fs.mkdirSync(runtimeRoot, { recursive: true });
+    // At most once an hour per engine: keeps raw logs/reports/metrics bounded.
+    const lastPrune = aorPrunedAt.get(runtimeRoot) || 0;
+    if (Date.now() - lastPrune > 60 * 60 * 1000) {
+      aorPrunedAt.set(runtimeRoot, Date.now());
+      pruneAorRuntime(runtimeRoot);
+    }
     const isoStart = new Date().toISOString();
     return {
       file: getPowerShellExePath(),
@@ -707,7 +1218,7 @@ function resolvePtyArgs(opts) {
         '-File', shellInit,
         '-ProjectPath', cwd,
         '-SessionFile', sessionFile,
-        '-ShimDir', shimDir,
+        ...(shimDir ? ['-ShimDir', shimDir] : []),
         '-InvokeScript', invoke,
         '-ClaudeIntegration', claudeInt,
         '-SessionStartIso', isoStart,
@@ -716,8 +1227,10 @@ function resolvePtyArgs(opts) {
       ],
       cwd,
       kind: isAiops ? 'aiops' : 'aor',
-      warning: isAiops
-        ? `${aiopsStructure ? 'AIOps project structure is ready.' : 'Select a project folder to create the AIOps project structure.'} Claude is supervisor, Gemini is researcher, Codex is reviewer.`
+      // 안내는 툴팁(note)으로만 — 실제 실패(aiopsSetupWarning)만 헤더 ⚠·상태줄 경고로.
+      warning: aiopsSetupWarning,
+      note: isAiops
+        ? `${aiopsStructure ? 'AIOps 구조 준비됨.' : '프로젝트 폴더를 선택하면 AIOps 구조가 자동으로 만들어집니다.'} Claude=코딩, Codex=리뷰, Grok=이미지·영상`
         : undefined
     };
   }
@@ -729,10 +1242,13 @@ function resolvePtyArgs(opts) {
     if (!cli) return { error: `CLI key '${opts.cliKey}' not configured in settings.json` };
     // Defense in depth: validateSettings already enforces these on write, but settings.json
     // could have been edited manually before the validator existed.
-    if (!CMD_NAME_RE.test(cli.command || '')) {
-      return { error: `CLI command '${cli.command}' rejected: must match ${CMD_NAME_RE}` };
+    if (!isAllowedCliCommand(cli.command || '')) {
+      return { error: `CLI command '${cli.command}' rejected: a command name on PATH or an absolute path to an existing file` };
     }
     const cliArgs = Array.isArray(cli.args) ? cli.args.filter((a) => typeof a === 'string') : [];
+    // Only when the command really is Claude Code (a custom command may not take --settings).
+    const hookSettings = opts.cliKey === 'claude' && /^claude(\.exe|\.cmd)?$/i.test(cli.command) ? resolveCompressHook(settings) : null;
+    if (hookSettings && claudeArgsTakeHook(cliArgs)) cliArgs.unshift('--settings', hookSettings);
     if (process.platform === 'win32') {
       const pwshLine = '& ' + [pwshSingleQuote(cli.command), ...cliArgs.map(pwshSingleQuote)].join(' ');
       return {
@@ -751,15 +1267,45 @@ function resolvePtyArgs(opts) {
   return { file: defaultShell(), args: plainArgs, cwd, kind: 'plain' };
 }
 
-function spawnSession(payload) {
+const MAX_SESSIONS = 32; // bounds pre-ready buffers and processes a renderer can create
+
+// Drops the ready-gate timers and any held input (kill, window close, exit).
+function disposeReadyGate(session) {
+  clearTimeout(session.quietTimer);
+  clearTimeout(session.maxTimer);
+  session.quietTimer = null;
+  session.maxTimer = null;
+  session.pending = '';
+  session.pendingBytes = 0;
+}
+
+// Last ESC[?2004h / ESC[?2004l in the output wins. A short tail is kept so a sequence
+// split across two chunks is still seen.
+function trackBracketedPaste(session, data) {
+  const text = session.tail + data;
+  const on = text.lastIndexOf('\x1b[?2004h');
+  const off = text.lastIndexOf('\x1b[?2004l');
+  if (on !== -1 || off !== -1) session.bracketed = on > off;
+  session.tail = text.slice(-8);
+}
+
+function spawnSession(rawPayload) {
+  if (sessions.size >= MAX_SESSIONS) return { error: `터미널은 최대 ${MAX_SESSIONS}개까지 열 수 있습니다.` };
+  const payload = sanitizeSpawnPayload(rawPayload);
   const settings = loadSettings() || {};
   const resolved = resolvePtyArgs({ ...payload, settings });
   if (resolved.error) return { error: resolved.error };
   const { file, args, cwd, kind } = resolved;
 
-  const cols = payload.cols || 80;
-  const rows = payload.rows || 24;
+  const { cols, rows } = payload;
   const env = { ...process.env, TERM: 'xterm-256color', CARROTCAP: '1' };
+  // The AOR shell's `claude` wrapper adds --settings from this (task-017).
+  const hookSettings = resolveCompressHook(settings);
+  if (hookSettings) env.CARROTCAP_CLAUDE_SETTINGS = hookSettings;
+  else delete env.CARROTCAP_CLAUDE_SETTINGS;
+  // task-025: scripts/system-one.js in this pane talks to the CLM server from settings
+  env.CLM_URL = resolveClmUrl(settings);
+  Object.assign(env, loadUserKeys()); // keys.env wins over the app's own environment
 
   let proc;
   try {
@@ -769,14 +1315,31 @@ function spawnSession(payload) {
       // 폴백: 진짜 PTY가 아니라 child_process pipe. 인터랙티브 라인 에디터(prompt/history)는 약하지만,
       // 명령 실행+출력은 가능. 키 입력은 그대로 stdin으로 보내고, 사용자에게 echo가 안 보일 수 있음을 경고.
       const child = spawn(file, args, { cwd, env, windowsHide: false, stdio: ['pipe', 'pipe', 'pipe'] });
+      // An unhandled 'error' (spawn failure, EAGAIN, EPIPE on stdin) would crash the main
+      // process. Listen right away; the session reports it as a normal exit.
+      let exitCb = null;
+      let exited = false;
+      const finish = (exitCode) => {
+        if (exited) return;
+        exited = true;
+        if (exitCb) exitCb({ exitCode });
+      };
+      child.on('error', (err) => {
+        console.warn('[carrotcap] fallback shell error:', err && err.message);
+        finish(-1);
+      });
+      if (child.stdin) child.stdin.on('error', () => { /* EPIPE after exit — ignore */ });
+      child.on('exit', (code) => finish(code));
       proc = {
         _child: child,
         write: (data) => {
           try { if (child.stdin && !child.stdin.destroyed) child.stdin.write(String(data)); } catch (e) { /* ignore */ }
         },
         resize: () => {},
+        // Report failure like node-pty does (throw) so pty:kill keeps the session.
         kill: () => {
-          try { child.kill(); } catch (e) { /* ignore */ }
+          if (exited) return;
+          if (!child.kill()) throw new Error('fallback shell did not accept the kill signal');
         },
         // pty.spawn API 모방: onData / onExit
         onData: (cb) => {
@@ -784,7 +1347,8 @@ function spawnSession(payload) {
           child.stderr.on('data', (b) => cb(b.toString()));
         },
         onExit: (cb) => {
-          child.on('exit', (code) => cb({ exitCode: code }));
+          exitCb = cb;
+          if (exited) cb({ exitCode: -1 }); // failed before the listener was attached
         }
       };
     }
@@ -793,26 +1357,52 @@ function spawnSession(payload) {
   }
 
   const id = `pty_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  sessions.set(id, { proc, kind });
+  // Ready gate: PowerShell/PSReadLine throws away input that arrives while it is still
+  // starting (measured: anything sent in the first ~2s of a new pane was lost). Input is
+  // queued until the shell has printed something and then gone quiet, then flushed in order.
+  // One string buffer (not an array of chunks) so a flood of tiny writes stays bounded.
+  // bracketed: whether the app in this PTY currently has bracketed paste on (tracked from
+  // its own output, ESC[?2004h / ESC[?2004l) — checked at write time for guarded pastes.
+  const session = { proc, kind, ready: false, pending: '', pendingBytes: 0, quietTimer: null, maxTimer: null, bracketed: false, tail: '' };
+  sessions.set(id, session);
+  const markReady = () => {
+    if (session.ready) return;
+    const pending = session.pending;
+    disposeReadyGate(session);
+    session.ready = true;
+    if (pending) {
+      try { proc.write(pending); } catch (err) { console.warn('[carrotcap] pty write fail', err && err.message); }
+    }
+  };
+  session.maxTimer = setTimeout(markReady, PTY_READY_MAX_MS);
 
   const wireData = (chunk) => {
+    const data = typeof chunk === 'string' ? chunk : chunk.toString();
+    if (!session.ready) {
+      clearTimeout(session.quietTimer);
+      session.quietTimer = setTimeout(markReady, PTY_READY_QUIET_MS);
+    }
+    trackBracketedPaste(session, data);
     if (!mainWindow || mainWindow.isDestroyed()) return;
-    mainWindow.webContents.send('pty:data', { id, data: typeof chunk === 'string' ? chunk : chunk.toString() });
+    mainWindow.webContents.send('pty:data', { id, data });
   };
   // 폴백 모드일 땐 spawnSession에서 직접 만든 proc도 동일한 onData/onExit 인터페이스를 갖도록 위에서 셋업했음.
   proc.onData(wireData);
   proc.onExit(({ exitCode }) => {
+    disposeReadyGate(session);
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('pty:exit', { id, code: exitCode });
     }
     sessions.delete(id);
   });
 
-  // AOR 폴백 같은 경고 메시지가 있으면 PTY 시작 직후 한 줄 출력
-  if (resolved.warning) {
-    setTimeout(() => wireData(`\r\n\x1b[33m[carrotcap] ${resolved.warning}\x1b[0m\r\n`), 100);
-  }
-  return { id, kind };
+  // task-011: warnings (e.g. AOR fallback) are returned to the renderer and shown in
+  // the pane header. Writing them into xterm out-of-band desyncs ConPTY's screen
+  // model from xterm, so the shell/TUI redraws land on the wrong lines.
+  const out = { id, kind };
+  if (resolved.warning) out.warning = resolved.warning;
+  if (resolved.note) out.note = resolved.note;
+  return out;
 }
 
 function buildFolderTree(rootPath, maxDepth = 4) {
@@ -872,20 +1462,34 @@ function createWindow() {
     height: 900,
     minWidth: 900,
     minHeight: 600,
-    backgroundColor: '#0f0f12',
+    backgroundColor: applyNativeTheme(loadSettings() || {}), // task-026: no dark flash in the light theme
     title: 'CARROTCAP CLI',
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(APP_ROOT, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      // task-007: preload only uses contextBridge/ipcRenderer, which are
+      // available in the sandboxed preload, so the renderer runs sandboxed.
+      sandbox: true,
+      webviewTags: false
     }
   });
+  // task-007: the UI is a single local page. Block in-app navigation and new
+  // windows; hand http(s) links (xterm web-links addon) to the OS browser.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url).catch(() => {});
+    return { action: 'deny' };
+  });
+  mainWindow.webContents.on('will-navigate', (e) => e.preventDefault());
   mainWindow.loadFile('index.html');
   mainWindow.on('closed', () => {
+    // The BrowserView belongs to this window; drop our reference so a new window
+    // (macOS activate) starts clean (review task-015).
+    try { browserMode.destroyView(); } catch { /* window already gone */ }
     mainWindow = null;
     for (const [, s] of sessions) {
+      disposeReadyGate(s);
       try { s.proc.kill(); } catch {}
     }
     sessions.clear();
@@ -893,18 +1497,76 @@ function createWindow() {
 }
 
 // ---------- IPC ----------
-ipcMain.handle('settings:get', () => loadSettings());
-ipcMain.handle('settings:set', (_e, next) => { saveSettings(validateSettings(next)); return true; });
+// task-007: every channel only answers the app's own top-level frame. Anything
+// else (a navigated/foreign frame) gets `undefined` / is ignored.
+function isTrustedSender(e) {
+  if (!mainWindow || mainWindow.isDestroyed() || !e) return false;
+  const wc = mainWindow.webContents;
+  return e.sender === wc && e.senderFrame === wc.mainFrame;
+}
+function handle(channel, fn) {
+  ipcMain.handle(channel, (e, ...args) => (isTrustedSender(e) ? fn(e, ...args) : undefined));
+}
+function on(channel, fn) {
+  ipcMain.on(channel, (e, payload) => {
+    if (!isTrustedSender(e)) return;
+    if (!payload || typeof payload !== 'object' || !isValidPtyId(payload.id)) return;
+    fn(e, payload);
+  });
+}
 
-ipcMain.handle('aor:get-claude-md', () => {
-  try { return fs.readFileSync(CLAUDE_MD_PATH, 'utf8'); } catch { return ''; }
+handle('settings:get', () => {
+  // Repair a file that lost a built-in CLI (edited by hand, another build, ...) — task-022
+  const { settings, changed } = ensureBuiltinCli(loadSettings());
+  if (changed) { try { saveSettings(settings); } catch (e) { console.warn('[carrotcap] settings repair failed:', e.message); } }
+  return settings;
 });
-ipcMain.handle('aor:set-claude-md', (_e, content) => {
-  fs.writeFileSync(CLAUDE_MD_PATH, content, 'utf8');
+// The on-disk settings a renderer save builds on. If the file vanished or became unreadable
+// while the app ran, keep the broken file as a backup and rebuild from the bundled defaults —
+// never save a partial file without the CLIs (review task-022 r1).
+function settingsBaseForWrite() {
+  const disk = loadSettings();
+  if (disk && typeof disk === 'object' && !Array.isArray(disk)) return ensureBuiltinCli(disk).settings;
+  if (fs.existsSync(SETTINGS_PATH)) {
+    const backup = `${SETTINGS_PATH}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    try { fs.renameSync(SETTINGS_PATH, backup); console.warn('[carrotcap] settings.json was unreadable; backed up to', backup); }
+    catch (e) { console.warn('[carrotcap] could not back up settings.json:', e.message); }
+  }
+  const seeded = validateSettings(readJsonFile(BUNDLED_SETTINGS_PATH));
+  const base = seeded.cli && Object.keys(seeded.cli).length ? seeded : buildDefaultSettings();
+  return ensureBuiltinCli(migrateSettings(base).settings).settings;
+}
+handle('settings:set', (_e, next) => {
+  const saved = applyRendererSettings(settingsBaseForWrite(), next);
+  saveSettings(saved);
+  cliStatusCache = { at: 0, value: null }; // CLI commands may have changed
+  compressHookCache = null;                // aor.compressHook may have changed
+  // task-026: theme picked in the settings panel → window background + native widgets
+  const bg = applyNativeTheme(saved);
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setBackgroundColor(bg);
   return true;
 });
 
-ipcMain.handle('folder:pick', async () => {
+handle('aor:get-claude-md', () => {
+  for (const p of [CLAUDE_MD_PATH, BUNDLED_CLAUDE_MD_PATH]) {
+    try { return fs.readFileSync(p, 'utf8'); } catch { /* try next */ }
+  }
+  return '';
+});
+handle('aor:set-claude-md', (_e, content) => {
+  if (!validateClaudeMdContent(content)) {
+    return { ok: false, error: '텍스트만, 512KB 이하로 저장할 수 있습니다.' };
+  }
+  try {
+    fs.writeFileSync(CLAUDE_MD_PATH, content, 'utf8');
+    return { ok: true };
+  } catch (err) {
+    console.warn('[carrotcap] aor:set-claude-md failed:', err && err.message);
+    return { ok: false, error: `파일 쓰기 실패: ${(err && err.message) || 'unknown'}` };
+  }
+});
+
+handle('folder:pick', async () => {
   const r = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] });
   if (r.canceled || !r.filePaths[0]) return null;
   const picked = r.filePaths[0];
@@ -912,16 +1574,16 @@ ipcMain.handle('folder:pick', async () => {
   if (real) persistRecentWorkspace(real);
   return picked;
 });
-ipcMain.handle('folder:tree', (_e, rootPath) => {
+handle('folder:tree', (_e, rootPath) => {
   if (!isPathInsideAllowedWorkspace(rootPath)) return null;
   return buildFolderTree(rootPath);
 });
-ipcMain.handle('folder:search', (_e, rootPath, query) => {
+handle('folder:search', (_e, rootPath, query) => {
   if (!isPathInsideAllowedWorkspace(rootPath)) return [];
   if (typeof query !== 'string' || !query) return [];
   return searchFiles(rootPath, clipString(query, MAX_QUERY_LEN));
 });
-ipcMain.handle('folder:open-in-os', (_e, p) => {
+handle('folder:open-in-os', (_e, p) => {
   if (!isPathInsideAllowedWorkspace(p)) return false;
   try {
     if (!fs.existsSync(p)) return false;
@@ -933,7 +1595,7 @@ ipcMain.handle('folder:open-in-os', (_e, p) => {
   }
 });
 
-ipcMain.handle('aiops:setup', (_e, projectRoot) => {
+handle('aiops:setup', (_e, projectRoot) => {
   // Reject if the requested root is not inside an explicitly allowed workspace.
   // The renderer must call folder:pick first; defaultProjectPath is NOT a permission
   // grant — only paths persisted to workspace-state.json (main-only file) are seeded
@@ -946,77 +1608,447 @@ ipcMain.handle('aiops:setup', (_e, projectRoot) => {
   if (!real || !fs.existsSync(real)) {
     return { ok: false, error: '프로젝트 폴더가 존재하지 않습니다.' };
   }
+  const missing = findMissingAiopsTemplates();
+  if (missing.length) {
+    return { ok: false, error: `앱 설치가 불완전합니다. 누락된 템플릿: ${missing.join(', ')}` };
+  }
   const result = ensureAiopsProjectStructure(real);
-  if (!result) return { ok: false, error: '프로젝트 폴더를 먼저 선택하세요.' };
+  if (!result) return { ok: false, error: 'AIOps 구조를 만들지 못했습니다. (심볼릭 링크 또는 쓰기 권한 확인)' };
   return { ok: true, root: real, ...result };
 });
 
-ipcMain.handle('pty:spawn', (_e, payload) => spawnSession(payload || {}));
-ipcMain.on('pty:write', (_e, { id, data }) => {
+handle('pty:spawn', (_e, payload) => spawnSession(payload));
+// Returns true when the data was written (or queued behind the ready gate).
+function writeToSession(id, data) {
   const s = sessions.get(id);
-  if (!s) return;
+  if (!s || typeof data !== 'string' || !isWithinByteCap(data, MAX_PTY_WRITE_BYTES)) return false;
+  if (!s.ready) {
+    // Held until the shell is ready (see spawnSession). Capped like a single write.
+    const size = Buffer.byteLength(data, 'utf8');
+    if (s.pendingBytes + size > MAX_PTY_WRITE_BYTES) return false;
+    s.pending += data;
+    s.pendingBytes += size;
+    return true;
+  }
   try {
-    s.proc.write(typeof data === 'string' ? data : String(data));
+    s.proc.write(data);
+    return true;
   } catch (err) {
     console.warn('[carrotcap] pty write fail', err && err.message);
+    return false;
   }
+}
+on('pty:write', (_e, { id, data }) => { writeToSession(id, data); });
+// Same, with an answer — for sends whose side effects depend on delivery (browser context).
+handle('pty:write-ack', (_e, payload) => {
+  const p = (payload && typeof payload === 'object') ? payload : {};
+  return isValidPtyId(p.id) ? writeToSession(p.id, p.data) : false;
 });
-ipcMain.on('pty:resize', (_e, { id, cols, rows }) => {
-  const s = sessions.get(id);
-  if (s && s.proc.resize) {
-    try { s.proc.resize(cols, rows); } catch {}
-  }
+// Browser context (page-derived text): written ONLY if, at this very moment, the app in
+// the PTY has bracketed paste on (an interactive agent, not a bare shell). main builds the
+// paste itself and strips ESC, so the text cannot end the paste early (review r5 C3).
+// With submit: the paste and its Enter are one transaction — the Enter is written only if
+// the same session still has bracketed paste on right then (the agent did not exit in
+// between), and the call reports success only when both went out (review r8).
+handle('pty:paste-guarded', async (_e, payload) => {
+  const p = (payload && typeof payload === 'object') ? payload : {};
+  if (!isValidPtyId(p.id) || typeof p.text !== 'string') return false;
+  const s = sessions.get(p.id);
+  if (!s || !s.ready || !s.bracketed) return false;
+  // The browser page must still be the document this context describes (one-time token).
+  if (!browserMode.redeemContextToken(p.token)) return false;
+  const body = p.text.replace(/\x1b/g, '').replace(/\r?\n/g, '\r');
+  if (!writeToSession(p.id, '\x1b[200~' + body + '\x1b[201~')) return false;
+  if (!p.submit) return true;
+  const delay = Math.min(600, 60 + Math.floor(body.length / 20)); // let the CLI take the paste
+  await new Promise((r) => setTimeout(r, delay));
+  if (sessions.get(p.id) !== s || !s.bracketed) return false;
+  return writeToSession(p.id, '\r');
 });
-ipcMain.on('pty:kill', (_e, { id }) => {
+on('pty:resize', (_e, { id, cols, rows }) => {
   const s = sessions.get(id);
-  if (s) { try { s.proc.kill(); } catch {} sessions.delete(id); }
+  if (!s || !s.proc.resize) return;
+  const c = clampInt(cols, 2, 1000, 80);
+  const r = clampInt(rows, 1, 500, 24);
+  try { s.proc.resize(c, r); }
+  catch (err) { console.warn(`[carrotcap] pty resize fail ${id} ${c}x${r}:`, err && err.message); }
+});
+on('pty:kill', (_e, { id }) => {
+  const s = sessions.get(id);
+  if (!s) return;
+  // Keep the session if kill throws so the pane can retry; onExit removes it.
+  // Dispose the ready gate only once the kill succeeded — a live session must keep it.
+  try { s.proc.kill(); disposeReadyGate(s); sessions.delete(id); }
+  catch (err) { console.warn(`[carrotcap] pty kill fail ${id}:`, err && err.message); }
 });
 
-ipcMain.handle('app:platform', () => process.platform);
-ipcMain.handle('app:pty-available', () => ptyAvailable);
+// Clipboard + terminal context menu (task-009). xterm renders to a canvas, so
+// the native Edit roles cannot see terminal text — the renderer copies the
+// xterm selection itself and pastes via term.paste() (bracketed-paste aware).
+handle('clipboard:read-text', () => {
+  try {
+    const text = clipboard.readText() || '';
+    if (!isWithinByteCap(text, MAX_PTY_WRITE_BYTES)) return { ok: false, error: '클립보드 텍스트가 1MB를 넘습니다.' };
+    return { ok: true, text };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || 'clipboard read failed' };
+  }
+});
+handle('clipboard:write-text', (_e, text) => {
+  if (typeof text !== 'string' || !isWithinByteCap(text, MAX_PTY_WRITE_BYTES)) return { ok: false, error: 'invalid clipboard text' };
+  try { clipboard.writeText(text); return { ok: true }; }
+  catch (err) { return { ok: false, error: (err && err.message) || 'clipboard write failed' }; }
+});
+on('term-menu:show', (e, { id, hasSelection }) => {
+  if (!sessions.has(id)) return;
+  const send = (command) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('term-menu:command', { id, command });
+  };
+  Menu.buildFromTemplate([
+    { label: '복사', accelerator: 'Ctrl+Shift+C', enabled: hasSelection === true, click: () => send('copy') },
+    { label: '붙여넣기', accelerator: 'Ctrl+Shift+V', click: () => send('paste') },
+    { type: 'separator' },
+    { label: '보이는 화면 복사', click: () => send('copyScreen') },
+    { label: '전체 출력 복사', click: () => send('copyAll') },
+    { type: 'separator' },
+    { label: '모두 선택', click: () => send('selectAll') },
+    { label: '화면 지우기', click: () => send('clear') }
+  ]).popup({ window: BrowserWindow.fromWebContents(e.sender) || mainWindow });
+});
+
+// ---- Session history I/O (task-013) ----
+// %APPDATA%\carrotcap-cli\history\<hash of project path>.json, one small file per project.
+const HISTORY_DIR = path.join(USER_DATA_ROOT, 'history');
+const HISTORY_FILE_RE = /^[0-9a-f]{16}\.json$/;
+const historySessionIds = new Map(); // history file path -> session id of THIS app run
+
+function historyFileFor(realRoot) {
+  const hash = require('crypto').createHash('sha1').update(normalizePath(realRoot)).digest('hex').slice(0, 16);
+  return path.join(HISTORY_DIR, `${hash}.json`);
+}
+const HISTORY_MAX_FILE_BYTES = 64 * 1024; // real records are 1-2KB
+function readHistory(file) {
+  if (!historyDirIsSafe()) return null;
+  try {
+    const lst = fs.lstatSync(file);
+    if (!lst.isFile() || lst.size > HISTORY_MAX_FILE_BYTES) return null; // pruned at next boot
+  } catch { return null; }
+  return sanitizeHistoryRecord(readJsonFile(file));
+}
+let historyQuitting = false;
+// The history dir must be a real directory inside the user data dir — never a
+// symlink/junction that would point prune/write somewhere else (review r4).
+function historyDirIsSafe() {
+  try {
+    const lst = fs.lstatSync(HISTORY_DIR);
+    if (lst.isSymbolicLink() || !lst.isDirectory()) return false;
+    return isPathInsideRoot(fs.realpathSync.native(HISTORY_DIR), USER_DATA_ROOT);
+  } catch { return false; }
+}
+function ensureHistoryDir() {
+  if (!fs.existsSync(HISTORY_DIR)) fs.mkdirSync(HISTORY_DIR, { recursive: true });
+  return historyDirIsSafe();
+}
+function writeHistory(file, record) {
+  // Write to a temp file and rename over the target: a crash mid-write must not
+  // corrupt the record that "resume after a crash" depends on.
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    if (!ensureHistoryDir()) throw new Error('history dir is not a plain directory inside userData');
+    fs.writeFileSync(tmp, JSON.stringify(record), 'utf8');
+    fs.renameSync(tmp, file);
+    return true;
+  } catch (e) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
+    console.warn('[carrotcap] history write failed:', e.message);
+    return false;
+  }
+}
+function latestBacklogTask(realRoot) {
+  // The most recently edited backlog/task-*.md — a hint for "where was I".
+  try {
+    const dir = path.join(realRoot, 'backlog');
+    let best = null;
+    for (const name of fs.readdirSync(dir)) {
+      if (!/^task-.*\.md$/i.test(name)) continue;
+      const m = fs.statSync(path.join(dir, name)).mtimeMs;
+      if (!best || m > best.m) best = { name: name.replace(/\.md$/i, ''), m };
+    }
+    return best ? best.name : null;
+  } catch { return null; }
+}
+function currentHistoryIds() {
+  return new Set(historySessionIds.values());
+}
+// Boot-time cleanup: expired records, records of deleted project folders, stray files.
+function pruneHistory() {
+  if (!historyDirIsSafe()) return; // missing, or a link we refuse to follow
+  let entries;
+  try { entries = fs.readdirSync(HISTORY_DIR, { withFileTypes: true }); } catch { return; }
+  const now = Date.now();
+  for (const ent of entries) {
+    if (!ent.isFile()) continue; // never delete directories or links
+    const file = path.join(HISTORY_DIR, ent.name);
+    const rec = HISTORY_FILE_RE.test(ent.name) ? readHistory(file) : null;
+    const gone = !rec || isHistoryExpired(rec, now) || typeof rec.projectRoot !== 'string' || !fs.existsSync(rec.projectRoot);
+    if (gone) { try { fs.rmSync(file, { force: true }); } catch { /* next boot retries */ } }
+  }
+}
+function finalizeHistory() {
+  const now = new Date().toISOString();
+  const ids = currentHistoryIds();
+  for (const file of historySessionIds.keys()) {
+    const rec = readHistory(file);
+    if (rec) writeHistory(file, finalizeHistoryRecord(rec, ids, now));
+  }
+}
+
+handle('history:save', (_e, payload) => {
+  const p = (payload && typeof payload === 'object') ? payload : {};
+  const realRoot = resolveAllowedDir(p.projectRoot);
+  if (!realRoot) return { ok: false };
+  const file = historyFileFor(realRoot);
+  // No panes left for this project (all closed): this run's session is no longer
+  // resumable — drop its layout, keep the one-line summary (review r5).
+  if (p.layout && Array.isArray(p.layout.tabs) && p.layout.tabs.length === 0) {
+    const id = historySessionIds.get(file);
+    const rec = id ? readHistory(file) : null;
+    if (!rec) return { ok: true };
+    const sessions = rec.sessions.map((s) => {
+      if (s.id !== id) return s;
+      const { layout: _drop, ...rest } = s;
+      return rest;
+    });
+    return { ok: writeHistory(file, { ...rec, updatedAt: new Date().toISOString(), sessions }) };
+  }
+  const layout = sanitizeHistoryLayout(p.layout);
+  if (!layout) return { ok: false };
+  if (!historySessionIds.has(file)) {
+    historySessionIds.set(file, `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
+  }
+  const nowIso = new Date().toISOString();
+  let record = applyHistorySnapshot(readHistory(file), {
+    sessionId: historySessionIds.get(file),
+    projectRoot: realRoot,
+    layout,
+    nowIso,
+    lastTask: latestBacklogTask(realRoot)
+  });
+  // The window's last flush can land after before-quit already finalized — keep it
+  // a clean exit instead of reopening the session as "crashed".
+  if (historyQuitting) record = finalizeHistoryRecord(record, currentHistoryIds(), nowIso);
+  return { ok: writeHistory(file, record) };
+});
+handle('history:get', (_e, projectRoot) => {
+  const realRoot = resolveAllowedDir(projectRoot);
+  if (!realRoot) return null;
+  return pickResumableSession(readHistory(historyFileFor(realRoot)), currentHistoryIds());
+});
+// The user resumed or dismissed the offer: older layouts are no longer needed.
+handle('history:dismiss', (_e, projectRoot) => {
+  const realRoot = resolveAllowedDir(projectRoot);
+  if (!realRoot) return false;
+  const file = historyFileFor(realRoot);
+  const rec = readHistory(file);
+  return rec ? writeHistory(file, dropResumableLayouts(rec, currentHistoryIds())) : true;
+});
+
+// task-012: which configured CLIs are actually installed (on PATH). Cached briefly —
+// the sidebar asks on boot and whenever settings change.
+let cliStatusCache = { at: 0, value: null };
+function whichCommand(cmd) {
+  const { execFile } = require('child_process');
+  const [file, args] = process.platform === 'win32'
+    ? [path.join(getSystem32Path(), 'where.exe'), [cmd]]
+    : ['/usr/bin/which', [cmd]];
+  return new Promise((resolve) => {
+    execFile(file, args, { timeout: 4000, windowsHide: true }, (err, stdout) => {
+      resolve(!err && String(stdout).trim().length > 0);
+    });
+  });
+}
+handle('cli:status', async () => {
+  if (cliStatusCache.value && Date.now() - cliStatusCache.at < 30000) return cliStatusCache.value;
+  const settings = loadSettings() || {};
+  const cli = (settings.cli && typeof settings.cli === 'object') ? settings.cli : {};
+  const out = {};
+  await Promise.all(Object.entries(cli).map(async ([key, val]) => {
+    if (!CLI_KEY_RE.test(key) || RESERVED_OBJECT_KEYS.has(key)) return;
+    const cmd = val && typeof val.command === 'string' ? val.command : '';
+    out[key] = CMD_NAME_RE.test(cmd) ? await whichCommand(cmd) : isAllowedCliCommand(cmd);
+  }));
+  cliStatusCache = { at: Date.now(), value: out };
+  return out;
+});
+
+// task-025: open keys.env in an editor (Notepad on Windows), creating an empty template first.
+// Fixed target only (no path from the renderer); returns the path, never the contents.
+const USER_KEYS_TEMPLATE = [
+  '# CARROTCAP CLI — API 키 (이 파일은 이 PC 사용자 폴더에만 있고, 프로젝트/깃에 들어가지 않습니다)',
+  '# 형식: 이름=값  (따옴표·공백 없이). 저장하면 앱에서 새로 여는 터미널부터 적용됩니다.',
+  '#',
+  '# Jev (TypeSafe) — 키 발급: https://console.typesafe.ai/keys',
+  'TYPESAFE_API_KEY=',
+  '#',
+  '# CLM-8B 서버에 CLM_API_KEY를 걸었을 때만 입력 (로컬 기본 설정이면 비워 두세요)',
+  'CLM_API_KEY=',
+  '',
+].join('\r\n');
+handle('keys:open', async () => {
+  const file = userKeysPath();
+  try {
+    let st = null;
+    try { st = fs.lstatSync(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    if (st && (st.isSymbolicLink() || !st.isFile())) return { ok: false, error: 'keys.env가 일반 파일이 아닙니다' };
+    if (!st) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, USER_KEYS_TEMPLATE, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    }
+    if (!app.isPackaged && process.env.CARROTCAP_TEST_NO_EDITOR) {
+      // E2E: no editor window
+    } else if (process.platform === 'win32') {
+      const child = spawn(path.join(process.env.SystemRoot || 'C:\\Windows', 'notepad.exe'), [file], { detached: true, stdio: 'ignore', windowsHide: false });
+      child.on('error', () => {});
+      child.unref();
+    } else {
+      const err = await shell.openPath(file);
+      if (err) return { ok: false, error: err, path: file };
+    }
+    return { ok: true, path: file };
+  } catch (e) {
+    return { ok: false, error: e.message, path: file };
+  }
+});
+
+// task-025: is the CLM server (settings.systemOne.clmUrl) answering? Any HTTP reply counts;
+// only the URL and the result go back (no key, no body).
+handle('system-one:clm-status', async () => {
+  const url = resolveClmUrl(loadSettings() || {});
+  const mod = url.startsWith('https:') ? require('https') : require('http');
+  const up = await new Promise((resolve) => {
+    // a CLM server answers /v1/models with 2xx; any other reply is not treated as CLM (review task-025 r2)
+    const req = mod.get(`${url}/v1/models`, { timeout: 1500 }, (res) => { res.resume(); resolve(res.statusCode >= 200 && res.statusCode < 300); });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', () => resolve(false));
+  });
+  return { url, up };
+});
+
+// Is a usable AOR engine present? The renderer hides the AOR badge when not.
+handle('aor:status', () => {
+  const settings = loadSettings() || {};
+  return { engineFound: !!resolveAorEngineRoot(settings), compressHook: resolveCompressHook(settings), cliRegistrationProblem };
+});
+
+handle('app:platform', () => process.platform);
+handle('app:pty-available', () => ptyAvailable);
+
+// Browser mode (task-015): BrowserView + annotations + console errors, see main-browser.js.
+// Full path of a command on PATH (Windows: only runnable extensions — where.exe also lists
+// extensionless npm shims), or null.
+function findCommandSync(cmd) {
+  if (!CMD_NAME_RE.test(cmd)) return null;
+  const { execFileSync } = require('child_process');
+  const [file, args] = process.platform === 'win32'
+    ? [path.join(getSystem32Path(), 'where.exe'), [cmd]]
+    : ['/usr/bin/which', [cmd]];
+  try {
+    const lines = String(execFileSync(file, args, { timeout: 4000, windowsHide: true, encoding: 'utf8' })).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const ok = process.platform === 'win32' ? lines.find((l) => /\.(exe|cmd|bat)$/i.test(l)) : lines[0];
+    return ok && path.isAbsolute(ok) ? ok : null;
+  } catch { return null; }
+}
+
+require('./main-skills').setupSkills({
+  handle,
+  getWindow: () => mainWindow,
+  loadSettings,
+  resolveAllowedDir,
+  safeRealpath,
+  isPathInsideRoot,
+  assertAncestorsClean,
+  safeMkdir,
+  isAllowedCliCommand,
+  findCommand: findCommandSync,
+  taskkillPath: () => path.join(getSystem32Path(), 'taskkill.exe'),
+  // third-party installs: the user approves in a native dialog shown by main (review r8)
+  // task-025: whether a Jev key exists (keys.env or the app environment) — never the value
+  hasTypesafeKey: () => !!(loadUserKeys().TYPESAFE_API_KEY || (process.env.TYPESAFE_API_KEY || '').trim()),
+  confirmThirdParty: async ({ title, detail }) => {
+    // E2E only (never in the packaged app): the answer comes from a file, and each asked dialog is logged
+    if (!app.isPackaged && process.env.CARROTCAP_TEST_CONFIRM_FILE) {
+      fs.appendFileSync(process.env.CARROTCAP_TEST_CONFIRM_FILE + '.log', JSON.stringify({ title, detail }) + '\n');
+      try { return fs.readFileSync(process.env.CARROTCAP_TEST_CONFIRM_FILE, 'utf8').trim() === 'yes'; } catch { return false; }
+    }
+    if (!mainWindow || mainWindow.isDestroyed()) return false;
+    const r = await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      title: 'CARROTCAP CLI — 외부 제작 플러그인',
+      message: title,
+      detail: `${detail}\n\n설치하면 위 명령이 Claude 세션에서 실행될 수 있습니다.`,
+      buttons: ['설치', '취소'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    return r.response === 0;
+  },
+  // E2E only (never in the packaged app): answer GitHub reads from a local { url: text } file
+  ...(!app.isPackaged && process.env.CARROTCAP_TEST_GITHUB_FIXTURE ? {
+    fetchRemote: async (url) => {
+      const map = JSON.parse(fs.readFileSync(process.env.CARROTCAP_TEST_GITHUB_FIXTURE, 'utf8'));
+      if (typeof map[url] !== 'string') throw new Error('HTTP 404');
+      return map[url];
+    },
+  } : {}),
+});
+
+const browserMode = require('./main-browser').setupBrowser({
+  handle,
+  getWindow: () => mainWindow,
+  safeMkdir,
+  assertAncestorsClean,
+  isPathInsideRoot,
+  userDataRoot: USER_DATA_ROOT
+});
 
 app.whenReady().then(() => {
+  // task-026: with the "system" theme, the window background follows a Windows theme change too
+  // (the page itself follows through prefers-color-scheme) — review r1
+  nativeTheme.on('updated', () => {
+    const s = loadSettings() || {};
+    if (uiThemeOf(s) !== 'system' || !mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.setBackgroundColor(nativeTheme.shouldUseDarkColors ? WINDOW_BG.dark : WINDOW_BG.light);
+  });
   // Self-heal the `carrotcap` CLI registration. Runs only when packaged.
   // This makes a single GUI launch sufficient to repair a broken CLI install
   // on any future PC, without re-running the installer.
   try { ensureCliRegistration(); } catch (e) { console.warn('[carrotcap] ensureCliRegistration threw:', e.message); }
 
-  // settings.json이 없으면 디폴트 생성
-  if (!loadSettings()) {
-    const defaults = {
-      aor: {
-        enabled: true,
-        engineRoot: '',
-        engineRootCandidates: [
-          '%USERPROFILE%\\Desktop\\WINDOWS\\WINDOWS',
-          '%USERPROFILE%\\WINDOWS',
-          'C:\\WINDOWS\\carrotcap'
-        ],
-        autoStart: false
-      },
-      cli: {
-        claude: { command: 'claude', args: [] },
-        gemini: { command: 'gemini', args: [] },
-        codex: { command: 'codex', args: [] }
-      },
-      defaultShell: defaultShell(),
-      defaultProjectPath: os.homedir(),
-      ui: { theme: 'dark', fontSize: 14, fontFamily: 'Cascadia Code, Consolas, monospace' }
-    };
-    saveSettings(defaults);
-  }
+  // 사용자 데이터 폴더(settings.json / CLAUDE.md / workspace-state.json) 준비
+  try { initUserState(); } catch (e) { console.warn('[carrotcap] initUserState failed:', e.message); }
   // Seed the workspace allowlist (task-004 reflection) ONLY from workspace-state.json,
   // which is written exclusively by the main process via folder:pick. Settings fields
   // like defaultProjectPath are NOT used as a permission grant — renderer must not be
   // able to escalate the allowlist via settings:set.
   {
     const state = loadWorkspaceState();
-    for (const r of state.recentWorkspaces) addAllowedWorkspace(r);
+    // task-013: forget workspaces whose folder no longer exists (keeps the file small)
+    const alive = state.recentWorkspaces.filter((r) => addAllowedWorkspace(r));
+    if (alive.length !== state.recentWorkspaces.length) saveWorkspaceState({ recentWorkspaces: alive });
   }
+  try { pruneHistory(); } catch (e) { console.warn('[carrotcap] pruneHistory failed:', e.message); }
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+// task-013: a clean exit closes this run's sessions and compacts older ones.
+// A crash skips this, so the next launch can offer "이전 세션 이어하기 (비정상 종료)".
+app.on('before-quit', () => {
+  historyQuitting = true;
+  try { finalizeHistory(); } catch (e) { console.warn('[carrotcap] finalizeHistory failed:', e.message); }
 });
 
 app.on('window-all-closed', () => {

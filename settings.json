@@ -1,4 +1,5 @@
 {
+  "settingsVersion": 4,
   "aor": {
     "enabled": true,
     "engineRoot": "",
@@ -7,20 +8,26 @@
       "%USERPROFILE%\\WINDOWS",
       "C:\\WINDOWS\\carrotcap"
     ],
-    "autoStart": false,
-    "_comment": "engineRoot가 비어 있거나 존재하지 않으면 engineRootCandidates를 순서대로 검사. 모두 실패하면 plain 셸로 폴백하고 헤더에 'AOR-FALLBACK(PLAIN)' 표시. 첫 실행 시에는 사용자가 직접 engineRoot를 채워도 됨."
+    "autoStart": true,
+    "consoleShims": false,
+    "compressHook": true,
+    "_comment": "engineRoot가 비어 있거나 존재하지 않으면 engineRootCandidates를 순서대로 검사. 모두 실패하면 경고 없이 일반 셸로 열고(헤더 PLAIN/AIOPS, 사유는 툴팁) 상단 AOR 배지를 숨김. autoStart=AIOps 모드(기본 ON)."
   },
   "cli": {
     "claude": { "command": "claude", "args": [] },
-    "gemini": { "command": "gemini", "args": [] },
     "codex":  { "command": "codex",  "args": [] },
-    "_comment": "각 CLI의 실행 명령과 인자를 자유롭게 변경하세요. 예: claude.args=[\"--dangerously-skip-permissions\"]"
+    "grok":   { "command": "grok",   "args": [] },
+    "_comment": "역할: claude=코딩, codex=코드 리뷰, grok=이미지·영상 제작. 실행 명령과 인자를 자유롭게 변경하세요. 예: claude.args=[\"--dangerously-skip-permissions\"]"
+  },
+  "systemOne": {
+    "clmUrl": "http://127.0.0.1:8700",
+    "_comment": "AI DEV FLOW의 CLM 버튼·scripts/system-one.js가 쓰는 CLM-8B 서버(clm-serve) 주소. http는 이 PC(127.0.0.1/localhost)만, 원격 GPU 서버는 https만 허용. 서버가 꺼져 있으면 Jev(TYPESAFE_API_KEY)로 자동 대체."
   },
   "defaultShell": "powershell.exe",
   "defaultProjectPath": "",
   "ui": {
     "theme": "dark",
     "fontSize": 14,
-    "fontFamily": "Cascadia Code, Consolas, monospace"
+    "fontFamily": "'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'IBM Plex Mono', 'SF Mono', Consolas, monospace"
   }
 }

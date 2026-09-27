@@ -21,11 +21,25 @@ if (start < 0 || end < 0) {
   process.exit(2);
 }
 const block = source.slice(start, end + endMarker.length);
+// task-009: also pull ensureAiopsProjectStructure (reads templates/aiops/ via APP_ROOT).
+const aiopsStart = source.indexOf('function ensureAiopsProjectStructure');
+const aiopsEnd   = source.indexOf('function resolvePtyArgs');
+if (aiopsStart < 0 || aiopsEnd < 0) {
+  console.error('FATAL: ensureAiopsProjectStructure not found in main.js');
+  process.exit(2);
+}
+const aiopsBlock = source.slice(aiopsStart, aiopsEnd);
 
 // Build a sandboxed module: eval the block and export the helpers.
-const wrapper = `
+// APP_ROOT is injectable so missing-template cases can use an empty app root.
+const makeWrapper = (appRoot, packaged = false) => `
 const fs = require('fs');
+const os = require('os');
+const { clmBaseUrl, CLM_DEFAULT_URL } = require(${JSON.stringify(path.join(__dirname, 'system-one.js'))});
+const app = { isPackaged: ${packaged ? "true" : "false"} };
+const APP_ROOT = ${JSON.stringify(appRoot)};
 ${block}
+${aiopsBlock}
 module.exports = {
   validateSettings,
   pwshSingleQuote,
@@ -44,16 +58,66 @@ module.exports = {
   safeMkdir,
   assertAncestorsClean,
   copyTemplateIfMissing,
+  clampInt,
+  resolveAllowedDir,
+  sanitizeSpawnPayload,
+  isValidPtyId,
+  validateClaudeMdContent,
+  MAX_CLAUDE_MD_BYTES,
+  isWithinByteCap,
+  migrateSettings,
+  SETTINGS_VERSION,
+  sanitizeHistoryLayout,
+  applyHistorySnapshot,
+  finalizeHistoryRecord,
+  dropResumableLayouts,
+  pickResumableSession,
+  isHistoryExpired,
+  HISTORY_MAX_SESSIONS,
+  sanitizeHistoryRecord,
+  ensureAiopsProjectStructure,
+  findMissingAiopsTemplates,
+  AIOPS_CLAUDE_BLOCK_START,
+  AIOPS_CLAUDE_BLOCK_END,
+  pruneAorRuntime,
+  buildCompressHookSettings,
+  claudeArgsTakeHook,
+  resolveAorEngineRoot,
+  buildLaunchShims,
+  LAUNCH_SHIM_NAMES,
+  isOwnLaunchShim,
+  isCanonicalInstall,
+  applyRendererSettings,
+  ensureBuiltinCli,
+  isAllowedCliCommand,
+  writeJsonAtomic,
+  AOR_RAW_KEEP,
+  AOR_REPORT_KEEP,
+  resolveClmUrl,
+  loadUserKeys,
+  userKeysPath,
 };
 `;
-const m = { exports: {} };
-const fn = new Function('module', 'require', 'process', 'path', wrapper);
-fn(m, require, process, path);
+function loadHelpers(appRoot, proc = process, packaged = false) {
+  const mod = { exports: {} };
+  new Function('module', 'require', 'process', 'path', makeWrapper(appRoot, packaged))(mod, require, proc, path);
+  return mod.exports;
+}
+const m = { exports: loadHelpers(path.join(__dirname, '..')) };
 const {
   validateSettings, pwshSingleQuote, posixShellQuote, getSystem32Path,
   isPathInsideRoot, isPathInsideAllowedWorkspace, addAllowedWorkspace,
   safeRealpath, allowedWorkspaces, MAX_RECENT_WORKSPACES,
-  writeIfMissing, safeMkdir, assertAncestorsClean, copyTemplateIfMissing
+  writeIfMissing, safeMkdir, assertAncestorsClean, copyTemplateIfMissing,
+  clampInt, resolveAllowedDir, sanitizeSpawnPayload, isValidPtyId,
+  validateClaudeMdContent, MAX_CLAUDE_MD_BYTES,
+  ensureAiopsProjectStructure, AIOPS_CLAUDE_BLOCK_START, AIOPS_CLAUDE_BLOCK_END,
+  isWithinByteCap, findMissingAiopsTemplates, migrateSettings, SETTINGS_VERSION,
+  sanitizeHistoryLayout, applyHistorySnapshot, finalizeHistoryRecord, dropResumableLayouts,
+  pickResumableSession, isHistoryExpired, HISTORY_MAX_SESSIONS, sanitizeHistoryRecord,
+  pruneAorRuntime, AOR_RAW_KEEP, AOR_REPORT_KEEP, buildCompressHookSettings, claudeArgsTakeHook, buildLaunchShims, LAUNCH_SHIM_NAMES, isOwnLaunchShim, isCanonicalInstall,
+  applyRendererSettings, ensureBuiltinCli, isAllowedCliCommand, writeJsonAtomic,
+  resolveClmUrl, loadUserKeys, userKeysPath
 } = m.exports;
 
 let pass = 0;
@@ -272,11 +336,12 @@ console.log('-- copyTemplateIfMissing + writeIfMissing happy path (task-005)');
   check('user-modified content preserved',
     fs.readFileSync(destFile, 'utf8') === '# user-modified');
 
-  // Missing source: skip silently.
+  // Missing source: throws (task-014 r5).
   const ghost = path.join(ws, 'ghost-source.md');
   const dest2 = path.join(destDir, 'dest2.md');
-  const ok3 = copyTemplateIfMissing(ghost, dest2, ws);
-  check('missing source returns false', ok3 === false);
+  let threw3 = false;
+  try { copyTemplateIfMissing(ghost, dest2, ws); } catch { threw3 = true; }
+  check('missing source throws (never a silent partial setup)', threw3);
   check('missing source does not create dest', !fs.existsSync(dest2));
 
   try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
@@ -306,6 +371,553 @@ console.log('-- assertAncestorsClean fail-closed (task-004-r4)');
   check('path outside workspace throws (reaches fs root)', t2);
 
   try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
+}
+
+console.log('-- clampInt (task-007)');
+{
+  check('in range kept', clampInt(80, 2, 1000, 80) === 80);
+  check('float floored', clampInt(80.9, 2, 1000, 80) === 80);
+  check('too big clamped', clampInt(1e9, 2, 1000, 80) === 1000);
+  check('negative clamped', clampInt(-5, 2, 1000, 80) === 2);
+  check('NaN -> fallback', clampInt(NaN, 2, 1000, 80) === 80);
+  check('string -> fallback', clampInt('100', 2, 1000, 80) === 80);
+}
+
+console.log('-- sanitizeSpawnPayload / resolveAllowedDir (task-007)');
+{
+  const os = require('os');
+  const ws = path.join(os.tmpdir(), 'carrotcap-spawn-' + Date.now());
+  const sub = path.join(ws, 'sub');
+  fs.mkdirSync(sub, { recursive: true });
+  const file = path.join(ws, 'f.txt');
+  fs.writeFileSync(file, 'x');
+  allowedWorkspaces.clear();
+  addAllowedWorkspace(ws);
+
+  const ok = sanitizeSpawnPayload({ mode: 'aiops', cwd: sub, cols: 120, rows: 30 });
+  check('allowed cwd kept (realpath)', ok.cwd === safeRealpath(sub));
+  check('valid mode kept', ok.mode === 'aiops');
+  check('cols/rows kept', ok.cols === 120 && ok.rows === 30);
+
+  const out = sanitizeSpawnPayload({ mode: 'aiops', cwd: os.homedir() });
+  check('cwd outside allowlist dropped', !('cwd' in out));
+  check('file cwd rejected', resolveAllowedDir(file) === null);
+  check('non-string cwd rejected', resolveAllowedDir({ toString: () => ws }) === null);
+
+  const bad = sanitizeSpawnPayload({ mode: 'root', cliKey: 'constructor', cols: 1e9, rows: -1, extra: 'x' });
+  check('unknown mode -> plain', bad.mode === 'plain');
+  check('reserved cliKey dropped', !('cliKey' in bad));
+  check('cols clamped', bad.cols === 1000);
+  check('rows clamped', bad.rows === 1);
+  check('unknown keys dropped', !('extra' in bad));
+  check('invalid cliKey dropped', !('cliKey' in sanitizeSpawnPayload({ mode: 'cli', cliKey: 'a;b' })));
+  check('valid cliKey kept', sanitizeSpawnPayload({ mode: 'cli', cliKey: 'claude' }).cliKey === 'claude');
+
+  check('null payload -> defaults', sanitizeSpawnPayload(null).mode === 'plain');
+  check('array payload -> defaults', sanitizeSpawnPayload([1, 2]).mode === 'plain');
+
+  allowedWorkspaces.clear();
+  try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
+}
+
+console.log('-- isValidPtyId (task-007)');
+{
+  check('real id shape accepted', isValidPtyId('pty_1727330000000_ab12cd'));
+  check('non-string rejected', !isValidPtyId(12));
+  check('proto key rejected', !isValidPtyId('__proto__'));
+  check('suffix garbage rejected', !isValidPtyId('pty_1_ab;rm'));
+}
+
+console.log('-- validateClaudeMdContent (task-007)');
+{
+  check('normal text accepted', validateClaudeMdContent('# 규칙\n- a'));
+  check('empty string accepted', validateClaudeMdContent(''));
+  check('non-string rejected', !validateClaudeMdContent({ a: 1 }));
+  check('NUL rejected', !validateClaudeMdContent('a\x00b'));
+  check('exact cap accepted', validateClaudeMdContent('a'.repeat(MAX_CLAUDE_MD_BYTES)));
+  check('over cap rejected', !validateClaudeMdContent('a'.repeat(MAX_CLAUDE_MD_BYTES + 1)));
+  check('multibyte counted as bytes', !validateClaudeMdContent('가'.repeat(Math.ceil(MAX_CLAUDE_MD_BYTES / 3) + 1)));
+}
+
+console.log('-- ensureAiopsProjectStructure from templates/aiops (task-009)');
+{
+  const os = require('os');
+  const ws = path.join(os.tmpdir(), 'carrotcap-aiops-' + Date.now());
+  fs.mkdirSync(ws, { recursive: true });
+  fs.writeFileSync(path.join(ws, 'CLAUDE.md'), '# existing project rules\n');
+
+  const res = ensureAiopsProjectStructure(ws);
+  check('setup returns paths', res && res.root === safeRealpath(ws));
+  const tmpl = (n) => fs.readFileSync(path.join(__dirname, '..', 'templates', 'aiops', n), 'utf8');
+  const out = (...p) => fs.readFileSync(path.join(ws, ...p), 'utf8');
+  check('supervisor.md from template', out('agents', 'supervisor.md') === tmpl('supervisor.md'));
+  check('task-001.md from template', out('backlog', 'task-001.md') === tmpl('task-001.md'));
+  check('workflow.md from template', out('backlog', 'workflow.md') === tmpl('workflow.md'));
+  check('media/reviewer deployed',
+    fs.existsSync(path.join(ws, 'agents', 'media.md')) && fs.existsSync(path.join(ws, 'agents', 'reviewer.md')));
+  check('helper scripts deployed', fs.existsSync(path.join(ws, 'scripts', 'run-reviewer.ps1')) && fs.existsSync(path.join(ws, 'scripts', 'system-one.js')) && fs.existsSync(path.join(ws, 'scripts', 'setup-clm.sh')));
+
+  const claude = out('CLAUDE.md');
+  check('existing CLAUDE.md content preserved', claude.startsWith('# existing project rules\n'));
+  check('AIOps block appended with markers',
+    claude.includes(AIOPS_CLAUDE_BLOCK_START) && claude.trimEnd().endsWith(AIOPS_CLAUDE_BLOCK_END));
+  check('block body from template', claude.includes(tmpl('CLAUDE-block.md').trim()));
+
+  // Idempotent: second run changes nothing and keeps user edits.
+  fs.writeFileSync(path.join(ws, 'agents', 'supervisor.md'), '# user edited');
+  ensureAiopsProjectStructure(ws);
+  check('second run keeps user-edited supervisor.md', out('agents', 'supervisor.md') === '# user edited');
+  check('second run does not duplicate the block',
+    out('CLAUDE.md').split(AIOPS_CLAUDE_BLOCK_START).length === 2);
+
+  try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
+}
+
+console.log('-- missing templates: refuse before writing (task-009 review)');
+{
+  const os = require('os');
+  check('real app root has all templates', findMissingAiopsTemplates().length === 0, findMissingAiopsTemplates().join(','));
+
+  const emptyRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'carrotcap-noroot-'));
+  const broken = loadHelpers(emptyRoot);
+  const missing = broken.findMissingAiopsTemplates();
+  check('empty app root reports all 10 templates missing (task-025: + scripts/system-one.js, setup-clm.sh)', missing.length === 10 && missing.includes(path.join('scripts', 'setup-clm.sh')) && missing.includes(path.join('scripts', 'system-one.js')), missing.join(','));
+  check('missing list names templates/aiops/supervisor.md', missing.includes(path.join('templates', 'aiops', 'supervisor.md')));
+
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'carrotcap-partial-'));
+  const res = broken.ensureAiopsProjectStructure(ws);
+  check('setup returns null when templates missing', res === null);
+  check('no partial structure written', fs.readdirSync(ws).length === 0, fs.readdirSync(ws).join(','));
+
+  // Helper scripts cannot be deployed (scripts/ is a file here): setup succeeds WITH a warning.
+  const wsScripts = fs.mkdtempSync(path.join(os.tmpdir(), 'carrotcap-scripts-'));
+  fs.writeFileSync(path.join(wsScripts, 'scripts'), 'not a directory');
+  const resS = ensureAiopsProjectStructure(wsScripts);
+  check('scripts deployment failure -> success with a warning', resS && typeof resS.warning === 'string' && /scripts/.test(resS.warning));
+  const clean = ensureAiopsProjectStructure(ws);
+  check('clean setup has no warning', !!clean && clean.warning === undefined);
+  try { fs.rmSync(wsScripts, { recursive: true, force: true }); } catch {}
+
+  // Re-run with a complete app root recovers normally.
+  const res2 = ensureAiopsProjectStructure(ws);
+  check('re-run with complete templates succeeds', res2 && fs.existsSync(path.join(ws, 'agents', 'supervisor.md')));
+
+  try { fs.rmSync(emptyRoot, { recursive: true, force: true }); } catch {}
+  try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
+}
+
+console.log('-- isWithinByteCap: UTF-8 bytes, not UTF-16 units (task-009 review)');
+{
+  check('ascii at cap accepted', isWithinByteCap('a'.repeat(10), 10));
+  check('ascii over cap rejected', !isWithinByteCap('a'.repeat(11), 10));
+  check('hangul counted as 3 bytes', !isWithinByteCap('가가가가', 10) && isWithinByteCap('가가가', 9));
+  check('emoji counted as 4 bytes', !isWithinByteCap('😀😀😀', 10));
+  check('non-string rejected', !isWithinByteCap(123, 10));
+}
+
+console.log('-- migrateSettings: drop Google CLIs, add grok, run once (task-012)');
+{
+  const old = {
+    aor: { enabled: true },
+    cli: {
+      claude: { command: 'claude', args: [] },
+      gemini: { command: 'agy', args: [] },          // real v0.1 user file: key gemini, command agy
+      antigravity: { command: 'antigravity', args: [] },
+      research: { command: 'gemini', args: ['-y'] }, // removed by command name too
+      codex: { command: 'codex', args: [] }
+    }
+  };
+  const { settings: s1, changed: c1 } = migrateSettings(old);
+  check('migration reports a change', c1 === true);
+  check('gemini / antigravity / agy removed', !s1.cli.gemini && !s1.cli.antigravity && !s1.cli.research);
+  check('claude and codex kept', s1.cli.claude && s1.cli.codex);
+  check('grok added', s1.cli.grok && s1.cli.grok.command === 'grok');
+  check('version stamped', s1.settingsVersion === SETTINGS_VERSION);
+  check('other sections untouched', s1.aor.enabled === true);
+  check('input not mutated', !!old.cli.gemini);
+
+  delete s1.cli.grok; // user removes grok on purpose
+  const { settings: s2, changed: c2 } = migrateSettings(s1);
+  check('second run is a no-op (grok not re-added)', c2 === false && !s2.cli.grok);
+  check('null settings -> no change', migrateSettings(null).changed === false);
+  check('settingsVersion survives validateSettings', validateSettings({ settingsVersion: 2 }).settingsVersion === 2);
+  check('bad settingsVersion dropped', !('settingsVersion' in validateSettings({ settingsVersion: '2' })));
+}
+
+console.log('-- bundled settings.json (task-012)');
+{
+  const bundled = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'settings.json'), 'utf8'));
+  const cleaned = validateSettings(bundled);
+  check('bundled CLIs are claude, codex, grok', Object.keys(cleaned.cli).join(',') === 'claude,codex,grok', Object.keys(cleaned.cli).join(','));
+  check('bundled settings already at current version', migrateSettings(cleaned).changed === false);
+}
+
+console.log('-- task-025: systemOne settings and keys.env');
+{
+  const bundled = validateSettings(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'settings.json'), 'utf8')));
+  check('bundled systemOne.clmUrl kept (comment dropped)', bundled.systemOne && bundled.systemOne.clmUrl === 'http://127.0.0.1:8700' && !('_comment' in bundled.systemOne), JSON.stringify(bundled.systemOne));
+  check('https remote kept, normalized', validateSettings({ systemOne: { clmUrl: 'https://gpu.example.com/clm/' } }).systemOne.clmUrl === 'https://gpu.example.com/clm');
+  for (const bad of ['http://gpu.example.com:8700', 'https://u:p@x.example', 'javascript:alert(1)', 42]) {
+    check(`clmUrl dropped: ${String(bad)}`, !('clmUrl' in validateSettings({ systemOne: { clmUrl: bad } }).systemOne));
+  }
+  check('resolveClmUrl: default when unset or invalid', resolveClmUrl({}) === 'http://127.0.0.1:8700' && resolveClmUrl({ systemOne: { clmUrl: 'http://evil.example' } }) === 'http://127.0.0.1:8700' && resolveClmUrl({ systemOne: { clmUrl: 'http://localhost:9000' } }) === 'http://localhost:9000');
+
+  const os = require('os');
+  const kd = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-keys-'));
+  const kf = path.join(kd, 'keys.env');
+  const prev = process.env.CARROTCAP_KEYS_FILE;
+  process.env.CARROTCAP_KEYS_FILE = kf;
+  check('dev override of the keys file path', userKeysPath() === kf);
+  const packagedHelpers = loadHelpers(path.join(__dirname, '..'), process, true);
+  check('packaged app ignores CARROTCAP_KEYS_FILE → profile keys.env only', packagedHelpers.userKeysPath() === path.join(os.homedir(), '.carrotcap', 'keys.env'), packagedHelpers.userKeysPath());
+  check('no file → no keys', JSON.stringify(loadUserKeys()) === '{}');
+  fs.writeFileSync(kf, ['\uFEFF# comment', 'TYPESAFE_API_KEY= jv_live_abc ', 'CLM_API_KEY="clm_x"', 'PATH=C:\\evil', '# TYPESAFE_API_KEY=commented', ''].join('\r\n'));
+  const k = loadUserKeys();
+  check('reads only whitelisted names (BOM, CRLF, spaces, quotes ok)', k.TYPESAFE_API_KEY === 'jv_live_abc' && k.CLM_API_KEY === 'clm_x' && !('PATH' in k), JSON.stringify(Object.keys(k)));
+  fs.writeFileSync(kf, 'TYPESAFE_API_KEY=\nCLM_API_KEY=has space\n');
+  check('empty values and values with spaces are ignored', JSON.stringify(loadUserKeys()) === '{}');
+  fs.writeFileSync(kf, 'TYPESAFE_API_KEY=' + 'x'.repeat(70 * 1024));
+  check('oversized file ignored', JSON.stringify(loadUserKeys()) === '{}');
+  if (prev === undefined) delete process.env.CARROTCAP_KEYS_FILE; else process.env.CARROTCAP_KEYS_FILE = prev;
+  fs.rmSync(kd, { recursive: true, force: true });
+}
+
+console.log('-- session history helpers (task-013)');
+{
+  const layout = sanitizeHistoryLayout({
+    tabs: [
+      { panes: [{ mode: 'aiops', cli: 'claude' }, { mode: 'evil', cli: 'a;b' }, { mode: 'plain', cli: '__proto__' }] },
+      { panes: [] },
+      'junk'
+    ],
+    extra: 'dropped'
+  });
+  check('sanitize keeps valid panes, drops empty tabs', layout && layout.tabs.length === 1 && layout.tabs[0].panes.length === 3);
+  check('sanitize: unknown mode -> plain, bad cli -> null',
+    layout.tabs[0].panes[1].mode === 'plain' && layout.tabs[0].panes[1].cli === null && layout.tabs[0].panes[2].cli === null);
+  check('sanitize: unknown keys dropped', !('extra' in layout));
+  check('sanitize caps tabs at 8', sanitizeHistoryLayout({ tabs: Array.from({ length: 20 }, () => ({ panes: [{ mode: 'plain' }] })) }).tabs.length === 8);
+  check('sanitize rejects garbage', sanitizeHistoryLayout(null) === null && sanitizeHistoryLayout({ tabs: 'x' }) === null);
+
+  // 7 app runs, one session each
+  let rec = null;
+  for (let i = 1; i <= 7; i++) {
+    rec = applyHistorySnapshot(rec, { sessionId: `s${i}`, projectRoot: 'C:\\p', layout, nowIso: `2026-09-2${i}T10:00:00.000Z`, lastTask: 'task-013' });
+  }
+  check(`at most ${HISTORY_MAX_SESSIONS} sessions kept`, rec.sessions.length === HISTORY_MAX_SESSIONS);
+  check('newest first', rec.sessions[0].id === 's7');
+  check('summary fields recorded', rec.sessions[0].clis.join() === 'claude' && rec.sessions[0].paneCount === 3);
+  const again = applyHistorySnapshot(rec, { sessionId: 's7', projectRoot: 'C:\\p', layout, nowIso: '2026-09-28T11:00:00.000Z', lastTask: 'bad name!' });
+  check('same session updated in place, startedAt kept', again.sessions.filter((s) => s.id === 's7').length === 1 && again.sessions[0].startedAt === '2026-09-27T10:00:00.000Z');
+  check('invalid lastTask ignored (keeps previous)', again.sessions[0].lastTask === 'task-013');
+
+  const fin = finalizeHistoryRecord(again, new Set(['s7']), '2026-09-28T12:00:00.000Z');
+  check('finalize marks this run clean', fin.sessions[0].clean === true && fin.sessions[0].endedAt === '2026-09-28T12:00:00.000Z');
+  check('finalize keeps layout only on the newest', !!fin.sessions[0].layout && fin.sessions.slice(1).every((s) => !s.layout));
+  check('older sessions stay unclean (crash evidence)', fin.sessions.slice(1).every((s) => s.clean === false));
+
+  const pick = pickResumableSession(fin, new Set());
+  check('resumable = newest with a layout', pick && pick.startedAt === '2026-09-27T10:00:00.000Z' && pick.layout);
+  check('current run excluded from resume', pickResumableSession(fin, new Set(['s7'])) === null);
+  const dropped = dropResumableLayouts(fin, new Set());
+  check('dismiss drops every layout not in keep set', dropped.sessions.every((s) => !s.layout));
+
+  check('expired after 30 days', isHistoryExpired({ updatedAt: '2026-08-01T00:00:00Z' }, Date.parse('2026-09-26T00:00:00Z')));
+  check('fresh record not expired', !isHistoryExpired({ updatedAt: '2026-09-20T00:00:00Z' }, Date.parse('2026-09-26T00:00:00Z')));
+  check('unparsable date counts as expired', isHistoryExpired({ updatedAt: 'x' }, Date.now()));
+}
+
+console.log('-- sanitizeHistoryRecord: files are re-validated on read (task-012/013 review)');
+{
+  const hostile = {
+    projectRoot: 'C:\\p'.repeat(1000),
+    updatedAt: '2026-09-26T10:00:00.000Z',
+    sessions: [
+      { id: 'ok-1', startedAt: '2026-09-26T10:00:00.000Z', clean: 'yes', lastTask: '../../etc', clis: ['claude', 'x;y', '__proto__', 7],
+        layout: { tabs: Array.from({ length: 50 }, () => ({ panes: Array.from({ length: 50 }, () => ({ mode: 'plain', cli: 'claude' })) })) },
+        paneCount: 1e9, extra: 'drop me' },
+      { id: 'BAD ID', startedAt: '2026-09-26T10:00:00.000Z' },
+      { id: 'no-start' },
+      null, 'junk',
+      ...Array.from({ length: 20 }, (_, i) => ({ id: `s-${i}`, startedAt: '2026-09-25T10:00:00.000Z' }))
+    ]
+  };
+  const r = sanitizeHistoryRecord(hostile);
+  const s0 = r.sessions[0];
+  check('projectRoot capped', r.projectRoot.length <= 1024);
+  check('sessions capped', r.sessions.length === HISTORY_MAX_SESSIONS);
+  check('invalid ids / missing startedAt dropped', r.sessions.every((s) => /^[a-z0-9-]+$/.test(s.id) && s.startedAt));
+  check('layout re-capped to 8x8', s0.layout.tabs.length === 8 && s0.layout.tabs.every((t) => t.panes.length === 8));
+  check('clean must be boolean true', s0.clean === false);
+  check('bad lastTask dropped', s0.lastTask === null);
+  check('clis filtered', s0.clis.join() === 'claude');
+  check('counts clamped', s0.paneCount === 64);
+  check('unknown fields dropped', !('extra' in s0));
+  check('non-record -> null', sanitizeHistoryRecord({ sessions: 'x' }) === null && sanitizeHistoryRecord(null) === null);
+}
+
+console.log('-- migrateSettings: settingsVersion must be a real integer (task-012/013 review)');
+{
+  for (const v of ['2', 2.5, null, true, -1]) {
+    const { changed } = migrateSettings({ settingsVersion: v, cli: { gemini: { command: 'gemini', args: [] } } });
+    check(`settingsVersion ${JSON.stringify(v)} -> migrates`, changed === true);
+  }
+  check('current settingsVersion -> no-op', migrateSettings({ settingsVersion: SETTINGS_VERSION, cli: {} }).changed === false);
+}
+
+console.log('-- migrateSettings v3: AIOps on by default, once');
+{
+  // v2 files may hold a real v0.2 choice -> an explicit boolean is kept (review task-014)
+  const v2off = { settingsVersion: 2, aor: { enabled: true, autoStart: false, engineRoot: 'X' }, cli: { claude: { command: 'claude', args: [] } } };
+  const { settings: s2k, changed: c2k } = migrateSettings(v2off);
+  check('v2 -> current migrates', c2k === true && s2k.settingsVersion === SETTINGS_VERSION);
+  // v4 (task-020): the untouched old default font moves to the new order; a chosen font stays.
+  const newFont = "'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'IBM Plex Mono', 'SF Mono', Consolas, monospace";
+  const v3def = migrateSettings({ settingsVersion: 3, aor: { autoStart: true }, cli: {}, ui: { theme: 'dark', fontSize: 14, fontFamily: 'Cascadia Code, Consolas, monospace' } }).settings;
+  check('v3 old default font -> new font order', v3def.ui.fontFamily === newFont && v3def.ui.fontSize === 14 && v3def.settingsVersion === 4);
+  const v3own = migrateSettings({ settingsVersion: 3, aor: { autoStart: true }, cli: {}, ui: { fontFamily: 'D2Coding' } }).settings;
+  check('v3 user-chosen font is kept', v3own.ui.fontFamily === 'D2Coding');
+  const v3noui = migrateSettings({ settingsVersion: 3, aor: { autoStart: true }, cli: {} }).settings;
+  check('v3 without ui stays without ui (defaults apply)', v3noui.ui === undefined && v3noui.settingsVersion === 4);
+  check('v2 explicit "off" is kept', s2k.aor.autoStart === false);
+  // v2 without a value -> default on
+  const { settings: s } = migrateSettings({ settingsVersion: 2, aor: { enabled: true, engineRoot: 'X' }, cli: { claude: { command: 'claude', args: [] } } });
+  check('v2 without a value -> AIOps on', s.aor.autoStart === true);
+  for (const v of [null, 'false', 0, 1]) {
+    check(`v2 non-boolean autoStart ${JSON.stringify(v)} -> on`, migrateSettings({ settingsVersion: 2, aor: { autoStart: v }, cli: {} }).settings.aor.autoStart === true);
+  }
+  check('other aor fields kept', s.aor.enabled === true && s.aor.engineRoot === 'X');
+  check('v2 CLI list untouched (grok not re-added)', Object.keys(s.cli).join() === 'claude');
+  // v1 (pre-v0.2 builds, where off was only the default) -> on
+  check('v1 "off" (old default) -> on', migrateSettings({ aor: { autoStart: false }, cli: {} }).settings.aor.autoStart === true);
+  // after v3 the user's own "off" sticks
+  const off = { ...s, aor: { ...s.aor, autoStart: false } };
+  check('user turning AIOps off later is respected', migrateSettings(off).changed === false);
+  // v1 gets both steps
+  const { settings: s1 } = migrateSettings({ cli: { gemini: { command: 'agy', args: [] } } });
+  check('v1 -> both steps (gemini removed, grok added, AIOps on)', !s1.cli.gemini && !!s1.cli.grok && s1.aor.autoStart === true);
+  const bundled = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'settings.json'), 'utf8'));
+  check('bundled default: AIOps on', bundled.aor.autoStart === true && bundled.settingsVersion === SETTINGS_VERSION);
+}
+
+console.log('-- browser mode helpers (task-015)');
+{
+  // main-browser.js only destructures from 'electron' at load time, so plain node can require it.
+  const { cleanText, normalizeUrl, sanitizePick, clampRect } = require(path.join(__dirname, '..', 'main-browser.js'));
+  const ESC = String.fromCharCode(27);
+  const hostile = `ok${ESC}[201~\r\nRemove-Item -Recurse ~${String.fromCharCode(0x2028)}x${String.fromCharCode(0x9b)}y${String.fromCharCode(0x7f)}`;
+  const c = cleanText(hostile, 200);
+  check('cleanText strips ESC / CR / LF / U+2028 / C1 / DEL', !/[\u0000-\u001F\u007F-\u009F\u{2028}\u{2029}]/u.test(c), JSON.stringify(c));
+  check('cleanText keeps the readable text', c.startsWith('ok') && c.includes('Remove-Item'));
+  check('cleanText caps length', cleanText('a'.repeat(50), 10).length === 10);
+  check('normalizeUrl: localhost gets http', normalizeUrl('localhost:3000') === 'http://localhost:3000/');
+  check('normalizeUrl: bare host gets https', normalizeUrl('example.com') === 'https://example.com/');
+  for (const bad of ['javascript:alert(1)', 'file:///C:/Windows/win.ini', 'data:text/html,x', 'chrome://gpu', 'http://a\nb', '', null]) {
+    check(`normalizeUrl rejects ${JSON.stringify(bad)}`, normalizeUrl(bad) === null);
+  }
+  const pick = sanitizePick({ n: 5000, selector: `a${ESC}[201~b`, tag: 'button', text: 'x\r\ny', rect: { x: 1.4, y: 'z' }, viewport: {} });
+  check('sanitizePick clamps n and cleans strings', pick.n === 999 && !pick.selector.includes(ESC) && !/[\r\n]/.test(pick.text) && pick.rect.x === 1 && pick.rect.y === 0);
+  check('sanitizePick rejects non-objects', sanitizePick('x') === null);
+  const r = clampRect({ x: -5, y: 1e9, width: 'w', height: 10.6 });
+  check('clampRect clamps to integers >= 0', r.x === 0 && r.y === 20000 && r.width === 0 && r.height === 11);
+}
+
+console.log('-- AOR engine settings + runtime pruning (task-016)');
+{
+  const v = validateSettings({ aor: { consoleShims: 'yes', compressHook: 0 } });
+  check('consoleShims / compressHook coerced to booleans', v.aor.consoleShims === true && v.aor.compressHook === false);
+  check('absent flags stay absent (defaults apply)', !('consoleShims' in validateSettings({ aor: {} }).aor));
+
+  const os = require('os');
+  const rt = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-aor-rt-'));
+  const now = Date.parse('2026-09-27T00:00:00Z');
+  for (const d of ['raw', 'reports', 'metrics']) fs.mkdirSync(path.join(rt, d));
+  const touch = (p, ms) => { fs.writeFileSync(p, 'x'); const t = new Date(ms); fs.utimesSync(p, t, t); };
+  // raw: 210 recent logs + 1 old one + a foreign file
+  for (let i = 0; i < 210; i++) touch(path.join(rt, 'raw', `2026-09-26T10-00-00-${String(i).padStart(3, '0')}Z-abcdef${String(i).padStart(6, '0')}.log`), now - 3600e3 + i * 1000);
+  touch(path.join(rt, 'raw', '2026-09-01T00-00-00-000Z-a45e5d794fee.log'), now - 20 * 86400e3);
+  touch(path.join(rt, 'raw', 'notes.txt'), now - 90 * 86400e3);
+  for (let i = 0; i < 25; i++) touch(path.join(rt, 'reports', `session-report-202609${String(i + 1).padStart(2, '0')}-120000.txt`), now - (25 - i) * 3600e3);
+  touch(path.join(rt, 'metrics', '2026-07-01.jsonl'), now);
+  touch(path.join(rt, 'metrics', '2026-09-20.jsonl'), now);
+  const res = pruneAorRuntime(rt, now);
+  const rawLeft = fs.readdirSync(path.join(rt, 'raw'));
+  check('raw logs capped at AOR_RAW_KEEP, old one dropped', rawLeft.filter((n) => n.endsWith('.log')).length === AOR_RAW_KEEP && !rawLeft.includes('2026-09-01T00-00-00-000Z-a45e5d794fee.log'), JSON.stringify(res));
+  check('newest raw log kept', rawLeft.includes('2026-09-26T10-00-00-209Z-abcdef000209.log'));
+  check('foreign file in raw untouched', rawLeft.includes('notes.txt'));
+  check('reports capped at AOR_REPORT_KEEP (newest kept)', fs.readdirSync(path.join(rt, 'reports')).length === AOR_REPORT_KEEP && fs.existsSync(path.join(rt, 'reports', 'session-report-20260925-120000.txt')));
+  check('metrics older than 30 days removed, recent kept', !fs.existsSync(path.join(rt, 'metrics', '2026-07-01.jsonl')) && fs.existsSync(path.join(rt, 'metrics', '2026-09-20.jsonl')));
+  // A junctioned raw dir is never followed.
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-aor-out-'));
+  touch(path.join(outside, '2026-01-01T00-00-00-000Z-a45e5d794fee.log'), now - 90 * 86400e3);
+  fs.rmSync(path.join(rt, 'raw'), { recursive: true, force: true });
+  fs.symlinkSync(outside, path.join(rt, 'raw'), 'junction');
+  pruneAorRuntime(rt, now);
+  check('junctioned raw dir not followed', fs.existsSync(path.join(outside, '2026-01-01T00-00-00-000Z-a45e5d794fee.log')));
+  check('missing runtime dir is a no-op', JSON.stringify(pruneAorRuntime(path.join(rt, 'nope'), now)) === '{"raw":0,"reports":0,"metrics":0}');
+  fs.rmSync(path.join(rt, 'raw'), { force: true, recursive: false });
+  fs.rmSync(rt, { recursive: true, force: true });
+  fs.rmSync(outside, { recursive: true, force: true });
+}
+
+console.log('-- compress hook settings (task-017)');
+{
+  const cfg = buildCompressHookSettings(String.raw`C:\Program Files\nodejs\node.exe`, String.raw`C:\Users\o'neil\내 드라이브\AOR\carrotcap\compress-hook.js`);
+  const h = cfg.hooks.PostToolUse[0];
+  const cmd = h.hooks[0].command;
+  check('only a PostToolUse hook on Bash', Object.keys(cfg).join() === 'hooks' && Object.keys(cfg.hooks).join() === 'PostToolUse' && h.matcher === 'Bash');
+  check('paths single-quoted with forward slashes', cmd.startsWith("'C:/Program Files/nodejs/node.exe' 'C:/Users/"), cmd);
+  check('apostrophe in a path is escaped for sh', cmd.includes(String.raw`o'\''neil`), cmd);
+  const r = require('child_process').spawnSync('bash', ['-c', 'for a in ' + cmd + '; do echo "[$a]"; done'], { encoding: 'utf8' });
+  const words = r.error ? [] : r.stdout.trim().split(/\r?\n/);
+  check('bash splits it into exactly the two paths', words.length === 2 && words[1].includes("o'neil"), r.stdout || String(r.error));
+}
+
+console.log('-- which claude calls get the hook (review task-016 r1)');
+{
+  check('plain launch takes the hook', claudeArgsTakeHook([]) && claudeArgsTakeHook(['--continue']) && claudeArgsTakeHook(['--model', 'opus', 'fix the bug']));
+  check('--settings <file> blocks it', !claudeArgsTakeHook(['--settings', 'x.json']));
+  check('--settings=<file> blocks it', !claudeArgsTakeHook(['--settings=x.json', '--version']));
+  check('subcommand anywhere blocks it', !claudeArgsTakeHook(['mcp', 'list']) && !claudeArgsTakeHook(['--verbose', 'mcp', 'list']) && !claudeArgsTakeHook(['update']));
+  check('non-string args ignored', claudeArgsTakeHook([null, 3, '--continue']) && claudeArgsTakeHook(undefined));
+  const mac = loadHelpers(path.join(__dirname, '..'), { ...process, platform: 'darwin', env: process.env });
+  check('no AOR engine outside Windows (PowerShell scripts)', mac.resolveAorEngineRoot({ aor: { engineRoot: __dirname } }) === null);
+}
+
+console.log('-- `carrotcap` launch shims (task-018)');
+{
+  check('only our own names — never Cream\'s carrotcap.cmd / aor.cmd', LAUNCH_SHIM_NAMES.join() === 'carrotcap.bat,carrotcap');
+  const exe = String.raw`C:\Users\o'neil\AppData\Local\Programs\carrotcap-cli\carrotcap.exe`;
+  const sh = buildLaunchShims(exe);
+  check('.bat: marker line, starts the exe detached, passing args', sh['carrotcap.bat'] === `@echo off\r\nrem CARROTCAP-CLI-LAUNCHER\r\nsetlocal DisableDelayedExpansion\r\nstart "" "${exe}" %*\r\n`);
+  check('sh: marker on line 2', sh.carrotcap.split('\n')[1] === '# CARROTCAP-CLI-LAUNCHER');
+  check('own launchers recognized (both forms)', isOwnLaunchShim(sh['carrotcap.bat']) && isOwnLaunchShim(sh.carrotcap));
+  check("Cream CLI's launcher is not ours", !isOwnLaunchShim('@echo off\r\nsetlocal\r\nset "CREAM_CLI_EXE=C:\\x\\Cream CLI.exe"\r\nstart "" "%CREAM_CLI_EXE%"\r\n'));
+  check('marker elsewhere / other files are not ours', !isOwnLaunchShim('@echo off\r\nstart x\r\nrem CARROTCAP-CLI-LAUNCHER\r\n') && !isOwnLaunchShim('') && !isOwnLaunchShim(null));
+  // Replace the exe with echo to see exactly what Git Bash would run.
+  const probe = sh.carrotcap.replace(/ >\/dev\/null 2>&1 &\n$/, '\n').replace(/^'[^\n]*carrotcap\.exe' /m, (m) => `printf '[%s]' ${m.trim()} `);
+  const r = require('child_process').spawnSync('bash', ['-c', probe, 'carrotcap', 'C:/my project'], { encoding: 'utf8' });
+  check('Git Bash shim: exe path (with apostrophe) + args survive quoting', !r.error && r.stdout === "[C:/Users/o'neil/AppData/Local/Programs/carrotcap-cli/carrotcap.exe][C:/my project]", r.stdout || String(r.error));
+  check('Git Bash shim runs in the background (terminal not blocked)', /&\n$/.test(sh.carrotcap));
+  const pct = buildLaunchShims(String.raw`C:\Users\a%PATH%b\carrotcap.exe`);
+  check('% in the path is escaped as %% for cmd (review r3), kept as-is for Git Bash', !!pct && pct['carrotcap.bat'].includes(String.raw`"C:\Users\a%%PATH%%b\carrotcap.exe"`) && pct.carrotcap.includes("'C:/Users/a%PATH%b/carrotcap.exe'"));
+  for (const bad of ['carrotcap.exe', String.raw`C:\a"b\carrotcap.exe`, 'C:\\a\r\nb\\carrotcap.exe', null]) {
+    check(`unsafe exe path rejected: ${JSON.stringify(bad)}`, buildLaunchShims(bad) === null);
+  }
+}
+// Only the installed copy self-registers (review r4). Windows paths + junctions: Windows only.
+if (process.platform === 'win32') {
+  const os = require('os');
+  const lad = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-lad-'));
+  const canon = path.join(lad, 'Programs', 'carrotcap-cli', 'carrotcap.exe');
+  fs.mkdirSync(path.dirname(canon), { recursive: true });
+  fs.writeFileSync(canon, '');
+  const stray = path.join(lad, 'old copy', 'carrotcap.exe');
+  fs.mkdirSync(path.dirname(stray), { recursive: true });
+  fs.writeFileSync(stray, '');
+  check('installed copy may self-register', isCanonicalInstall(canon, lad));
+  check('a copy elsewhere may not', !isCanonicalInstall(stray, lad));
+  check('missing exe / bad input → no', !isCanonicalInstall(path.join(lad, 'nope.exe'), lad) && !isCanonicalInstall(canon, '') && !isCanonicalInstall(null, lad));
+  const viaLink = path.join(lad, 'linked');
+  fs.symlinkSync(path.join(lad, 'old copy'), viaLink, 'junction');
+  fs.rmSync(path.join(lad, 'Programs', 'carrotcap-cli'), { recursive: true, force: true });
+  fs.symlinkSync(path.join(lad, 'old copy'), path.join(lad, 'Programs', 'carrotcap-cli'), 'junction');
+  check('canonical path that is a junction to another copy → no', !isCanonicalInstall(canon, lad));
+  fs.rmSync(path.join(lad, 'Programs', 'carrotcap-cli'), { force: true, recursive: false });
+  fs.rmSync(viaLink, { force: true, recursive: false });
+  fs.rmSync(lad, { recursive: true, force: true });
+}
+
+console.log('-- settings persist: renderer saves never drop what the user set (task-022)');
+{
+  const disk = {
+    settingsVersion: 4,
+    aor: { enabled: true, autoStart: true, engineRoot: 'D:\\my-engine', compressHook: true },
+    cli: { claude: { command: 'claude', args: ['--verbose'] }, codex: { command: 'C:\\tools\\codex.cmd', args: [] }, grok: { command: 'grok', args: [] }, my: { command: 'mycli', args: [] } },
+    ui: { fontFamily: 'D2Coding', fontSize: 15 },
+    defaultShell: 'pwsh.exe',
+    defaultProjectPath: 'C:\\old',
+  };
+  // what the renderer sends: its (possibly stale / partial) copy with the toggles it changed
+  const staleRenderer = { aor: { enabled: false, autoStart: false }, cli: { claude: { command: 'claude', args: [] } }, defaultProjectPath: 'C:\\new', ui: { fontSize: 99 } };
+  const out = applyRendererSettings(disk, staleRenderer);
+  check('renderer toggles applied', out.aor.enabled === false && out.aor.autoStart === false && out.defaultProjectPath === 'C:\\new');
+  check('cli kept exactly as on disk (all four, args, full path)', JSON.stringify(out.cli) === JSON.stringify(disk.cli));
+  check('engine path, fonts, shell, version kept', out.aor.engineRoot === 'D:\\my-engine' && out.aor.compressHook === true && out.ui.fontFamily === 'D2Coding' && out.ui.fontSize === 15 && out.defaultShell === 'pwsh.exe' && out.settingsVersion === 4);
+  check('a save with no cli at all keeps the cli', JSON.stringify(applyRendererSettings(disk, { aor: { enabled: true } }).cli) === JSON.stringify(disk.cli));
+  check('compressHook toggle still works', applyRendererSettings(disk, { aor: { compressHook: false } }).aor.compressHook === false);
+  check('renderer cannot inject a cli entry', !('evil' in applyRendererSettings(disk, { cli: { evil: { command: 'calc', args: [] } } }).cli));
+  check('missing/corrupt disk file: only renderer keys', JSON.stringify(applyRendererSettings(null, { defaultProjectPath: 'C:\\p' })) === '{"defaultProjectPath":"C:\\\\p"}');
+  // task-026: the settings panel writes ui.theme and ui.fontSize — nothing else under ui
+  const themed = applyRendererSettings(disk, { ui: { theme: 'light', fontSize: 16, fontFamily: 'Evil Mono' } });
+  check('theme + font size from the settings panel applied', themed.ui.theme === 'light' && themed.ui.fontSize === 16);
+  check('…fontFamily and the rest kept as on disk', themed.ui.fontFamily === 'D2Coding' && JSON.stringify(themed.cli) === JSON.stringify(disk.cli) && themed.aor.engineRoot === 'D:\\my-engine');
+  check('unknown theme / out-of-range size dropped', applyRendererSettings(disk, { ui: { theme: 'neon', fontSize: 3 } }).ui.theme === undefined && applyRendererSettings(disk, { ui: { theme: 'neon', fontSize: 3 } }).ui.fontSize === 15);
+  check('system theme accepted', applyRendererSettings({}, { ui: { theme: 'system' } }).ui.theme === 'system');
+  // the same 8-32 range as the panel: a larger value never reaches disk (review task-026 r1)
+  check('font size 32 accepted, 33 and 64 keep the disk value', applyRendererSettings(disk, { ui: { fontSize: 32 } }).ui.fontSize === 32
+    && applyRendererSettings(disk, { ui: { fontSize: 33 } }).ui.fontSize === 15 && applyRendererSettings(disk, { ui: { fontSize: 64 } }).ui.fontSize === 15);
+  check('font size 8 accepted, 7 dropped', applyRendererSettings(disk, { ui: { fontSize: 8 } }).ui.fontSize === 8 && applyRendererSettings(disk, { ui: { fontSize: 7 } }).ui.fontSize === 15);
+
+  const r1 = ensureBuiltinCli({ cli: { claude: { command: 'claude', args: [] } }, ui: {} });
+  check('missing codex/grok restored', r1.changed && r1.settings.cli.codex.command === 'codex' && r1.settings.cli.grok.command === 'grok' && r1.settings.cli.claude.command === 'claude');
+  const r2 = ensureBuiltinCli(disk);
+  check('complete file untouched', r2.changed === false && r2.settings === disk);
+  const r3 = ensureBuiltinCli({ ui: {} });
+  check('no cli at all -> all three', r3.changed && Object.keys(r3.settings.cli).join() === 'claude,codex,grok');
+  const r4 = ensureBuiltinCli({ cli: { grok: { command: '', args: [] }, claude: { command: 'claude', args: ['-x'] }, codex: { command: 'codex', args: [] } } });
+  check('empty command repaired, others kept', r4.changed && r4.settings.cli.grok.command === 'grok' && r4.settings.cli.claude.args[0] === '-x');
+
+  check('plain command name allowed', isAllowedCliCommand('grok') && isAllowedCliCommand('claude.exe'));
+  check('absolute path to an existing file allowed', isAllowedCliCommand(process.execPath));
+  if (process.platform === 'win32') {
+    // The spawn line main.js builds for a cli entry ('& ' + quoted command + quoted args),
+    // run by a real PowerShell: a path with a space and an apostrophe stays one program and
+    // shell syntax inside an argument is not executed (review r1).
+    const os = require('os');
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), "cc-cli o'k "));
+    const cmdPath = path.join(d, 'echo args.cmd');
+    fs.writeFileSync(cmdPath, '@echo off\r\necho RAN [%~1] [%~2]\r\n');
+    check('path with space + apostrophe is an allowed command', isAllowedCliCommand(cmdPath));
+    const line = '& ' + [pwshSingleQuote(cmdPath), pwshSingleQuote('a b'), pwshSingleQuote('$(Write-Output PWNED); x')].join(' ');
+    const r = require('child_process').spawnSync('powershell.exe', ['-NoProfile', '-Command', line], { encoding: 'utf8' });
+    check('real PowerShell runs it as one program with literal args', /RAN \[a b\] \[\$\(Write-Output PWNED\); x\]/.test(r.stdout) && !/^PWNED/m.test(r.stdout), JSON.stringify(r.stdout + r.stderr));
+    fs.rmSync(d, { recursive: true, force: true });
+    // POSIX branch (macOS/Linux spawn line) through Git Bash, when available (review r2).
+    const gitBash = 'C:\\Program Files\\Git\\bin\\bash.exe';
+    if (fs.existsSync(gitBash)) {
+      const pd = fs.mkdtempSync(path.join(os.tmpdir(), "cc-posix o'k "));
+      const sh = path.join(pd, 'echo args.sh');
+      fs.writeFileSync(sh, '#!/bin/sh\nprintf "RAN [%s] [%s]\\n" "$1" "$2"\n');
+      const posix = sh.replace(/^([A-Za-z]):\\/, (_, dr) => `/${dr.toLowerCase()}/`).replace(/\\/g, '/');
+      const pline = ['sh', posixShellQuote(posix), posixShellQuote('a b'), posixShellQuote('$(echo PWNED); x')].join(' ');
+      const pr = require('child_process').spawnSync(gitBash, ['-c', pline], { encoding: 'utf8' });
+      check('POSIX quoting: path with space + apostrophe, literal args (Git Bash)', /RAN \[a b\] \[\$\(echo PWNED\); x\]/.test(pr.stdout) && !/^PWNED/m.test(pr.stdout), JSON.stringify(pr.stdout + pr.stderr));
+      fs.rmSync(pd, { recursive: true, force: true });
+    }
+  }
+  // Atomic settings write (review r2): replaces an existing file; on failure the old file stays
+  // and no temp file is left.
+  {
+    const os = require('os');
+    const wd = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-atomic-'));
+    const file = path.join(wd, 'settings.json');
+    fs.writeFileSync(file, JSON.stringify({ v: 1 }));
+    writeJsonAtomic(file, { v: 2 });
+    check('atomic write replaces an existing file', JSON.parse(fs.readFileSync(file, 'utf8')).v === 2);
+    const failing = (what) => ({
+      writeFileSync: (...a) => { if (what === 'write') throw new Error('disk full'); return fs.writeFileSync(...a); },
+      renameSync: (...a) => { if (what === 'rename') throw new Error('locked'); return fs.renameSync(...a); },
+      rmSync: (...a) => fs.rmSync(...a),
+    });
+    for (const what of ['write', 'rename']) {
+      let threw = false;
+      try { writeJsonAtomic(file, { v: 3 }, failing(what)); } catch { threw = true; }
+      check(`${what} failure: error surfaces, old file intact, no temp left`, threw && JSON.parse(fs.readFileSync(file, 'utf8')).v === 2 && fs.readdirSync(wd).length === 1, fs.readdirSync(wd).join(','));
+    }
+    fs.rmSync(wd, { recursive: true, force: true });
+  }
+  check('missing file / relative / quotes / newline / folder rejected', !isAllowedCliCommand('C:\\nope\\x.exe') && !isAllowedCliCommand('..\\x.exe') && !isAllowedCliCommand('"C:\\a.exe"') && !isAllowedCliCommand('grok\nrm') && !isAllowedCliCommand(__dirname) && !isAllowedCliCommand(null));
 }
 
 console.log('');
