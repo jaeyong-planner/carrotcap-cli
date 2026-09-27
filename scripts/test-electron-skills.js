@@ -265,8 +265,22 @@ fs.writeFileSync(recFile, JSON.stringify(rec));
     check('a local plugin that changed since it was shown fails the check', crRun && crRun.ok === false && /commands\/code-review\.md의 내용이 확인한 것과 다릅니다/.test(crOut.out || ''), JSON.stringify(crRun));
     check('and is uninstalled again', calls().slice(before3).some((l) => / plugin uninstall code-review@claude-plugins-official --scope project$/.test(l)), JSON.stringify(calls().slice(before3)));
     fs.writeFileSync(crFile, '# review');
+    const crExtra = path.join(market, 'plugins', 'code-review', 'commands', 'added.md');
+    fs.writeFileSync(crExtra, '# added after the window showed the plugin');
+    const crRun2 = await ev(`window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['code-review'])`);
+    check('a file added since it was shown fails the check (review r7)', crRun2 && crRun2.ok === false && /확인하지 않은 파일.*commands\/added\.md/.test((((crRun2.results) || [])[0] || {}).out || ''), JSON.stringify(crRun2));
+    fs.rmSync(crExtra);
     const crOk = await ev(`window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['code-review'])`);
     check('unchanged, it installs and is kept', crOk && crOk.ok === true, JSON.stringify(crOk));
+
+    console.log('-- a third-party entry with an unsupported source cannot be installed (review r7)');
+    const mj2 = path.join(market, '.claude-plugin', 'marketplace.json');
+    const mj2Text = fs.readFileSync(mj2, 'utf8');
+    fs.writeFileSync(mj2, mj2Text.replace('"./external_plugins/playwright"', '"https://example.invalid/pw.git"'));
+    const before4 = calls().length;
+    const pwBad = await ev(`window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['playwright'], true)`);
+    check('refused even with consent, nothing run', pwBad && pwBad.ok === false && /확인할 수 없거나/.test(pwBad.error || '') && calls().length === before4, JSON.stringify(pwBad));
+    fs.writeFileSync(mj2, mj2Text);
 
     console.log('-- the main side only takes catalog ids and allowed folders');
     const bad = await ev(`window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['evil & calc', '__proto__'])`);

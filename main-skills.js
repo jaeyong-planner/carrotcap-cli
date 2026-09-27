@@ -183,8 +183,15 @@ function inspectPlugin(id, configDir = claudeConfigDir()) {
     out.note = '외부 저장소 — "구성 불러오기"로 고정 커밋의 내용을 확인한 뒤 설치할 수 있습니다';
     return out;
   }
-  if (typeof entry.source !== 'string' || !/^\.\//.test(entry.source)) return out;
+  // only "./<folder>" inside the marketplace copy can be read here (review r7)
+  const unsupported = { available: false, note: '지원하지 않는 출처 형식 — 내용을 확인할 수 없습니다' };
+  if (typeof entry.source !== 'string' || !/^\.\/[A-Za-z0-9_.\-/]+$/.test(entry.source) || entry.source.split('/').includes('..')) return unsupported;
   const pdir = path.join(mdir, ...entry.source.slice(2).split('/'));
+  try {
+    const realM = fs.realpathSync.native(mdir);
+    const relP = path.relative(realM, fs.realpathSync.native(pdir));
+    if (!relP || relP.startsWith('..') || path.isAbsolute(relP)) return unsupported;
+  } catch { return unsupported; }
   const manifest = readJson(path.join(pdir, '.claude-plugin', 'plugin.json')) || {};
   out.version = manifest.version || entry.version || null;
   out.pinned = gitHead(mdir); // marketplace commit the files come from
@@ -400,6 +407,9 @@ function verifyInstalledCopy(id, root, { sha, digest }, { configDir = claudeConf
   }
   return null;
 }
+// what a file was when it was read: a later write must find it unchanged (review r7)
+const stampOf = (st) => ({ ino: st.ino, dev: st.dev, size: st.size, mtimeMs: st.mtimeMs });
+const sameStamp = (a, b) => (a === null ? b === null : !!b && a.ino === b.ino && a.dev === b.dev && a.size === b.size && a.mtimeMs === b.mtimeMs);
 const sameFile = (a, b) => !!a && !!b && a.ino === b.ino && a.dev === b.dev;
 // Write <root>/<rel> without ever following a link out of the project (review r5/r6).
 // An EMPTY temp file is created exclusively (random name) and opened; the text is written
@@ -408,7 +418,8 @@ const sameFile = (a, b) => !!a && !!b && a.ino === b.ino && a.dev === b.dev;
 // that is removed at once). The temp is then renamed over the target: a rename replaces a
 // link instead of writing through it, and after a folder swap the temp name is not found
 // there, so the rename fails. Nothing is ever written back on failure.
-function writeInsideProject(root, rel, text, { safeRealpath, isPathInsideRoot, assertAncestorsClean, beforeCreate, beforeRename }) {
+// expect: undefined = no check; null = the target must still not exist; a stamp = it must be unchanged
+function writeInsideProject(root, rel, text, { safeRealpath, isPathInsideRoot, assertAncestorsClean, beforeCreate, beforeRename, expect }) {
   const file = path.join(root, rel);
   const dir = path.dirname(file);
   if (fs.existsSync(file)) {
@@ -432,6 +443,11 @@ function writeInsideProject(root, rel, text, { safeRealpath, isPathInsideRoot, a
     fs.closeSync(fd);
     fd = null;
     if (beforeRename) beforeRename();
+    if (expect !== undefined) {
+      let cur = null;
+      try { cur = stampOf(fs.lstatSync(file)); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+      if (!sameStamp(expect, cur)) throw new Error(`${rel} was changed meanwhile — not overwritten`);
+    }
     fs.renameSync(tmp, file);
     done = true;
   } finally {
@@ -442,10 +458,10 @@ function writeInsideProject(root, rel, text, { safeRealpath, isPathInsideRoot, a
 // Read <root>/<rel> only if what was opened is the plain, singly linked file inside the
 // project that was checked (review r6): a link swapped in before the open, or the path
 // changed while open, is refused instead of merging someone else's file into ours.
-function readInsideProject(root, rel, { safeRealpath, isPathInsideRoot, assertAncestorsClean, afterOpen }) {
+function readInsideProject(root, rel, { safeRealpath, isPathInsideRoot, assertAncestorsClean, afterOpen, withStamp }) {
   const file = path.join(root, rel);
   let before;
-  try { before = fs.lstatSync(file); } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+  try { before = fs.lstatSync(file); } catch (e) { if (e.code === 'ENOENT') return withStamp ? { text: null, stamp: null } : null; throw e; }
   if (before.isSymbolicLink() || !before.isFile()) throw new Error(`${rel} is not a plain file`);
   if (before.nlink > 1) throw new Error(`${rel} is hard-linked elsewhere`);
   assertAncestorsClean(file, root);
@@ -459,7 +475,8 @@ function readInsideProject(root, rel, { safeRealpath, isPathInsideRoot, assertAn
     if (!sameFile(before, opened) || !sameFile(now, opened) || opened.nlink > 1 || !real || !isPathInsideRoot(real, root)) {
       throw new Error(`${rel} changed while reading`);
     }
-    return fs.readFileSync(fd, 'utf8');
+    const text = fs.readFileSync(fd, 'utf8');
+    return withStamp ? { text, stamp: stampOf(fs.fstatSync(fd)) } : text;
   } finally {
     fs.closeSync(fd);
   }
@@ -525,29 +542,37 @@ async function inspectRemotePlugin(id, { configDir = claudeConfigDir(), fetch = 
 
 // Runs one `claude plugin ...` call; resolves only after the process (tree) is gone.
 function makeRunner({ taskkillPath, timeoutMs = INSTALL_TIMEOUT_MS } = {}) {
+  // Resolves once the whole tree is gone (review r7): taskkill /T on Windows (a .cmd runs under
+  // cmd.exe), the process group on POSIX (the child leads its own group).
   function killTree(child) {
-    // On Windows a .cmd runs under cmd.exe: kill the whole tree so the real claude stops too.
-    if (process.platform === 'win32' && child.pid && taskkillPath) {
-      execFile(taskkillPath(), ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }, () => {});
-    } else {
-      try { child.kill('SIGKILL'); } catch { /* gone */ }
-    }
+    return new Promise((done) => {
+      if (process.platform === 'win32' && child.pid && taskkillPath) {
+        execFile(taskkillPath(), ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }, () => done());
+      } else {
+        try { process.kill(-child.pid, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch { /* gone */ } }
+        done();
+      }
+    });
   }
   return function run(exe, args, cwd) {
     return new Promise((resolve) => {
       // .cmd/.bat need a shell on Windows; every argument is a fixed token (no quoting needed)
       const viaShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(exe);
+      const detached = process.platform !== 'win32'; // own process group, so the group can be killed
       const child = viaShell
         ? spawn(`"${exe}" ${args.join(' ')}`, { cwd, shell: true, windowsHide: true })
-        : spawn(exe, args, { cwd, windowsHide: true });
+        : spawn(exe, args, { cwd, windowsHide: true, detached });
       let out = '';
       let timedOut = false;
+      let killing = null;
       const add = (d) => { out = (out + d).slice(-4000); };
       child.stdout.on('data', add);
       child.stderr.on('data', add);
-      const t = setTimeout(() => { timedOut = true; add('\n(시간 초과)'); killTree(child); }, timeoutMs);
-      child.on('error', (e) => { clearTimeout(t); resolve({ code: -1, out: String(e.message), timedOut }); });
-      child.on('close', (code) => { clearTimeout(t); resolve({ code: timedOut ? -1 : code, out, timedOut }); });
+      const t = setTimeout(() => { timedOut = true; add('\n(시간 초과)'); killing = killTree(child); }, timeoutMs);
+      // the next install may start only after the timed-out tree is really gone
+      const finish = (r) => { clearTimeout(t); (killing || Promise.resolve()).then(() => resolve(r)); };
+      child.on('error', (e) => finish({ code: -1, out: String(e.message), timedOut }));
+      child.on('close', (code) => finish({ code: timedOut ? -1 : code, out, timedOut }));
     });
   };
 }
@@ -576,7 +601,7 @@ function setupSkills(deps) {
   // Write <root>/<rel> only if it stays a plain, singly linked file inside the project.
   // no window shown (direct call): compare with the local copy as it is now, if there is one
   const localDigest = (id) => { const i = inspectPlugin(id); return i.digest && !i.needsRemoteCheck ? { sha: null, digest: i.digest } : null; };
-  const writeInside = (root, rel, text) => writeInsideProject(root, rel, text, { safeRealpath, isPathInsideRoot, assertAncestorsClean });
+  const writeInside = (root, rel, text, expect) => writeInsideProject(root, rel, text, { safeRealpath, isPathInsideRoot, assertAncestorsClean, expect });
   function writeState(root, state) {
     safeMkdir(path.join(root, '.carrotcap'), root);
     writeInside(root, path.join('.carrotcap', 'skills.json'), JSON.stringify(state, null, 2));
@@ -684,8 +709,9 @@ function setupSkills(deps) {
       let rulesError = null;
       if (all.length) {
         try {
-          const current = readInsideProject(root, 'CLAUDE.md', { safeRealpath, isPathInsideRoot, assertAncestorsClean }) || '';
-          writeInside(root, 'CLAUDE.md', mergeSkillsBlock(current, buildSkillsBlock(all)));
+          const cur = readInsideProject(root, 'CLAUDE.md', { safeRealpath, isPathInsideRoot, assertAncestorsClean, withStamp: true });
+          // written only if CLAUDE.md is still what was read (an edit meanwhile is not overwritten)
+          writeInside(root, 'CLAUDE.md', mergeSkillsBlock(cur.text || '', buildSkillsBlock(all)), cur.stamp);
         } catch (e) { rulesError = e.message; }
       }
       writeState(root, { installed: all, marketplace: MARKETPLACE, at: new Date().toISOString(), ...(rulesError ? { rulesPending: true } : {}) });

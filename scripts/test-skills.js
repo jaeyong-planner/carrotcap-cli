@@ -245,6 +245,24 @@ console.log('-- what a plugin contains (local marketplace copy)');
   check('junction before the temp file: refused, nothing left outside, text never written there', /escaped/.test(raced3) && JSON.stringify(fs.readdirSync(outside)) === '["skills.json"]' && fs.readFileSync(victim, 'utf8') === 'VICTIM', `${raced3} ${fs.readdirSync(outside)}`);
   fs.rmSync(path.join(proj, '.carrotcap'));
   fs.renameSync(path.join(proj, 'moved2'), path.join(proj, '.carrotcap'));
+  // an edit between read and write is not overwritten (review r7)
+  const cm0 = path.join(proj, 'CLAUDE.md');
+  fs.writeFileSync(cm0, '# v1\n');
+  const got = sk.readInsideProject(proj, 'CLAUDE.md', { ...wdeps(), withStamp: true });
+  fs.writeFileSync(cm0, '# v2 — the user typed this meanwhile\n');
+  let lost = '';
+  try { sk.writeInsideProject(proj, 'CLAUDE.md', got.text + 'rules', { ...wdeps(), expect: got.stamp }); } catch (e) { lost = e.message; }
+  check('CLAUDE.md edited after it was read → refused, the edit is kept', /changed meanwhile/.test(lost) && fs.readFileSync(cm0, 'utf8').startsWith('# v2'), lost);
+  const got2 = sk.readInsideProject(proj, 'CLAUDE.md', { ...wdeps(), withStamp: true });
+  sk.writeInsideProject(proj, 'CLAUDE.md', got2.text + 'rules', { ...wdeps(), expect: got2.stamp });
+  check('unchanged since read → written', /rules$/.test(fs.readFileSync(cm0, 'utf8')));
+  fs.rmSync(cm0);
+  const none = sk.readInsideProject(proj, 'CLAUDE.md', { ...wdeps(), withStamp: true });
+  fs.writeFileSync(cm0, '# created meanwhile\n');
+  let lost2 = '';
+  try { sk.writeInsideProject(proj, 'CLAUDE.md', 'rules', { ...wdeps(), expect: none.stamp }); } catch (e) { lost2 = e.message; }
+  check('created by someone after the read → not overwritten', none.text === null && /changed meanwhile/.test(lost2) && fs.readFileSync(cm0, 'utf8') === '# created meanwhile\n', lost2);
+  fs.rmSync(cm0);
   // reading CLAUDE.md for the merge (review r6)
   const secret = path.join(outside, 'secret.md');
   fs.writeFileSync(secret, 'SECRET');
@@ -286,6 +304,20 @@ console.log('-- what a plugin contains (local marketplace copy)');
   const li = sk.inspectPlugin('playwright', cfg);
   check('local hook script is read, flagged and shown', li.available && li.security.findings.some((f) => f.cat === 'network' && f.file === 'hooks/stop.js') && li.runFiles.some((f) => f.path === 'hooks/stop.js'), JSON.stringify(li));
   check('code fetched at run time (npx) is called out', li.external.length === 1 && /npx some-mcp@latest/.test(li.external[0]));
+  console.log('-- only supported sources are inspectable (review r7)');
+  for (const bad of ['https://example.com/x.git', './../outside', '../x', 'external_plugins/x', './a b']) {
+    fs.writeFileSync(path.join(md, 'marketplace.json'), JSON.stringify({ name: 'claude-plugins-official', plugins: [{ name: 'playwright', source: bad }] }));
+    const r7 = sk.inspectPlugin('playwright', cfg);
+    check(`source ${JSON.stringify(bad)} → not inspectable`, r7.available === false && /지원하지 않는 출처/.test(r7.note), JSON.stringify(r7));
+  }
+  const escDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-esc-'));
+  fs.symlinkSync(escDir, path.join(cfg, 'plugins', 'marketplaces', 'claude-plugins-official', 'external_plugins', 'esc'), 'junction');
+  fs.writeFileSync(path.join(md, 'marketplace.json'), JSON.stringify({ name: 'claude-plugins-official', plugins: [{ name: 'playwright', source: './external_plugins/esc' }] }));
+  check('a source folder that links out of the marketplace → not inspectable', sk.inspectPlugin('playwright', cfg).available === false);
+  fs.rmSync(path.join(cfg, 'plugins', 'marketplaces', 'claude-plugins-official', 'external_plugins', 'esc'));
+  fs.rmSync(escDir, { recursive: true, force: true });
+  fs.writeFileSync(path.join(md, 'marketplace.json'), JSON.stringify({ name: 'claude-plugins-official', plugins: [{ name: 'playwright', source: './external_plugins/x' }] }));
+
   console.log('-- every text file is read, not only known extensions (review r4)');
   fs.mkdirSync(path.join(lp, 'bin'));
   fs.writeFileSync(path.join(lp, 'bin', 'tool'), '#!/bin/sh\nwget http://x.example/a\n');
