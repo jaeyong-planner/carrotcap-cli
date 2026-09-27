@@ -27,8 +27,11 @@ fs.writeFileSync(mouseApp, [
   "process.stdin.setRawMode && process.stdin.setRawMode(true);",
   "process.stdin.resume();",
   "setTimeout(() => { process.stdout.write('\\x1b[?1000h\\x1b[?1006h'); process.stdout.write('MOUSE-APP-TEXT-9876 copy me please\\n'); }, 300);",
-  "process.stdin.on('data', (d) => { if (d.includes(3) || d.includes(113)) { process.stdout.write('\\x1b[?1000l\\x1b[?1006l'); process.exit(0); } });",
+  // every byte the program receives is logged, to see which clicks reach it
+  "process.stdin.on('data', (d) => { require('fs').appendFileSync(process.env.CC_MOUSE_LOG, d); if (d.includes(3) || d.includes(113)) { process.stdout.write('\\x1b[?1000l\\x1b[?1006l'); process.exit(0); } });",
 ].join('\n'));
+const mouseLog = path.join(tmp, 'mouse-in.log');
+process.env.CC_MOUSE_LOG = mouseLog; // inherited by the app and its panes
 
 (async () => {
   const app = await launchApp(userData);
@@ -84,6 +87,39 @@ fs.writeFileSync(mouseApp, [
     const word = await clip();
     check('double click copies the word under the mouse', word.trim() === 'MOUSE-APP-TEXT-9876', JSON.stringify(word));
     check('focus stays in the terminal', await ev(`document.activeElement && document.activeElement.classList.contains('xterm-helper-textarea')`));
+
+    console.log('-- triple click selects the line');
+    await ev(`window.carrotcap.writeClipboard('')`);
+    for (const n of [1, 2, 3]) {
+      await app.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: wx, y: box.y, button: 'left', buttons: 1, clickCount: n });
+      await app.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: wx, y: box.y, button: 'left', buttons: 0, clickCount: n });
+    }
+    await sleep(600);
+    check('triple click copies the whole line', /MOUSE-APP-TEXT-9876 copy me please/.test(await clip()), JSON.stringify(await clip()));
+
+    console.log('-- which clicks reach the program');
+    const logText = () => (fs.existsSync(mouseLog) ? fs.readFileSync(mouseLog, 'latin1') : '');
+    fs.writeFileSync(mouseLog, '');
+    await app.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: wx, y: box.y, button: 'left', buttons: 1, clickCount: 1 });
+    await app.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: wx, y: box.y, button: 'left', buttons: 0, clickCount: 1 });
+    await sleep(600);
+    check('a plain left click is used for selection, not sent to the program', !/\x1b\[</.test(logText()), JSON.stringify(logText()));
+    fs.writeFileSync(mouseLog, '');
+    await app.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: wx, y: box.y, button: 'left', buttons: 1, clickCount: 1, modifiers: 2 });
+    await app.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: wx, y: box.y, button: 'left', buttons: 0, clickCount: 1, modifiers: 2 });
+    await sleep(600);
+    check('Ctrl+click still goes to the program (SGR mouse report)', /\x1b\[<\d+;\d+;\d+M/.test(logText()), JSON.stringify(logText()));
+    fs.writeFileSync(mouseLog, '');
+    await app.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: wx, y: box.y, deltaX: 0, deltaY: -120 });
+    await sleep(600);
+    check('the wheel still goes to the program', /\x1b\[<6[45];/.test(logText()), JSON.stringify(logText()));
+    fs.writeFileSync(mouseLog, '');
+    await app.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: wx, y: box.y, button: 'right', buttons: 2, clickCount: 1 });
+    await app.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: wx, y: box.y, button: 'right', buttons: 0, clickCount: 1 });
+    await sleep(600);
+    check('right click is not turned into a selection (it reaches the program)', /\x1b\[<2;\d+;\d+M/.test(logText()), JSON.stringify(logText()));
+    await app.key('Escape', 'Escape', 27); // close the pane menu if it opened
+    await sleep(300);
 
     console.log('-- Shift+drag still selects');
     await ev(`window.carrotcap.writeClipboard('')`);

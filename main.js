@@ -87,6 +87,18 @@ function clipString(s, maxLen) {
   return String(s).replace(/[\x00-\x1F]/g, '').slice(0, maxLen);
 }
 
+// Temp file + rename: a crash or failure mid-write leaves the old file as it was, never a
+// half file (which the next start would treat as corrupt and reset to defaults). task-022
+function writeJsonAtomic(file, value, io = fs) {
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    io.writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8');
+    io.renameSync(tmp, file);
+  } finally {
+    try { io.rmSync(tmp, { force: true }); } catch { /* renamed away */ }
+  }
+}
+
 // A CLI command from settings.json: a plain name found on PATH, or — since the renderer can
 // no longer write `cli` (applyRendererSettings) — an absolute path to an existing file the
 // user put there themselves (task-022).
@@ -606,15 +618,7 @@ function loadSettings() {
 
 function saveSettings(next) {
   fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true });
-  // Temp file + rename: a crash mid-write must not leave a half file, which the next start
-  // would treat as corrupt and replace with defaults (task-022).
-  const tmp = `${SETTINGS_PATH}.${process.pid}.tmp`;
-  try {
-    fs.writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf8');
-    fs.renameSync(tmp, SETTINGS_PATH);
-  } finally {
-    try { fs.rmSync(tmp, { force: true }); } catch { /* renamed away */ }
-  }
+  writeJsonAtomic(SETTINGS_PATH, next);
 }
 
 function buildDefaultSettings() {

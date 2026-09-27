@@ -87,6 +87,7 @@ module.exports = {
   applyRendererSettings,
   ensureBuiltinCli,
   isAllowedCliCommand,
+  writeJsonAtomic,
   AOR_RAW_KEEP,
   AOR_REPORT_KEEP,
 };
@@ -109,7 +110,7 @@ const {
   sanitizeHistoryLayout, applyHistorySnapshot, finalizeHistoryRecord, dropResumableLayouts,
   pickResumableSession, isHistoryExpired, HISTORY_MAX_SESSIONS, sanitizeHistoryRecord,
   pruneAorRuntime, AOR_RAW_KEEP, AOR_REPORT_KEEP, buildCompressHookSettings, claudeArgsTakeHook, buildLaunchShims, LAUNCH_SHIM_NAMES, isOwnLaunchShim, isCanonicalInstall,
-  applyRendererSettings, ensureBuiltinCli, isAllowedCliCommand
+  applyRendererSettings, ensureBuiltinCli, isAllowedCliCommand, writeJsonAtomic
 } = m.exports;
 
 let pass = 0;
@@ -835,6 +836,39 @@ console.log('-- settings persist: renderer saves never drop what the user set (t
     const r = require('child_process').spawnSync('powershell.exe', ['-NoProfile', '-Command', line], { encoding: 'utf8' });
     check('real PowerShell runs it as one program with literal args', /RAN \[a b\] \[\$\(Write-Output PWNED\); x\]/.test(r.stdout) && !/^PWNED/m.test(r.stdout), JSON.stringify(r.stdout + r.stderr));
     fs.rmSync(d, { recursive: true, force: true });
+    // POSIX branch (macOS/Linux spawn line) through Git Bash, when available (review r2).
+    const gitBash = 'C:\\Program Files\\Git\\bin\\bash.exe';
+    if (fs.existsSync(gitBash)) {
+      const pd = fs.mkdtempSync(path.join(os.tmpdir(), "cc-posix o'k "));
+      const sh = path.join(pd, 'echo args.sh');
+      fs.writeFileSync(sh, '#!/bin/sh\nprintf "RAN [%s] [%s]\\n" "$1" "$2"\n');
+      const posix = sh.replace(/^([A-Za-z]):\\/, (_, dr) => `/${dr.toLowerCase()}/`).replace(/\\/g, '/');
+      const pline = ['sh', posixShellQuote(posix), posixShellQuote('a b'), posixShellQuote('$(echo PWNED); x')].join(' ');
+      const pr = require('child_process').spawnSync(gitBash, ['-c', pline], { encoding: 'utf8' });
+      check('POSIX quoting: path with space + apostrophe, literal args (Git Bash)', /RAN \[a b\] \[\$\(echo PWNED\); x\]/.test(pr.stdout) && !/^PWNED/m.test(pr.stdout), JSON.stringify(pr.stdout + pr.stderr));
+      fs.rmSync(pd, { recursive: true, force: true });
+    }
+  }
+  // Atomic settings write (review r2): replaces an existing file; on failure the old file stays
+  // and no temp file is left.
+  {
+    const os = require('os');
+    const wd = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-atomic-'));
+    const file = path.join(wd, 'settings.json');
+    fs.writeFileSync(file, JSON.stringify({ v: 1 }));
+    writeJsonAtomic(file, { v: 2 });
+    check('atomic write replaces an existing file', JSON.parse(fs.readFileSync(file, 'utf8')).v === 2);
+    const failing = (what) => ({
+      writeFileSync: (...a) => { if (what === 'write') throw new Error('disk full'); return fs.writeFileSync(...a); },
+      renameSync: (...a) => { if (what === 'rename') throw new Error('locked'); return fs.renameSync(...a); },
+      rmSync: (...a) => fs.rmSync(...a),
+    });
+    for (const what of ['write', 'rename']) {
+      let threw = false;
+      try { writeJsonAtomic(file, { v: 3 }, failing(what)); } catch { threw = true; }
+      check(`${what} failure: error surfaces, old file intact, no temp left`, threw && JSON.parse(fs.readFileSync(file, 'utf8')).v === 2 && fs.readdirSync(wd).length === 1, fs.readdirSync(wd).join(','));
+    }
+    fs.rmSync(wd, { recursive: true, force: true });
   }
   check('missing file / relative / quotes / newline / folder rejected', !isAllowedCliCommand('C:\\nope\\x.exe') && !isAllowedCliCommand('..\\x.exe') && !isAllowedCliCommand('"C:\\a.exe"') && !isAllowedCliCommand('grok\nrm') && !isAllowedCliCommand(__dirname) && !isAllowedCliCommand(null));
 }

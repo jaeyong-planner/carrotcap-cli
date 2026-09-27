@@ -151,6 +151,18 @@ fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({
   check('corrupt file: replaced by full settings with all three CLIs', ['claude', 'codex', 'grok'].every((k) => fixed.cli && fixed.cli[k]));
   const cs = await ev(`window.carrotcap.cliStatus()`);
   check('cli:status still knows the CLIs afterwards', 'claude' in cs && 'codex' in cs && 'grok' in cs, JSON.stringify(cs));
+  // and a CLI really starts from the rebuilt settings (review r2). The user points claude at
+  // the fake by full path (allowed now, and never dropped by an app save).
+  const withPath = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+  withPath.cli.claude = { command: path.join(bin, 'claude.cmd'), args: ['--from-settings'] };
+  fs.writeFileSync(settingsFile, JSON.stringify(withPath, null, 2));
+  await ev(`window.carrotcap.setSettings(${JSON.stringify({ ...cur, aor: { ...cur.aor, autoStart: true } })})`);
+  check('a full-path CLI command survives an app save', JSON.parse(fs.readFileSync(settingsFile, 'utf8')).cli.claude.command === path.join(bin, 'claude.cmd'));
+  fs.rmSync(argsLog, { force: true });
+  const spawned = await ev(`window.carrotcap.spawnPty({ mode: 'cli', cliKey: 'claude', cols: 80, rows: 24, cwd: ${JSON.stringify(project)} })`);
+  check('the claude CLI pane spawns', !!spawned && !spawned.error, JSON.stringify(spawned));
+  check('and the full-path command actually runs with its arguments', await waitFor(() => fs.existsSync(argsLog) && /--from-settings/.test(fs.readFileSync(argsLog, 'utf8')), { timeoutMs: 15000 }));
+  if (spawned && spawned.id) await ev(`window.carrotcap.killPty(${JSON.stringify(spawned.id)}), true`);
 
   await app.close();
   console.log('');
