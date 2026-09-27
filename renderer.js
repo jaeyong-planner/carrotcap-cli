@@ -802,9 +802,24 @@
     const r = await api.writeClipboard(text);
     return !!(r && r.ok);
   }
+  // task-019 (review r1): console-error text taken from the browser page is pasted only into
+  // agent panes — never into a plain shell, however it reached the clipboard.
+  function leafOfTerm(term) {
+    for (const [, p] of state.panes) if (p.type === 'leaf' && p.term === term) return p;
+    return null;
+  }
+  function pasteBlocked(term, text) {
+    const b = window.CarrotcapBrowser;
+    if (!b || typeof b.isTainted !== 'function' || !b.isTainted(text)) return false;
+    const leaf = leafOfTerm(term);
+    const agent = !!leaf && b.isAgentTarget({ cli: leaf.cli || null, bracketedPaste: !!(term.modes && term.modes.bracketedPasteMode) });
+    if (agent) return false;
+    showComposerNotice('브라우저 콘솔 에러 줄은 에이전트 페인에만 붙여넣을 수 있습니다');
+    return true;
+  }
   async function pasteIntoTerm(term) {
     const r = await api.readClipboard();
-    if (r && r.ok && r.text) term.paste(r.text);
+    if (r && r.ok && r.text && !pasteBlocked(term, r.text)) term.paste(r.text);
   }
   function attachClipboard(leaf) {
     const term = leaf.term;
@@ -826,6 +841,12 @@
       }
       return true;
     });
+    // Plain Ctrl+V / Shift+Insert reach xterm as a DOM paste event: same rule (capture phase,
+    // before xterm reads the clipboard data).
+    leaf.hostEl.addEventListener('paste', (e) => {
+      const text = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
+      if (text && pasteBlocked(term, text)) { e.preventDefault(); e.stopImmediatePropagation(); }
+    }, true);
     leaf.hostEl.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       if (leaf.ptyId) api.showTermMenu(leaf.ptyId, term.hasSelection());

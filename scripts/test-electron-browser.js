@@ -139,6 +139,32 @@ const server = http.createServer((req, res) => {
   check('pins not consumed by the refused send', (await ev(`document.querySelectorAll('#br-pins .br-pin').length`)) === 1);
   check('nothing pasted into the shell', !/브라우저 컨텍스트/.test(await screen()));
 
+  console.log('-- page-derived error text cannot reach the plain shell by other routes (task-019 r1)');
+  const notice = () => ev(`document.querySelector('#composer-notice').textContent`);
+  const composerVal = () => ev(`document.querySelector('#composer-input').value`);
+  // "# " and the header stripped by hand (also what a history recall would bring back).
+  const bodyOnly = composed.split('\n').filter((l) => /boom-on-load/.test(l)).map((l) => l.replace(/^#\s*-?\s*/, '')).join('\n');
+  await ev(`document.querySelector('#composer-notice').textContent = ''; document.querySelector('#composer-input').value = ${JSON.stringify('Write-Output ' + bodyOnly)}; document.querySelector('#composer-send').click(); true`);
+  await sleep(800);
+  check('edited block (no "# ", no header) is still refused for the plain shell', /에이전트 페인에만/.test(await notice()) && (await composerVal()).includes('boom-on-load'), await notice());
+  check('shell never received the edited page text', !/boom-on-load/.test(await screen()));
+  // Paste routes into the plain terminal: Ctrl+Shift+V (clipboard) and a DOM paste event (Ctrl+V).
+  await ev(`window.carrotcap.writeClipboard(${JSON.stringify('Write-Output ' + bodyOnly)})`);
+  await ev(`document.querySelector('#composer-notice').textContent = ''; document.querySelector('.tab-page.active .pane.active .xterm-helper-textarea').focus(), true`);
+  await app.key('V', 'KeyV', 86, 2 | 8); // ctrl+shift
+  await sleep(600);
+  check('Ctrl+Shift+V of page text into the plain shell is refused', /에이전트 페인에만/.test(await notice()) && !/boom-on-load/.test(await screen()), await notice());
+  const domPaste = await ev(`(() => { const dt = new DataTransfer(); dt.setData('text/plain', ${JSON.stringify('Write-Output ' + bodyOnly)}); const e = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }); document.querySelector('.tab-page.active .pane.active .xterm-helper-textarea').dispatchEvent(e); return e.defaultPrevented; })()`);
+  await sleep(600);
+  check('Ctrl+V (paste event) of page text into the plain shell is blocked', domPaste === true && !/boom-on-load/.test(await screen()));
+  await ev(`window.carrotcap.writeClipboard('')`);
+  // A fast double click inserts the block once.
+  await ev(`document.querySelector('#composer-input').value = ''; const b = document.querySelector('#br-errors-to-chat'); b.click(); b.click(); true`);
+  await waitFor(async () => /boom-on-load/.test(await composerVal()));
+  await sleep(500);
+  check('fast double click inserts the block once', (await composerVal()).split('[콘솔 에러').length === 2, JSON.stringify(await composerVal()));
+  await ev(`document.querySelector('#composer-input').value = ${JSON.stringify(composed)}; true`); // back to the request + block
+
   console.log('-- agent pane receives the browser context');
   await ev(`document.querySelector('.btn-cli[data-cli="claude"]').click(), true`);
   check('fake agent started', await waitFor(async () => /fake-agent ready/.test(await screen())));
@@ -179,6 +205,21 @@ const server = http.createServer((req, res) => {
   check('exactly one paste terminator', evil.split('\x1b[201~').length === 2);
   check('no C1 / U+2028 from the page', !/[\u0080-\u009F\u{2028}\u{2029}]/u.test(inner));
   check('page text still readable', /boom/.test(inner) && /Remove-Item/.test(inner), JSON.stringify(inner.slice(0, 600)));
+
+  console.log('-- errors inserted from a previous document are not sent (task-019 r1)');
+  await ev(`document.querySelector('#composer-input').value = ''; document.querySelector('#br-reload').click(), true`);
+  await waitFor(async () => !(await ev(`document.querySelector('#br-errors-to-chat').disabled`)));
+  await ev(`document.querySelector('#br-errors-to-chat').click(), true`);
+  await waitFor(async () => /boom/.test(await ev(`document.querySelector('#composer-input').value`)));
+  const oldDocBlock = await ev(`document.querySelector('#composer-input').value`);
+  await ev(`document.querySelector('#br-reload').click(), true`);
+  await sleep(1500);
+  fs.writeFileSync(path.join(tmp, 'agent-received.bin'), '');
+  await ev(`document.querySelector('#composer-notice').textContent = ''; document.querySelector('#composer-send').click(); true`);
+  await sleep(1000);
+  check('block from the previous document is refused after navigation', /페이지가 바뀌었습니다/.test(await ev(`document.querySelector('#composer-notice').textContent`)));
+  check('nothing reached the agent, input kept', received() === '' && (await ev(`document.querySelector('#composer-input').value`)) === oldDocBlock);
+  await ev(`document.querySelector('#composer-input').value = ''; true`);
 
   console.log('-- redirect to file: is blocked (review C1)');
   await ev(`document.querySelector('#br-url').value = ${JSON.stringify(site + 'redir')}; document.querySelector('#br-go').click(); true`);
@@ -355,6 +396,14 @@ const server = http.createServer((req, res) => {
   await ev(`document.querySelector('#toggle-browser').click(), true`);
   check('browser view destroyed on close', await waitFor(async () => !(await app.targets()).some((t) => t.url.startsWith(site))));
   check('layout back to terminal only', !(await ev(`document.body.classList.contains('browser-mode')`)));
+
+  console.log('-- browser closed: inserted/recalled error text still refused (task-019 r1)');
+  await ev(`document.querySelector('#composer-notice').textContent = ''; document.querySelector('#composer-input').value = ${JSON.stringify('Write-Output ' + bodyOnly)}; document.querySelector('#composer-send').click(); true`);
+  await sleep(800);
+  check('page text refused with the browser closed', /브라우저 모드에서 에이전트 페인으로/.test(await ev(`document.querySelector('#composer-notice').textContent`)));
+  check('shell never received it, input kept', !/boom-on-load/.test(await screen()) && (await ev(`document.querySelector('#composer-input').value`)).includes('boom-on-load'));
+  await ev(`document.querySelector('#composer-input').value = 'Write-Output plain-ok'; document.querySelector('#composer-send').click(); true`);
+  check('ordinary text still goes to the shell', await waitFor(async () => /plain-ok[\s\S]*plain-ok/.test(await screen())));
   view.close();
   await app.close();
 })()

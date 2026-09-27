@@ -28,7 +28,8 @@
     pins: [],          // [{ n, selector, tag, text, rect, viewport }]
     full: false,       // 주석 상한에 닿음
     newErrors: 0,
-    inserted: null,    // { header, mark } — 입력창에 넣은 콘솔 에러 블록 (보낸 뒤 "보냄" 처리)
+    taint: [],         // 입력창에 넣은 콘솔 에러 [{ header, snippets, gen, mark, committed }]
+    inserting: false,
     annotating: false,
     pickToken: 0,
     openToken: 0,
@@ -219,29 +220,49 @@
 
   // ---- 채팅 연동: 입력창 전송 직전에 호출 ----
   function fmtRect(r) { return `x=${r.x}, y=${r.y}, ${r.width}×${r.height}`; }
+  // 페이지 유래 텍스트 추적 (task-019, review r1): 버튼으로 입력창에 넣은 콘솔 에러의 "메시지 본문"을
+  // 기억한다. 머리줄이나 "# "를 지워도, 브라우저를 닫아도, 기록(↑)으로 다시 불러와도, 복사해 붙여넣어도
+  // 본문이 남아 있으면 페이지 유래로 본다 — 그 텍스트는 에이전트 페인에만, 보호 경로로만 간다.
+  const MAX_TAINT = 50;
+  const MIN_SNIPPET = 8; // 너무 짧은 본문은 오탐을 막으려고 레벨까지 붙여 비교
+  function taintOf(text) {
+    if (typeof text !== 'string' || !text) return null;
+    for (let i = st.taint.length - 1; i >= 0; i--) {
+      if (st.taint[i].snippets.some((s) => text.includes(s))) return st.taint[i];
+    }
+    return null;
+  }
+  function isAgentTarget(target) {
+    return !!(target && AGENT_CLIS.has(target.cli) && target.bracketedPaste);
+  }
+
   // 입력창 전송 직전: 붙일 컨텍스트를 만든다. 아무것도 소비하지 않고,
   // 터미널에 실제로 보낸 뒤 commit()을 불러야 주석·에러가 "보냄"이 된다.
   //   반환: { text, commit } | { blocked: '이유' }
   async function decorate(text, projectRoot, target) {
     const plain = { text, commit: () => {} };
-    if (!st.active || !st.open) return plain;
-    // 콘솔 에러는 버튼으로 입력창에 넣은 블록으로만 간다 (task-019). 그 블록이 아직 입력 내용에
-    // 있으면 페이지 유래 텍스트이므로 주석과 같은 보호 경로(에이전트 전용·guarded paste)로 보낸다.
-    const inserted = st.inserted && typeof text === 'string' && text.includes(st.inserted.header) ? st.inserted : null;
-    if (!st.pins.length && !inserted) return plain;
-    // 여러 줄 컨텍스트는 에이전트 CLI(bracketed paste를 켜는 대화형 앱)에만 보낸다.
+    const tainted = taintOf(text);
+    if (!tainted && (!st.active || !st.open)) return plain;
+    if (tainted && (!st.active || !st.open)) {
+      return { blocked: '입력 내용에 브라우저 콘솔 에러 줄이 있습니다 — 브라우저 모드에서 에이전트 페인으로 보내거나 그 줄을 지우세요' };
+    }
+    if (!st.pins.length && !tainted) return plain;
+    // 여러 줄 컨텍스트·페이지 유래 텍스트는 에이전트 CLI(bracketed paste를 켜는 대화형 앱)에만 보낸다.
     // 일반 PowerShell에 붙이면 페이지가 만든 문자열이 명령으로 실행될 수 있다 (review C3).
-    const isAgent = target && AGENT_CLIS.has(target.cli) && target.bracketedPaste;
-    if (!isAgent) {
+    if (!isAgentTarget(target)) {
       return { blocked: '브라우저 주석·콘솔 에러는 CLAUDE/CODEX 버튼으로 실행한 에이전트 페인에만 보낼 수 있습니다' };
     }
+    // 넣어 둔 에러는 그 문서의 것 — 페이지가 바뀌었으면 새 문서 설명으로 보내지 않는다.
+    if (tainted && tainted.gen !== st.pageGen) {
+      return { blocked: '페이지가 바뀌었습니다 — 넣어 둔 콘솔 에러 줄을 지우고 새로 넣어 주세요' };
+    }
     const ctx = await api.browserContext({ projectRoot, screenshot: st.pins.length > 0, includeErrors: false, gen: st.pageGen });
-    if (!ctx) return plain;
+    if (!ctx) return tainted ? { blocked: '브라우저 컨텍스트를 만들지 못했습니다 — 다시 시도하세요' } : plain;
     if (ctx.stale) {
-      // 준비하는 사이 페이지가 바뀌었다 — 옛 페이지의 주석을 새 페이지 설명으로 보내지 않는다
+      // 준비하는 사이 페이지가 바뀌었다 — 옛 페이지의 주석·에러를 새 페이지 설명으로 보내지 않는다
       st.pins = [];
       renderPins();
-      return { blocked: '페이지가 바뀌어 주석이 사라졌습니다 — 새 페이지에서 다시 찍어 주세요' };
+      return { blocked: '페이지가 바뀌었습니다 — 새 페이지에서 주석·콘솔 에러를 다시 넣어 주세요' };
     }
     const pins = st.pins.slice(0, MAX_PINS);
     const lines = ['[브라우저 컨텍스트 — CARROTCAP]'];
@@ -259,17 +280,17 @@
     // 실행되지 않는다 (줄바꿈은 이미 제거되어 주석을 벗어날 수 없음). 에이전트에게는 그냥 읽히는 텍스트.
     const block = lines.map((l) => `# ${l}`).join('\n') + '\n' + (text || '(주석 위치의 문제를 확인해줘)');
     const commit = () => {
-      // 넣은 시점까지의 에러만 "보냄" — 그 뒤에 난 에러는 계속 새 에러로 남는다.
-      if (inserted) {
-        api.browserCommit(inserted.mark);
-        if (st.inserted === inserted) st.inserted = null;
-        renderErrorsButton();
+      // 넣은 시점까지의 에러만 "보냄" — 그 뒤에 난 에러는 계속 새 에러로 남는다. 한 번만.
+      if (tainted && !tainted.committed) {
+        tainted.committed = true;
+        api.browserCommit(tainted.mark);
       }
       // 이번에 보낸 핀만 지운다 — 전송을 준비하는 사이 새로 찍은 핀은 목록·페이지 모두 남는다 (review r2).
       const sent = pins.map((p) => p.n);
       st.pins = st.pins.filter((p) => !sent.includes(p.n));
       api.browserClearPins(sent, ctx.gen);
       renderPins();
+      renderErrorsButton();
     };
     return { text: block, commit, context: true, token: ctx.token };
   }
@@ -280,29 +301,45 @@
   function renderErrorsButton() {
     if (!errorsToChat) return;
     const n = st.newErrors;
-    errorsToChat.disabled = !st.open || n === 0;
+    errorsToChat.disabled = st.inserting || !st.open || n === 0;
     errorsToChat.textContent = n > 0 ? `⚠ 새 콘솔 에러 ${n}건 → 채팅에 넣기` : '새 콘솔 에러 없음';
   }
   async function insertErrorsToChat() {
-    if (!st.open || !composerInput) return;
-    if (st.inserted && composerInput.value.includes(st.inserted.header)) { composerInput.focus(); return; } // 이미 넣음
-    const ctx = await api.browserContext({ screenshot: false, includeErrors: true, gen: st.pageGen });
-    if (!ctx || ctx.stale || !Array.isArray(ctx.errors) || !ctx.errors.length) { renderErrorsButton(); return; }
-    const total = ctx.errors.length + (ctx.errorsSkipped || 0);
-    const header = `[콘솔 에러 — ${oneLine(ctx.url, 300)} · ${total}건${ctx.errorsSkipped ? `, 최근 ${ctx.errors.length}건만` : ''}]`;
-    const lines = [header];
-    for (const e of ctx.errors) {
-      lines.push(`  - [${oneLine(e.level, 10)}] ${oneLine(e.message)}${e.source ? ` (${oneLine(e.source, 300)}${e.line ? ':' + e.line : ''})` : ''}`);
+    if (st.inserting || !st.open || !composerInput) return;
+    // 아직 보내지 않은 같은 블록이 입력창에 있으면 다시 넣지 않는다
+    const pending = st.taint.find((t) => !t.committed && t.gen === st.pageGen && composerInput.value.includes(t.header));
+    if (pending) { composerInput.focus(); return; }
+    st.inserting = true; // 빠른 두 번 클릭도 한 번만 (review r1)
+    renderErrorsButton();
+    try {
+      const ctx = await api.browserContext({ screenshot: false, includeErrors: true, gen: st.pageGen });
+      if (!ctx || ctx.stale || !Array.isArray(ctx.errors) || !ctx.errors.length) return;
+      const total = ctx.errors.length + (ctx.errorsSkipped || 0);
+      const header = `[콘솔 에러 — ${oneLine(ctx.url, 300)} · ${total}건${ctx.errorsSkipped ? `, 최근 ${ctx.errors.length}건만` : ''}]`;
+      const lines = [header];
+      const snippets = [];
+      for (const e of ctx.errors) {
+        const level = oneLine(e.level, 10);
+        const msg = oneLine(e.message);
+        lines.push(`  - [${level}] ${msg}${e.source ? ` (${oneLine(e.source, 300)}${e.line ? ':' + e.line : ''})` : ''}`);
+        if (msg) snippets.push(msg.length >= MIN_SNIPPET ? msg : `[${level}] ${msg}`);
+      }
+      snippets.push(header);
+      // 모든 줄은 "# "로 시작 — 페이지가 만든 문자열(main에서 제어문자·줄바꿈 제거)이 만에 하나
+      // 셸로 가더라도 줄 주석이다. 보낼 때는 주석과 같은 보호 경로를 탄다 (decorate).
+      const block = lines.map((l) => `# ${l}`).join('\n');
+      st.taint.push({ header: `# ${header}`, snippets, gen: ctx.gen, mark: ctx.errorMark, committed: false });
+      if (st.taint.length > MAX_TAINT) st.taint.shift();
+      // 사용자가 쓴 내용은 그대로 두고, 필요할 때만 구분 줄바꿈을 넣는다.
+      const cur = composerInput.value;
+      composerInput.value = `${cur}${cur && !cur.endsWith('\n') ? '\n' : ''}${block}\n`;
+      composerInput.dispatchEvent(new Event('input', { bubbles: true })); // 입력창 높이 맞춤
+      composerInput.focus();
+      composerInput.setSelectionRange(composerInput.value.length, composerInput.value.length);
+    } finally {
+      st.inserting = false;
+      renderErrorsButton();
     }
-    // 모든 줄은 "# "로 시작 — 페이지가 만든 문자열(main에서 제어문자·줄바꿈 제거)이 만에 하나
-    // 셸로 가더라도 줄 주석이다. 보낼 때는 주석과 같은 보호 경로를 탄다 (decorate).
-    const block = lines.map((l) => `# ${l}`).join('\n');
-    const cur = composerInput.value.replace(/\s+$/, '');
-    composerInput.value = cur ? `${cur}\n${block}\n` : `${block}\n`;
-    st.inserted = { header: `# ${header}`, mark: ctx.errorMark };
-    composerInput.dispatchEvent(new Event('input', { bubbles: true })); // 입력창 높이 맞춤
-    composerInput.focus();
-    composerInput.setSelectionRange(composerInput.value.length, composerInput.value.length);
   }
 
   // ---- 이벤트 ----
@@ -329,5 +366,5 @@
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind);
   else bind();
 
-  window.CarrotcapBrowser = { decorate, isActive: () => st.active && st.open };
+  window.CarrotcapBrowser = { decorate, isActive: () => st.active && st.open, isTainted: (t) => !!taintOf(t), isAgentTarget };
 })();
