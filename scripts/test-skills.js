@@ -154,7 +154,7 @@ console.log('-- what a plugin contains (local marketplace copy)');
   console.log('-- remote links / submodules and the installed copy (review r5)');
   const treeWith = (extra) => async (url) => {
     if (url.startsWith('https://api.github.com/')) return JSON.stringify({ truncated: false, tree: [{ type: 'blob', mode: '100644', path: 'skills/tdd/SKILL.md' }, extra] });
-    return '# TDD\n';
+    return /\.png$/.test(url) ? 'PNG' : '# TDD\n';
   };
   let e5 = '';
   try { await sk.inspectRemotePlugin('superpowers', { configDir: cfg, fetch: treeWith({ type: 'blob', mode: '120000', path: 'hooks/run.sh' }) }); } catch (e) { e5 = e.message; }
@@ -163,7 +163,7 @@ console.log('-- what a plugin contains (local marketplace copy)');
   try { await sk.inspectRemotePlugin('superpowers', { configDir: cfg, fetch: treeWith({ type: 'commit', mode: '160000', path: 'vendor/x' }) }); } catch (e) { e5 = e.message; }
   check('a submodule in the remote tree → refused', /링크·서브모듈/.test(e5), e5);
   const good = await sk.inspectRemotePlugin('superpowers', { configDir: cfg, fetch: treeWith({ type: 'blob', mode: '100644', path: 'img/a.png' }) });
-  check('inspection keeps a digest of every shown file', good.digest && good.digest.files['skills/tdd/SKILL.md'] === sk.textHash('# TDD\n') && JSON.stringify(good.digest.media) === '["img/a.png"]');
+  check('inspection keeps a digest of every shown file', good.digest && good.digest.files['skills/tdd/SKILL.md'] === sk.textHash('# TDD\n') && good.digest.media['img/a.png'] === sk.bytesHash(Buffer.from('PNG')));
 
   const vcfg = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-vf-'));
   const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-vp-'));
@@ -193,6 +193,9 @@ console.log('-- what a plugin contains (local marketplace copy)');
   seed();
   fs.writeFileSync(path.join(inst, 'postinstall.sh'), 'rm -rf ~');
   check('a file that was never shown → rejected', /확인하지 않은 파일/.test(verify() || ''), String(verify()));
+  seed();
+  fs.writeFileSync(path.join(inst, 'img', 'a.png'), 'PNG2');
+  check('changed media bytes → rejected (review r6)', /img\/a\.png의 내용이 확인한 것과 다릅니다/.test(verify() || ''), String(verify()));
   seed();
   fs.rmSync(path.join(inst, 'img', 'a.png'));
   check('a shown file missing → rejected', /설치되지 않았습니다/.test(verify() || ''), String(verify()));
@@ -230,6 +233,40 @@ console.log('-- what a plugin contains (local marketplace copy)');
   } catch (e) { raced = e.code || e.message; }
   check('folder swapped for a junction: the write fails, outside untouched', !!raced && fs.readFileSync(victim, 'utf8') === 'VICTIM' && fs.readdirSync(outside).length === 1, `${raced} ${fs.readdirSync(outside)}`);
   fs.rmSync(path.join(proj, '.carrotcap'));
+  fs.renameSync(path.join(proj, 'moved'), path.join(proj, '.carrotcap'));
+  // race 3 (review r6): the folder becomes a junction right before the temp file is created
+  let raced3 = '';
+  try {
+    sk.writeInsideProject(proj, '.carrotcap/skills.json', 'EVIL', { ...wdeps(), beforeCreate: () => {
+      fs.renameSync(path.join(proj, '.carrotcap'), path.join(proj, 'moved2'));
+      fs.symlinkSync(outside, path.join(proj, '.carrotcap'), 'junction');
+    } });
+  } catch (e) { raced3 = e.message; }
+  check('junction before the temp file: refused, nothing left outside, text never written there', /escaped/.test(raced3) && JSON.stringify(fs.readdirSync(outside)) === '["skills.json"]' && fs.readFileSync(victim, 'utf8') === 'VICTIM', `${raced3} ${fs.readdirSync(outside)}`);
+  fs.rmSync(path.join(proj, '.carrotcap'));
+  fs.renameSync(path.join(proj, 'moved2'), path.join(proj, '.carrotcap'));
+  // reading CLAUDE.md for the merge (review r6)
+  const secret = path.join(outside, 'secret.md');
+  fs.writeFileSync(secret, 'SECRET');
+  const cm = path.join(proj, 'CLAUDE.md');
+  fs.writeFileSync(cm, '# mine\n');
+  check('a plain CLAUDE.md is read', sk.readInsideProject(proj, 'CLAUDE.md', wdeps()) === '# mine\n');
+  check('no CLAUDE.md → null (new file)', sk.readInsideProject(path.join(proj, '.carrotcap'), 'CLAUDE.md', wdeps()) === null);
+  let rd = '';
+  try {
+    sk.readInsideProject(proj, 'CLAUDE.md', { ...wdeps(), afterOpen: () => { fs.renameSync(cm, cm + '.old'); fs.linkSync(secret, cm); } });
+  } catch (e) { rd = e.message; }
+  check('path swapped while open → refused (outside content never returned)', /changed while reading/.test(rd), rd);
+  try { fs.rmSync(cm); } catch { /* */ }
+  fs.renameSync(cm + '.old', cm);
+  fs.rmSync(cm);
+  fs.linkSync(secret, cm);
+  let rd2 = '';
+  try { sk.readInsideProject(proj, 'CLAUDE.md', wdeps()); } catch (e) { rd2 = e.message; }
+  check('a hard link to an outside file is refused before reading', /hard-linked/.test(rd2), rd2);
+  fs.rmSync(cm);
+  fs.rmSync(secret);
+  fs.rmSync(path.join(proj, '.carrotcap'), { recursive: true, force: true });
   // an existing link is refused up front and nothing is written back through it
   fs.symlinkSync(outside, path.join(proj, '.carrotcap'), 'junction');
   let pre = '';
