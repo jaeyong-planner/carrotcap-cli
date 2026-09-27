@@ -126,7 +126,7 @@
       const names = { network: '네트워크', delete: '파일 삭제', secrets: '환경변수·자격증명', exec: '셸·프로그램 실행' };
       const secLine = document.createElement('div');
       secLine.className = 'skill-sec';
-      secLine.textContent = `보안 점검 (본문 ${sec.files}개 확인): ` + Object.keys(names).map((k) => `${names[k]} ${sec.counts[k] || 0}`).join(' · ');
+      secLine.textContent = `보안 점검 (파일 ${sec.files}개 전체 본문 확인${sec.skipped ? `, 이미지·글꼴 ${sec.skipped}개 제외` : ''}): ` + Object.keys(names).map((k) => `${names[k]} ${sec.counts[k] || 0}`).join(' · ');
       box.appendChild(secLine);
       if (sec.findings && sec.findings.length) {
         const det = document.createElement('details');
@@ -136,7 +136,7 @@
         for (const f of sec.findings) {
           const d = document.createElement('div');
           d.className = 'skill-run';
-          d.textContent = `[${f.label}] ${f.file}:${f.line} — ${f.text}`;
+          d.textContent = `[${f.label}] ${f.file}${f.line ? `:${f.line}` : ''} — ${f.text}`;
           det.appendChild(d);
         }
         box.appendChild(det);

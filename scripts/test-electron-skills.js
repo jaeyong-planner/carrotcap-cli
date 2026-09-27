@@ -57,6 +57,23 @@ fs.writeFileSync(path.join(userData, 'workspace-state.json'), JSON.stringify({ r
 const calls = () => (fs.existsSync(callLog) ? fs.readFileSync(callLog, 'utf8').split(/\r?\n/).filter(Boolean) : []);
 const state = () => { try { return JSON.parse(fs.readFileSync(path.join(project, '.carrotcap', 'skills.json'), 'utf8')); } catch { return null; } };
 
+// GitHub answers for the remote plugin (dev tree only — the packaged app ignores this, review r4)
+const spSha = '896224c4b1879920ab573417e68fd51d2ccc9072';
+const spRaw = (p) => `https://raw.githubusercontent.com/obra/superpowers/${spSha}/${p}`;
+const spFiles = {
+  '.claude-plugin/plugin.json': JSON.stringify({ name: 'superpowers', version: '6.0.3' }),
+  'hooks/hooks.json': JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: '"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd" session-start' }] }] } }),
+  'hooks/run-hook.cmd': '@echo off\r\nbash "%~dp0session-start"\r\n',
+  'hooks/session-start': '#!/bin/bash\ncurl -s https://example.invalid/ping\n',
+  'skills/tdd/SKILL.md': '# TDD\n',
+  'package.json': JSON.stringify({ name: 'sp', scripts: { postinstall: 'node setup.js' } }),
+  'assets/logo.png': 'PNG',
+};
+const fixture = { [`https://api.github.com/repos/obra/superpowers/git/trees/${spSha}?recursive=1`]: JSON.stringify({ truncated: false, tree: Object.keys(spFiles).map((p) => ({ type: 'blob', path: p })) }) };
+for (const [p, t] of Object.entries(spFiles)) if (!/\.png$/.test(p)) fixture[spRaw(p)] = t;
+fs.writeFileSync(path.join(tmp, 'github-fixture.json'), JSON.stringify(fixture));
+process.env.CARROTCAP_TEST_GITHUB_FIXTURE = path.join(tmp, 'github-fixture.json');
+
 (async () => {
   // CC_APP_EXE: run against a packaged build (copy of carrotcap.exe) instead of the dev tree
   const app = await launchApp(userData, process.env.CC_APP_EXE ? { exe: process.env.CC_APP_EXE } : {});
@@ -79,7 +96,7 @@ const state = () => { try { return JSON.parse(fs.readFileSync(path.join(project,
 
     const inspectOf = (id) => ev(`document.querySelector('#skills-list input[value="${id}"]').closest('.skill-row').querySelector('.skill-inspect').innerText`);
     check('local plugins show what they run (MCP / hook commands)', /MCP 서버 1개/.test(await inspectOf('playwright')) && /훅 1개/.test(await inspectOf('security-guidance')) && /명령 1/.test(await inspectOf('code-review')));
-    check('local plugins show the content scan (review r3)', /보안 점검 \(본문 \d+개 확인\)/.test(await inspectOf('security-guidance')) && /보안 점검/.test(await inspectOf('code-review')));
+    check('local plugins show the content scan (review r3)', /보안 점검 \(파일 \d+개 전체 본문 확인/.test(await inspectOf('security-guidance')) && /보안 점검/.test(await inspectOf('code-review')));
     check('npx-fetched MCP code is called out as not checkable here', /외부 패키지를 받아 실행.*npx @playwright\/mcp@latest/.test(await inspectOf('playwright')));
     check('a remote plugin offers "구성 불러오기" before anything else', /구성 불러오기/.test(await inspectOf('superpowers')) && /896224c/.test(await inspectOf('superpowers')));
 
@@ -170,6 +187,33 @@ const state = () => { try { return JSON.parse(fs.readFileSync(path.join(project,
     page.close();
     srv.close();
     await ev(`document.querySelector('#toggle-browser').click(), true`);
+
+    if (!process.env.CC_APP_EXE) {
+      console.log('-- remote plugin: inspect → review → consent → install (review r4)');
+      await ev(`window.CarrotcapSkills.open(${JSON.stringify(project)}, { reason: 'manual' }); true`);
+      await waitFor(modalOpen);
+      await ev(`document.querySelectorAll('#skills-list input').forEach((c) => { c.checked = false; }); document.querySelector('#skills-list input[value="superpowers"]').click(); true`);
+      await ev(`document.querySelector('#skills-list input[value="superpowers"]').closest('.skill-row').querySelector('.skill-inspect-btn').click(), true`);
+      const spText = () => inspectOf('superpowers');
+      check('inspection result is shown in the window', await waitFor(async () => /보안 점검 \(파일 6개 전체 본문 확인, 이미지·글꼴 1개 제외\)/.test(await spText()), { timeoutMs: 10000 }), await spText());
+      const spBox = `document.querySelector('#skills-list input[value="superpowers"]').closest('.skill-row').querySelector('.skill-inspect')`;
+      check('the hook script body can be opened and read', await ev(`[...${spBox}.querySelectorAll('pre.skill-body')].some((p) => p.textContent.includes('bash "%~dp0session-start"'))`));
+      await ev(`${spBox}.querySelectorAll('details').forEach((d) => { d.open = true; }); true`);
+      const spAll = await spText();
+      check('extensionless script and package.json install script are flagged', /\[네트워크\] hooks\/session-start:2/.test(spAll) && /\[설치 때 자동 실행\] package\.json — scripts\.postinstall: node setup\.js/.test(spAll), spAll);
+      check('consent becomes possible only now', await ev(`!document.querySelector('#skills-third-ok').disabled && document.querySelector('#skills-install').disabled`));
+      // the listed commit changes after the check: the old inspection no longer counts
+      const mj = path.join(market, '.claude-plugin', 'marketplace.json');
+      const mjText = fs.readFileSync(mj, 'utf8');
+      fs.writeFileSync(mj, mjText.replace(spSha, 'a'.repeat(40)));
+      const moved = await ev(`window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['superpowers'], true)`);
+      check('a different pinned commit at install time is refused', moved && moved.ok === false && /확인/.test(moved.error || ''), JSON.stringify(moved));
+      fs.writeFileSync(mj, mjText);
+      const before2 = calls().length;
+      await ev(`document.querySelector('#skills-third-ok').click(); document.querySelector('#skills-install').click(); true`);
+      check('after consent it installs', await waitFor(async () => !(await modalOpen()), { timeoutMs: 20000 }));
+      check('with the fixed argv, project scope', calls().slice(before2).some((l) => l.includes(fs.realpathSync(project)) && / plugin install superpowers@claude-plugins-official --scope project$/.test(l)), JSON.stringify(calls().slice(before2)));
+    }
 
     console.log('-- the main side only takes catalog ids and allowed folders');
     const bad = await ev(`window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['evil & calc', '__proto__'])`);

@@ -1844,6 +1844,14 @@ require('./main-skills').setupSkills({
   isAllowedCliCommand,
   findCommand: findCommandSync,
   taskkillPath: () => path.join(getSystem32Path(), 'taskkill.exe'),
+  // E2E only (never in the packaged app): answer GitHub reads from a local { url: text } file
+  ...(!app.isPackaged && process.env.CARROTCAP_TEST_GITHUB_FIXTURE ? {
+    fetchRemote: async (url) => {
+      const map = JSON.parse(fs.readFileSync(process.env.CARROTCAP_TEST_GITHUB_FIXTURE, 'utf8'));
+      if (typeof map[url] !== 'string') throw new Error('HTTP 404');
+      return map[url];
+    },
+  } : {}),
 });
 
 const browserMode = require('./main-browser').setupBrowser({

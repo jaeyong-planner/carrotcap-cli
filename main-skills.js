@@ -239,8 +239,10 @@ function fetchText(url, { timeoutMs = 15000, maxBytes = 4 * 1024 * 1024 } = {}) 
 // risks the user asked about. Files that cannot be read (binaries, too many, fetch errors)
 // make the plugin uninspectable, so it cannot be consented to.
 const BINARY_RE = /\.(exe|dll|so|dylib|node|bin|com|msi|scr|jar|wasm)$/i;
-const PROMPT_RE = /^(skills\/[^/]+\/SKILL\.md|commands\/[^/]+\.md|agents\/[^/]+\.md)$/;
-const MAX_SCAN_FILES = 300;
+// images/fonts/media are the only files not read: nothing in a plugin can run them
+const MEDIA_RE = /\.(png|jpe?g|gif|webp|ico|bmp|woff2?|ttf|otf|eot|pdf|mp3|mp4|wav|ogg|webm|mov)$/i;
+const LIFECYCLE = ['preinstall', 'install', 'postinstall', 'prepare', 'preprepare', 'postprepare', 'prepublish', 'prepack', 'postpack'];
+const MAX_SCAN_FILES = 600;
 const MAX_SCAN_BYTES = 8 * 1024 * 1024;
 const MAX_FINDINGS = 300;
 const HOOK_BODY_CHARS = 6000;
@@ -251,12 +253,26 @@ const RISKS = [
   { cat: 'exec', label: '셸·프로그램 실행', any: /child_process|\bexec(Sync|File)?\(|\bspawn(Sync)?\(|\bsubprocess\b|\bos\.system\b|\beval\s*[( ]|\bStart-Process\b|\bInvoke-Expression\b|\biex\b|\b(bash|sh|zsh)\s+-c\b|\bpowershell(\.exe)?\s+-|\bcmd(\.exe)?\s+\/c\b|\bnpx\s|\bpip\s+install\b|\bnpm\s+(i|install)\b/i },
 ];
 function scanTexts(entries) {
+  // a NUL byte means a binary we cannot show: refuse
+  const bin = entries.find((e) => e.text.includes('\u0000'));
+  if (bin) throw new Error(`본문을 확인할 수 없는 바이너리 파일이 있습니다: ${bin.path}`);
   const counts = Object.fromEntries(RISKS.map((r) => [r.cat, 0]));
   const findings = [];
   let bytes = 0;
   for (const { path: p, text } of entries) {
     bytes += Buffer.byteLength(text, 'utf8');
-    const isScript = SCRIPT_RE.test(p);
+    // anything that may run: script extensions, no extension, or a shebang line
+    const isScript = SCRIPT_RE.test(p) || !/\.[^./]+$/.test(p) || text.startsWith('#!');
+    if (/(^|\/)package\.json$/.test(p)) {
+      let pkg = null;
+      try { pkg = JSON.parse(text); } catch { /* still scanned as text below */ }
+      const scripts = pkg && pkg.scripts && typeof pkg.scripts === 'object' ? pkg.scripts : {};
+      for (const k of LIFECYCLE) {
+        if (typeof scripts[k] !== 'string') continue;
+        counts.exec++;
+        findings.push({ cat: 'exec', label: '설치 때 자동 실행', file: p, line: 0, text: short(`scripts.${k}: ${scripts[k]}`, 160) });
+      }
+    }
     const lines = text.split(/\r?\n/);
     for (let n = 0; n < lines.length; n++) {
       const line = lines[n];
@@ -290,7 +306,7 @@ function referencedFiles(commands, files) {
 function scanTargets(files) {
   const bin = files.filter((p) => BINARY_RE.test(p));
   if (bin.length) throw new Error(`본문을 확인할 수 없는 바이너리 실행 파일이 있습니다: ${bin.slice(0, 3).join(', ')}`);
-  const targets = files.filter((p) => PROMPT_RE.test(p) || SCRIPT_RE.test(p) || /^hooks\//.test(p));
+  const targets = files.filter((p) => !MEDIA_RE.test(p));
   if (targets.length > MAX_SCAN_FILES) throw new Error(`확인할 파일이 너무 많습니다 (${targets.length}개)`);
   return targets;
 }
@@ -306,6 +322,7 @@ function finishContent(out, files, entries) {
     return { path: p, body: body.length > HOOK_BODY_CHARS ? body.slice(0, HOOK_BODY_CHARS) + '\n…(생략)' : body };
   });
   out.security = scanTexts(entries);
+  out.security.skipped = files.filter((p) => MEDIA_RE.test(p)).length;
   // code fetched at run time (npx/uvx/docker ...) is not in the plugin: say so plainly
   out.external = cmds.filter((c) => /^\s*(npx|uvx|pipx|bunx|pnpm\s+dlx|yarn\s+dlx|docker|podman)\b/i.test(c) || /^원격 /.test(c)).map((c) => short(c));
   for (const h of out.hooks) delete h.full;

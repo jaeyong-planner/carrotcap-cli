@@ -48,3 +48,11 @@
 - 확인 불가 → 설치 불가: 본문을 못 읽은 파일, 바이너리 실행 파일, 훅이 가리키는 없는 파일, 파일 300개·8MB 초과, 링크 파일
 - 실측: superpowers @896224c — 본문 70개(478KB) 확인, 훅 파일 hooks/run-hook.cmd 본문 표시
 - 테스트: test-skills 45, test:skills 40
+
+## Codex r4 (⚠️ 조건부, Major 1 / Minor 1) 반영
+- 점검 범위: 확장자와 상관없이 이미지·글꼴·미디어를 뺀 모든 파일 본문을 읽음 (확장자 없는 실행 파일, 설정 파일 포함). 셔뱅(`#!`)이나 확장자 없는 파일은 스크립트로 보고 URL도 잡음
+- package.json의 설치 때 자동 실행 스크립트(preinstall/install/postinstall/prepare 등)는 "설치 때 자동 실행"으로 따로 표시
+- 내용에 NUL 바이트가 있는 파일(확장자로 안 드러나는 바이너리)은 확인 불가로 처리해 설치 거부
+- 창 표시: "파일 N개 전체 본문 확인, 이미지·글꼴 M개 제외"
+- E2E 원격 성공 흐름: 구성 불러오기 → 점검 결과·훅 스크립트 본문 표시 → 동의 → 고정 argv로 설치. 확인한 뒤 목록의 커밋이 바뀌면 설치 거부. GitHub 응답은 개발 트리에서만 쓰는 로컬 fixture(`CARROTCAP_TEST_GITHUB_FIXTURE`, 패키지 앱은 무시)
+- 테스트: test-skills 50, test:skills 47
