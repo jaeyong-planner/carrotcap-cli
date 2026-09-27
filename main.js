@@ -151,7 +151,10 @@ function validateSettings(input) {
 // (removing grok, unchecking AIOps) is not overridden on every launch.
 //   v2 (task-012): Gemini/Antigravity (Google) CLIs removed; Grok handles images/videos.
 //   v3: AIOps mode on by default (it used to default to off, so nobody had chosen "off").
-const SETTINGS_VERSION = 3;
+const SETTINGS_VERSION = 4;
+// Terminal font order (task-020): JetBrains Mono first, then the Windows/macOS fallbacks.
+const DEFAULT_MONO_FONT = "'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'IBM Plex Mono', 'SF Mono', Consolas, monospace";
+const OLD_DEFAULT_MONO_FONT = 'Cascadia Code, Consolas, monospace';
 const REMOVED_CLI_NAMES = new Set(['gemini', 'antigravity', 'agy']);
 function migrateSettings(settings) {
   if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return { settings, changed: false };
@@ -176,6 +179,11 @@ function migrateSettings(settings) {
     // v2 files may hold a choice the user made in v0.2 → keep a real boolean.
     const keep = version === 2 && typeof aor.autoStart === 'boolean';
     next.aor = { ...aor, autoStart: keep ? aor.autoStart : true };
+  }
+  if (version < 4) {
+    // Only the untouched old default moves to the new font order; a chosen font stays.
+    const ui = (settings.ui && typeof settings.ui === 'object' && !Array.isArray(settings.ui)) ? settings.ui : null;
+    if (ui && (ui.fontFamily === OLD_DEFAULT_MONO_FONT || ui.fontFamily === undefined)) next.ui = { ...ui, fontFamily: DEFAULT_MONO_FONT };
   }
   return { settings: next, changed: true };
 }
@@ -580,7 +588,7 @@ function buildDefaultSettings() {
     },
     defaultShell: defaultShell(),
     defaultProjectPath: os.homedir(),
-    ui: { theme: 'dark', fontSize: 14, fontFamily: 'Cascadia Code, Consolas, monospace' }
+    ui: { theme: 'dark', fontSize: 14, fontFamily: DEFAULT_MONO_FONT }
   };
 }
 

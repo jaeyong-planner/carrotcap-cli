@@ -185,6 +185,20 @@
     }
   }
 
+  // ---------- 터미널 테마 (task-020) ----------
+  // styles.css :root 팔레트와 같은 색. ANSI 16색을 기능별로 고정해 CLI 출력의
+  // 성공(green)·경고(yellow)·에러(red)·경로/명령(blue·cyan)이 앱 UI와 같은 뜻으로 보인다.
+  const TERM_FONT = "'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'IBM Plex Mono', 'SF Mono', Consolas, monospace";
+  const TERM_THEME = {
+    background: '#0D1117', foreground: '#E6EDF3',
+    cursor: '#58A6FF', cursorAccent: '#0D1117',
+    selectionBackground: 'rgba(88, 166, 255, 0.30)',
+    black: '#484F58', red: '#F85149', green: '#3FB950', yellow: '#D29922',
+    blue: '#58A6FF', magenta: '#BC8CFF', cyan: '#39C5CF', white: '#B1BAC4',
+    brightBlack: '#6E7681', brightRed: '#FF7B72', brightGreen: '#56D364', brightYellow: '#E3B341',
+    brightBlue: '#79C0FF', brightMagenta: '#D2A8FF', brightCyan: '#56D4DD', brightWhite: '#FFFFFF'
+  };
+
   // ---------- 페인 / 분할 트리 ----------
   function createLeafPane() {
     const id = newId('pane');
@@ -436,10 +450,11 @@
       if (ok) state.aiopsAutoSetupDone.add(state.folder.rootPath);
     }
     const term = new Terminal({
-      fontFamily: (state.settings && state.settings.ui && state.settings.ui.fontFamily) || 'Cascadia Code, Consolas, monospace',
+      fontFamily: (state.settings && state.settings.ui && state.settings.ui.fontFamily) || TERM_FONT,
       fontSize: (state.settings && state.settings.ui && state.settings.ui.fontSize) || 14,
+      lineHeight: 1.15,
       cursorBlink: true,
-      theme: { background: '#0a0a0d', foreground: '#e8e8ee', cursor: '#ff8c42' }
+      theme: TERM_THEME
     });
     const fit = FitAddon ? new FitAddon() : null;
     if (fit) term.loadAddon(fit);
@@ -468,7 +483,7 @@
         // 'aor-fallback(plain)' 같은 라벨도 그대로 보이도록 그대로 출력하되 영문 대문자로
         k.textContent = String(leaf.kind || 'plain').toUpperCase();
         // 폴백 케이스는 색상 강조
-        if (/fallback/i.test(leaf.kind)) k.style.color = '#f0c060';
+        k.classList.toggle('warn', /fallback/i.test(leaf.kind));
         if (result.warning) {
           k.title = result.warning;
           k.textContent += ' ⚠';

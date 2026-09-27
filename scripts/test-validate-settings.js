@@ -628,7 +628,15 @@ console.log('-- migrateSettings v3: AIOps on by default, once');
   // v2 files may hold a real v0.2 choice -> an explicit boolean is kept (review task-014)
   const v2off = { settingsVersion: 2, aor: { enabled: true, autoStart: false, engineRoot: 'X' }, cli: { claude: { command: 'claude', args: [] } } };
   const { settings: s2k, changed: c2k } = migrateSettings(v2off);
-  check('v2 -> v3 migrates', c2k === true && s2k.settingsVersion === 3);
+  check('v2 -> current migrates', c2k === true && s2k.settingsVersion === SETTINGS_VERSION);
+  // v4 (task-020): the untouched old default font moves to the new order; a chosen font stays.
+  const newFont = "'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'IBM Plex Mono', 'SF Mono', Consolas, monospace";
+  const v3def = migrateSettings({ settingsVersion: 3, aor: { autoStart: true }, cli: {}, ui: { theme: 'dark', fontSize: 14, fontFamily: 'Cascadia Code, Consolas, monospace' } }).settings;
+  check('v3 old default font -> new font order', v3def.ui.fontFamily === newFont && v3def.ui.fontSize === 14 && v3def.settingsVersion === 4);
+  const v3own = migrateSettings({ settingsVersion: 3, aor: { autoStart: true }, cli: {}, ui: { fontFamily: 'D2Coding' } }).settings;
+  check('v3 user-chosen font is kept', v3own.ui.fontFamily === 'D2Coding');
+  const v3noui = migrateSettings({ settingsVersion: 3, aor: { autoStart: true }, cli: {} }).settings;
+  check('v3 without ui stays without ui (defaults apply)', v3noui.ui === undefined && v3noui.settingsVersion === 4);
   check('v2 explicit "off" is kept', s2k.aor.autoStart === false);
   // v2 without a value -> default on
   const { settings: s } = migrateSettings({ settingsVersion: 2, aor: { enabled: true, engineRoot: 'X' }, cli: { claude: { command: 'claude', args: [] } } });

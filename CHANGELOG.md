@@ -2,6 +2,14 @@
 
 ## 0.2.1 — 2026-09-27
 
+### 터미널 UI 테마 (task-020)
+- GitHub Dark 계열 팔레트를 토큰으로(배경 #0D1117·패널 #161B22·테두리 #30363D), 강조는 Cyan 하나, 상태색 Green/Yellow/Red 고정
+- 터미널 ANSI 16색을 같은 팔레트로, 폰트 JetBrains Mono → Cascadia Code → Fira Code → IBM Plex Mono → SF Mono (기존 기본값만 자동 전환)
+
+### 콘솔 에러 → 채팅 첨부 (task-019)
+- "새 콘솔 에러를 채팅에 첨부" 체크박스 → 버튼. 누르면 입력창 위에 읽기 전용 첨부 칩(개수·미리보기·✕)으로 들어가고, 보낼 때 에이전트 페인에만 보호 경로로 전달
+- 페이지 문자열은 편집 입력칸·기록·클립보드에 들어가지 않음, 페이지 이동·브라우저 닫기 시 첨부 자동 해제
+
 ### `carrotcap` 명령 · 원클릭 설치 (task-018)
 - 설치 파일(`CARROTCAP-CLI-Setup-<ver>.exe`)을 더블클릭하면 바로 설치·실행(사용자 단위, 관리자 권한 불필요, 바탕화면·시작 메뉴 바로가기)
 - 터미널에서 `carrotcap` → CARROTCAP CLI (cmd·PowerShell 5.1/7: `WindowsAppscarrotcap.bat`, Git Bash: 확장자 없는 실행기). Cream CLI의 `carrotcap.cmd`보다 우선(PATHEXT 순서)

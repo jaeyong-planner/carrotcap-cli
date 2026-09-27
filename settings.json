@@ -1,5 +1,5 @@
 {
-  "settingsVersion": 3,
+  "settingsVersion": 4,
   "aor": {
     "enabled": true,
     "engineRoot": "",
@@ -24,6 +24,6 @@
   "ui": {
     "theme": "dark",
     "fontSize": 14,
-    "fontFamily": "Cascadia Code, Consolas, monospace"
+    "fontFamily": "'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'IBM Plex Mono', 'SF Mono', Consolas, monospace"
   }
 }
