@@ -907,11 +907,12 @@
       if (term.hasSelection()) copyTermSelection(term);
     });
 
-    // task-011: 마우스 모드를 켠 TUI에서는 일반 드래그가 앱으로 전달되어 선택이 안 된다.
-    // xterm은 Shift+드래그로 강제 선택할 수 있으므로 그때만 헤더에 안내를 띄운다.
+    // task-011/022: 마우스 모드를 켠 TUI(Claude Code 등)에서도 드래그가 선택이 되도록 위의
+    // mousedown에서 바꿔 준다. 그런 페인에서는 헤더에 알려 준다 (클릭은 앱 대신 선택에 쓰임).
     const hint = document.createElement('span');
     hint.className = 'select-hint';
-    hint.textContent = 'Shift+드래그로 선택';
+    hint.textContent = '드래그로 선택·복사';
+    hint.title = '이 프로그램은 마우스를 씁니다 — 왼쪽 드래그는 텍스트 선택(자동 복사), 휠은 프로그램으로 갑니다';
     hint.hidden = true;
     if (leaf.headEl) leaf.headEl.insertBefore(hint, leaf.headEl.querySelector('.x'));
     const refreshHint = () => { hint.hidden = !term.modes || term.modes.mouseTrackingMode === 'none'; };

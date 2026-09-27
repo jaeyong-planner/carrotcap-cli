@@ -73,6 +73,18 @@ fs.writeFileSync(mouseApp, [
     check('Ctrl+C copies the selection', /MOUSE-APP-TEXT/.test(await clip()));
     check('Ctrl+C with a selection did not stop the program', await mouseOn() && /MOUSE-APP-TEXT/.test(await rows()));
 
+    console.log('-- double click selects a word');
+    await ev(`window.carrotcap.writeClipboard('')`);
+    const wx = box.x + 30;
+    await app.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: wx, y: box.y, button: 'left', buttons: 1, clickCount: 1 });
+    await app.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: wx, y: box.y, button: 'left', buttons: 0, clickCount: 1 });
+    await app.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: wx, y: box.y, button: 'left', buttons: 1, clickCount: 2 });
+    await app.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: wx, y: box.y, button: 'left', buttons: 0, clickCount: 2 });
+    await sleep(600);
+    const word = await clip();
+    check('double click copies the word under the mouse', word.trim() === 'MOUSE-APP-TEXT-9876', JSON.stringify(word));
+    check('focus stays in the terminal', await ev(`document.activeElement && document.activeElement.classList.contains('xterm-helper-textarea')`));
+
     console.log('-- Shift+drag still selects');
     await ev(`window.carrotcap.writeClipboard('')`);
     await drag(box.x + 2, box.y, box.x + 200, 8);

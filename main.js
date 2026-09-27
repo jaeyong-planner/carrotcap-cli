@@ -1447,8 +1447,23 @@ handle('settings:get', () => {
   if (changed) { try { saveSettings(settings); } catch (e) { console.warn('[carrotcap] settings repair failed:', e.message); } }
   return settings;
 });
+// The on-disk settings a renderer save builds on. If the file vanished or became unreadable
+// while the app ran, keep the broken file as a backup and rebuild from the bundled defaults —
+// never save a partial file without the CLIs (review task-022 r1).
+function settingsBaseForWrite() {
+  const disk = loadSettings();
+  if (disk && typeof disk === 'object' && !Array.isArray(disk)) return ensureBuiltinCli(disk).settings;
+  if (fs.existsSync(SETTINGS_PATH)) {
+    const backup = `${SETTINGS_PATH}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    try { fs.renameSync(SETTINGS_PATH, backup); console.warn('[carrotcap] settings.json was unreadable; backed up to', backup); }
+    catch (e) { console.warn('[carrotcap] could not back up settings.json:', e.message); }
+  }
+  const seeded = validateSettings(readJsonFile(BUNDLED_SETTINGS_PATH));
+  const base = seeded.cli && Object.keys(seeded.cli).length ? seeded : buildDefaultSettings();
+  return ensureBuiltinCli(migrateSettings(base).settings).settings;
+}
 handle('settings:set', (_e, next) => {
-  saveSettings(applyRendererSettings(loadSettings(), next));
+  saveSettings(applyRendererSettings(settingsBaseForWrite(), next));
   cliStatusCache = { at: 0, value: null }; // CLI commands may have changed
   compressHookCache = null;                // aor.compressHook may have changed
   return true;

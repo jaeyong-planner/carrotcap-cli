@@ -137,6 +137,20 @@ fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({
   check('hand-edited cli args and font size kept after an app save', after.cli.grok.args[0] === '--hand-edited' && after.ui.fontSize === 17, JSON.stringify({ grok: after.cli.grok, ui: after.ui }));
   check('the app toggle itself was saved', after.aor.autoStart === false);
   check('no temp file left next to settings.json', !fs.readdirSync(userData).some((n) => n.startsWith('settings.json.') && n.endsWith('.tmp')));
+  // File deleted / corrupted while the app runs: a save must not write a CLI-less file (review r1).
+  const settingsFile = path.join(userData, 'settings.json');
+  fs.rmSync(settingsFile);
+  await ev(`window.carrotcap.setSettings(${JSON.stringify({ ...cur, aor: { ...cur.aor, autoStart: true } })})`);
+  const rebuilt = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+  check('deleted file: save rebuilds full settings with all three CLIs', ['claude', 'codex', 'grok'].every((k) => rebuilt.cli && rebuilt.cli[k]) && Number.isInteger(rebuilt.settingsVersion) && rebuilt.aor.autoStart === true, JSON.stringify(Object.keys(rebuilt)));
+  fs.writeFileSync(settingsFile, '{ "cli": { "grok": ');
+  await ev(`window.carrotcap.setSettings(${JSON.stringify({ ...cur, aor: { ...cur.aor, autoStart: true } })})`);
+  const backups = fs.readdirSync(userData).filter((n) => n.startsWith('settings.json.corrupt-'));
+  check('corrupt file: kept as a backup', backups.length === 1 && fs.readFileSync(path.join(userData, backups[0]), 'utf8').startsWith('{ "cli"'), backups.join(','));
+  const fixed = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+  check('corrupt file: replaced by full settings with all three CLIs', ['claude', 'codex', 'grok'].every((k) => fixed.cli && fixed.cli[k]));
+  const cs = await ev(`window.carrotcap.cliStatus()`);
+  check('cli:status still knows the CLIs afterwards', 'claude' in cs && 'codex' in cs && 'grok' in cs, JSON.stringify(cs));
 
   await app.close();
   console.log('');

@@ -822,6 +822,20 @@ console.log('-- settings persist: renderer saves never drop what the user set (t
 
   check('plain command name allowed', isAllowedCliCommand('grok') && isAllowedCliCommand('claude.exe'));
   check('absolute path to an existing file allowed', isAllowedCliCommand(process.execPath));
+  if (process.platform === 'win32') {
+    // The spawn line main.js builds for a cli entry ('& ' + quoted command + quoted args),
+    // run by a real PowerShell: a path with a space and an apostrophe stays one program and
+    // shell syntax inside an argument is not executed (review r1).
+    const os = require('os');
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), "cc-cli o'k "));
+    const cmdPath = path.join(d, 'echo args.cmd');
+    fs.writeFileSync(cmdPath, '@echo off\r\necho RAN [%~1] [%~2]\r\n');
+    check('path with space + apostrophe is an allowed command', isAllowedCliCommand(cmdPath));
+    const line = '& ' + [pwshSingleQuote(cmdPath), pwshSingleQuote('a b'), pwshSingleQuote('$(Write-Output PWNED); x')].join(' ');
+    const r = require('child_process').spawnSync('powershell.exe', ['-NoProfile', '-Command', line], { encoding: 'utf8' });
+    check('real PowerShell runs it as one program with literal args', /RAN \[a b\] \[\$\(Write-Output PWNED\); x\]/.test(r.stdout) && !/^PWNED/m.test(r.stdout), JSON.stringify(r.stdout + r.stderr));
+    fs.rmSync(d, { recursive: true, force: true });
+  }
   check('missing file / relative / quotes / newline / folder rejected', !isAllowedCliCommand('C:\\nope\\x.exe') && !isAllowedCliCommand('..\\x.exe') && !isAllowedCliCommand('"C:\\a.exe"') && !isAllowedCliCommand('grok\nrm') && !isAllowedCliCommand(__dirname) && !isAllowedCliCommand(null));
 }
 
