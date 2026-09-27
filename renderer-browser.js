@@ -17,6 +17,7 @@
   const annotateBtn = $('#br-annotate');
   const errorsToChat = $('#br-errors-to-chat');
   const composerInput = $('#composer-input');
+  const attachEl = $('#composer-attach');
   const modal = $('#modal');
   const MAX_PINS = 20; // main-browser.js MAX_PINS와 같게 유지
 
@@ -28,8 +29,8 @@
     pins: [],          // [{ n, selector, tag, text, rect, viewport }]
     full: false,       // 주석 상한에 닿음
     newErrors: 0,
-    taint: [],         // 입력창에 넣은 콘솔 에러 [{ header, snippets, gen, mark, committed }]
-    inserting: false,
+    attach: null,      // 입력창에 첨부한 콘솔 에러 { gen, mark, lines, total, skipped }
+    attaching: false,
     annotating: false,
     pickToken: 0,
     openToken: 0,
@@ -68,6 +69,7 @@
       st.open = false;
       st.pins = [];
       renderPins();
+      dropAttachment();
       renderErrorsButton();
     }
     // 오른쪽 터미널 폭이 바뀌었으니 xterm 크기 재계산 (renderer.js의 resize 핸들러)
@@ -211,6 +213,8 @@
         st.navPending = true;
         renderPins();
       }
+      // 첨부한 콘솔 에러는 그 문서의 것 — 새 문서면 뗀다 (task-019)
+      if (st.attach && st.attach.gen !== st.pageGen) dropAttachment('페이지가 바뀌어 콘솔 에러 첨부를 뺐습니다');
     }
     if (st.navPending && !s.loading) {
       st.navPending = false;
@@ -220,19 +224,54 @@
 
   // ---- 채팅 연동: 입력창 전송 직전에 호출 ----
   function fmtRect(r) { return `x=${r.x}, y=${r.y}, ${r.width}×${r.height}`; }
-  // 페이지 유래 텍스트 추적 (task-019, review r1): 버튼으로 입력창에 넣은 콘솔 에러의 "메시지 본문"을
-  // 기억한다. 머리줄이나 "# "를 지워도, 브라우저를 닫아도, 기록(↑)으로 다시 불러와도, 복사해 붙여넣어도
-  // 본문이 남아 있으면 페이지 유래로 본다 — 그 텍스트는 에이전트 페인에만, 보호 경로로만 간다.
-  const MAX_TAINT = 50;
-  const MIN_SNIPPET = 8; // 너무 짧은 본문은 오탐을 막으려고 레벨까지 붙여 비교
-  // Every inserted block whose text is (still) in `text` — blocks from several documents can
-  // sit in the input box together, and each one is checked (review r2).
-  function taintsOf(text) {
-    if (typeof text !== 'string' || !text) return [];
-    return st.taint.filter((t) => t.snippets.some((s) => text.includes(s)));
-  }
+  // 콘솔 에러 첨부 (task-019, review r1-r3): 버튼을 누르면 새 콘솔 에러를 입력창에 "첨부"한다 —
+  // 읽기 전용 칩(개수·미리보기·✕)으로 보이고, 페이지가 만든 문자열은 편집 가능한 입력 내용·기록·
+  // 클립보드에 들어가지 않는다. 보낼 때 주석과 같은 보호 경로(에이전트 페인 전용, guarded paste)로만
+  // 붙는다. 첨부는 그 문서의 것 — 페이지가 바뀌거나 브라우저를 닫으면 떨어진다.
+  const MAX_PREVIEW = 3;
   function isAgentTarget(target) {
     return !!(target && AGENT_CLIS.has(target.cli) && target.bracketedPaste);
+  }
+  function notify(text) {
+    window.dispatchEvent(new CustomEvent('carrotcap:notice', { detail: String(text) }));
+  }
+  function dropAttachment(reason) {
+    if (!st.attach) return;
+    st.attach = null;
+    renderAttach();
+    renderErrorsButton();
+    if (reason) notify(reason);
+  }
+  function renderAttach() {
+    if (!attachEl) return;
+    attachEl.textContent = '';
+    attachEl.hidden = !st.attach;
+    if (!st.attach) return;
+    const head = document.createElement('div');
+    head.className = 'composer-attach-head';
+    const title = document.createElement('span');
+    title.textContent = `⚠ 콘솔 에러 ${st.attach.total}건 첨부${st.attach.skipped ? ` (최근 ${st.attach.lines.length}건)` : ''}`;
+    const remove = document.createElement('button');
+    remove.id = 'composer-attach-remove';
+    remove.className = 'icon-btn';
+    remove.title = '첨부 빼기';
+    remove.setAttribute('aria-label', '콘솔 에러 첨부 빼기');
+    remove.textContent = '✕';
+    remove.onclick = () => dropAttachment();
+    head.append(title, remove);
+    attachEl.appendChild(head);
+    for (const l of st.attach.lines.slice(0, MAX_PREVIEW)) {
+      const row = document.createElement('div');
+      row.className = 'composer-attach-line';
+      row.textContent = l; // textContent only — page text never becomes markup
+      attachEl.appendChild(row);
+    }
+    if (st.attach.lines.length > MAX_PREVIEW) {
+      const more = document.createElement('div');
+      more.className = 'composer-attach-line muted';
+      more.textContent = `… 외 ${st.attach.lines.length - MAX_PREVIEW}건`;
+      attachEl.appendChild(more);
+    }
   }
 
   // 입력창 전송 직전: 붙일 컨텍스트를 만든다. 아무것도 소비하지 않고,
@@ -240,28 +279,25 @@
   //   반환: { text, commit } | { blocked: '이유' }
   async function decorate(text, projectRoot, target) {
     const plain = { text, commit: () => {} };
-    const taints = taintsOf(text);
-    const tainted = taints.length > 0;
-    if (!tainted && (!st.active || !st.open)) return plain;
-    if (tainted && (!st.active || !st.open)) {
-      return { blocked: '입력 내용에 브라우저 콘솔 에러 줄이 있습니다 — 브라우저 모드에서 에이전트 페인으로 보내거나 그 줄을 지우세요' };
-    }
-    if (!st.pins.length && !tainted) return plain;
-    // 여러 줄 컨텍스트·페이지 유래 텍스트는 에이전트 CLI(bracketed paste를 켜는 대화형 앱)에만 보낸다.
+    const attach = st.attach;
+    if (!st.active || !st.open) return plain; // 닫을 때 첨부도 떨어진다 (setActive)
+    if (!st.pins.length && !attach) return plain;
+    // 여러 줄 컨텍스트는 에이전트 CLI(bracketed paste를 켜는 대화형 앱)에만 보낸다.
     // 일반 PowerShell에 붙이면 페이지가 만든 문자열이 명령으로 실행될 수 있다 (review C3).
     if (!isAgentTarget(target)) {
       return { blocked: '브라우저 주석·콘솔 에러는 CLAUDE/CODEX 버튼으로 실행한 에이전트 페인에만 보낼 수 있습니다' };
     }
-    // 넣어 둔 에러는 그 문서의 것 — 페이지가 바뀌었으면 새 문서 설명으로 보내지 않는다.
-    if (taints.some((t) => t.gen !== st.pageGen)) {
-      return { blocked: '페이지가 바뀌었습니다 — 넣어 둔 콘솔 에러 줄을 지우고 새로 넣어 주세요' };
+    if (attach && attach.gen !== st.pageGen) {
+      dropAttachment();
+      return { blocked: '페이지가 바뀌어 콘솔 에러 첨부를 뺐습니다 — 새 페이지에서 다시 첨부하세요' };
     }
     const ctx = await api.browserContext({ projectRoot, screenshot: st.pins.length > 0, includeErrors: false, gen: st.pageGen });
-    if (!ctx) return tainted ? { blocked: '브라우저 컨텍스트를 만들지 못했습니다 — 다시 시도하세요' } : plain;
+    if (!ctx) return attach ? { blocked: '브라우저 컨텍스트를 만들지 못했습니다 — 다시 시도하세요' } : plain;
     if (ctx.stale) {
       // 준비하는 사이 페이지가 바뀌었다 — 옛 페이지의 주석·에러를 새 페이지 설명으로 보내지 않는다
       st.pins = [];
       renderPins();
+      dropAttachment();
       return { blocked: '페이지가 바뀌었습니다 — 새 페이지에서 주석·콘솔 에러를 다시 넣어 주세요' };
     }
     const pins = st.pins.slice(0, MAX_PINS);
@@ -275,17 +311,20 @@
         lines.push(`  ${p.n}) <${oneLine(p.tag, 20)}> ${oneLine(p.selector, 300)}${p.text ? ` — "${oneLine(p.text, 120)}"` : ''} @ ${fmtRect(p.rect)} (뷰포트 ${p.viewport.width}×${p.viewport.height})`);
       }
     }
+    if (attach) {
+      lines.push(`콘솔 에러 (이전 전송 이후 ${attach.total}건${attach.skipped ? `, 최근 ${attach.lines.length}건만` : ''}):`);
+      for (const l of attach.lines) lines.push(`  - ${l}`);
+    }
     lines.push('[요청]');
     // 모든 컨텍스트 줄은 "# "로 시작한다 — 만에 하나 셸이 받더라도 PowerShell·bash 모두 줄 주석이라
     // 실행되지 않는다 (줄바꿈은 이미 제거되어 주석을 벗어날 수 없음). 에이전트에게는 그냥 읽히는 텍스트.
-    const block = lines.map((l) => `# ${l}`).join('\n') + '\n' + (text || '(주석 위치의 문제를 확인해줘)');
+    const ask = text || (pins.length ? '(주석 위치의 문제를 확인해줘)' : '(콘솔 에러를 확인해줘)');
+    const block = lines.map((l) => `# ${l}`).join('\n') + '\n' + ask;
     const commit = () => {
-      // 넣은 시점까지의 에러만 "보냄" — 그 뒤에 난 에러는 계속 새 에러로 남는다. 이번에 함께 간
-      // 블록 모두를 한 번에: main의 커서는 가장 늦은 표시까지 가고, 각 블록은 한 번만 처리된다.
-      const fresh = taints.filter((t) => !t.committed);
-      if (fresh.length) {
-        for (const t of fresh) t.committed = true;
-        api.browserCommit(Math.max(...fresh.map((t) => t.mark)));
+      // 첨부한 시점까지의 에러만 "보냄" — 그 뒤에 난 에러는 계속 새 에러로 남는다.
+      if (attach) {
+        api.browserCommit(attach.mark);
+        if (st.attach === attach) { st.attach = null; renderAttach(); }
       }
       // 이번에 보낸 핀만 지운다 — 전송을 준비하는 사이 새로 찍은 핀은 목록·페이지 모두 남는다 (review r2).
       const sent = pins.map((p) => p.n);
@@ -297,56 +336,35 @@
     return { text: block, commit, context: true, token: ctx.token };
   }
 
-  // ---- 콘솔 에러 → 입력창 (task-019) ----
-  // 버튼을 누르면 마지막 전송 이후의 새 콘솔 에러를 입력창에 넣는다. 보내기 전에 보고 고칠 수 있고,
-  // 실제로 에이전트에게 전달된 뒤에만 "보냄" 처리된다 (decorate의 commit).
+  // ---- 콘솔 에러 → 입력창 첨부 (task-019) ----
   function renderErrorsButton() {
     if (!errorsToChat) return;
     const n = st.newErrors;
-    errorsToChat.disabled = st.inserting || !st.open || n === 0;
-    errorsToChat.textContent = n > 0 ? `⚠ 새 콘솔 에러 ${n}건 → 채팅에 넣기` : '새 콘솔 에러 없음';
+    errorsToChat.disabled = st.attaching || !st.open || n === 0;
+    errorsToChat.textContent = n === 0 ? '새 콘솔 에러 없음'
+      : st.attach ? `⚠ 새 콘솔 에러 ${n}건 → 첨부 새로고침` : `⚠ 새 콘솔 에러 ${n}건 → 채팅에 첨부`;
   }
-  async function insertErrorsToChat() {
-    if (st.inserting || !st.open || !composerInput) return;
-    // 아직 보내지 않은 같은 블록이 입력창에 있으면 다시 넣지 않는다
-    const pending = st.taint.find((t) => !t.committed && t.gen === st.pageGen && composerInput.value.includes(t.header));
-    if (pending) { composerInput.focus(); return; }
-    st.inserting = true; // 빠른 두 번 클릭도 한 번만 (review r1)
+  async function attachErrors() {
+    if (st.attaching || !st.open) return;
+    st.attaching = true; // 빠른 두 번 클릭도 한 번만
     renderErrorsButton();
     try {
-      const ctx = await api.browserContext({ screenshot: false, includeErrors: true, gen: st.pageGen });
-      if (!ctx || ctx.stale || !Array.isArray(ctx.errors) || !ctx.errors.length) return;
-      const total = ctx.errors.length + (ctx.errorsSkipped || 0);
-      const header = `[콘솔 에러 — ${oneLine(ctx.url, 300)} · ${total}건${ctx.errorsSkipped ? `, 최근 ${ctx.errors.length}건만` : ''}]`;
-      const lines = [header];
-      const snippets = [];
-      for (const e of ctx.errors) {
-        const level = oneLine(e.level, 10);
-        const msg = oneLine(e.message);
-        lines.push(`  - [${level}] ${msg}${e.source ? ` (${oneLine(e.source, 300)}${e.line ? ':' + e.line : ''})` : ''}`);
-        if (msg) snippets.push(msg.length >= MIN_SNIPPET ? msg : `[${level}] ${msg}`);
-      }
-      snippets.push(header);
-      // 모든 줄은 "# "로 시작 — 페이지가 만든 문자열(main에서 제어문자·줄바꿈 제거)이 만에 하나
-      // 셸로 가더라도 줄 주석이다. 보낼 때는 주석과 같은 보호 경로를 탄다 (decorate).
-      const block = lines.map((l) => `# ${l}`).join('\n');
-      st.taint.push({ header: `# ${header}`, snippets, gen: ctx.gen, mark: ctx.errorMark, committed: false });
-      if (st.taint.length > MAX_TAINT) st.taint.shift();
-      // 사용자가 쓴 내용은 그대로 두고, 필요할 때만 구분 줄바꿈을 넣는다.
-      const cur = composerInput.value;
-      composerInput.value = `${cur}${cur && !cur.endsWith('\n') ? '\n' : ''}${block}\n`;
-      composerInput.dispatchEvent(new Event('input', { bubbles: true })); // 입력창 높이 맞춤
-      composerInput.focus();
-      composerInput.setSelectionRange(composerInput.value.length, composerInput.value.length);
+      const gen = st.pageGen;
+      const ctx = await api.browserContext({ screenshot: false, includeErrors: true, gen });
+      if (!ctx || ctx.stale || gen !== st.pageGen || !Array.isArray(ctx.errors) || !ctx.errors.length) return;
+      const lines = ctx.errors.map((e) => `[${oneLine(e.level, 10)}] ${oneLine(e.message)}${e.source ? ` (${oneLine(e.source, 300)}${e.line ? ':' + e.line : ''})` : ''}`);
+      st.attach = { gen: ctx.gen, mark: ctx.errorMark, lines, total: lines.length + (ctx.errorsSkipped || 0), skipped: ctx.errorsSkipped || 0 };
+      renderAttach();
+      if (composerInput) composerInput.focus();
     } finally {
-      st.inserting = false;
+      st.attaching = false;
       renderErrorsButton();
     }
   }
 
   // ---- 이벤트 ----
   function bind() {
-    if (errorsToChat) errorsToChat.onclick = () => { insertErrorsToChat().catch(() => renderErrorsButton()); };
+    if (errorsToChat) errorsToChat.onclick = () => { attachErrors().catch(() => renderErrorsButton()); };
     renderErrorsButton();
     $('#toggle-browser').onclick = () => setActive(!st.active);
     $('#br-go').onclick = openUrl;
@@ -368,5 +386,5 @@
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind);
   else bind();
 
-  window.CarrotcapBrowser = { decorate, isActive: () => st.active && st.open, isTainted: (t) => taintsOf(t).length > 0, isAgentTarget };
+  window.CarrotcapBrowser = { decorate, isActive: () => st.active && st.open, hasAttachment: () => !!st.attach };
 })();

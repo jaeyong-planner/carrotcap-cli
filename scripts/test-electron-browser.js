@@ -118,73 +118,41 @@ const server = http.createServer((req, res) => {
 
   console.log('-- plain shell never receives browser context (review C3)');
   const screen = () => ev(`(document.querySelector('.tab-page.active .xterm-rows') || {}).innerText || ''`);
-  console.log('-- console errors go into the chat input by button (task-019)');
-  check('errors button shows the new-error count', /새 콘솔 에러 \d+건/.test(await ev(`document.querySelector('#br-errors-to-chat').textContent`)) && !(await ev(`document.querySelector('#br-errors-to-chat').disabled`)));
-  await ev(`document.querySelector('#composer-input').value = '1번 버튼 눌러도 결제가 안 돼'; true`);
-  await ev(`document.querySelector('#br-errors-to-chat').click(), true`);
-  const composed = await waitFor(async () => /boom-on-load/.test(await ev(`document.querySelector('#composer-input').value`)))
-    ? await ev(`document.querySelector('#composer-input').value`) : '';
-  check('click puts the new console errors into the input box', /boom-on-load/.test(composed), JSON.stringify(composed.slice(0, 200)));
-  check('typed text kept, error block appended below it', composed.startsWith('1번 버튼 눌러도 결제가 안 돼\n'));
-  check('every inserted line is a "# " comment', composed.split('\n').slice(1).filter(Boolean).every((l) => l.startsWith('# ')), JSON.stringify(composed));
-  await ev(`document.querySelector('#br-errors-to-chat').click(), true`);
-  await sleep(300);
-  check('a second click does not insert the block twice', (await ev(`document.querySelector('#composer-input').value`)).split('[콘솔 에러').length === 2);
-  check('errors stay "new" until actually sent', await ev(`document.querySelector('#br-err-count').classList.contains('has')`));
-
-  await ev(`document.querySelector('#composer-send').click(), true`);
-  await sleep(800);
-  check('send to a plain PowerShell pane is refused', /에이전트 페인에만/.test(await ev(`document.querySelector('#composer-notice').textContent`)));
-  check('typed text + error block kept in the input box', (await ev(`document.querySelector('#composer-input').value`)) === composed);
-  check('pins not consumed by the refused send', (await ev(`document.querySelectorAll('#br-pins .br-pin').length`)) === 1);
-  check('nothing pasted into the shell', !/브라우저 컨텍스트/.test(await screen()));
-
-  console.log('-- page-derived error text cannot reach the plain shell by other routes (task-019 r1)');
+  console.log('-- console errors are attached to the chat input by button (task-019)');
   const notice = () => ev(`document.querySelector('#composer-notice').textContent`);
   const composerVal = () => ev(`document.querySelector('#composer-input').value`);
-  // "# " and the header stripped by hand (also what a history recall would bring back).
-  const bodyOnly = composed.split('\n').filter((l) => /boom-on-load/.test(l)).map((l) => l.replace(/^#\s*-?\s*/, '')).join('\n');
-  await ev(`document.querySelector('#composer-notice').textContent = ''; document.querySelector('#composer-input').value = ${JSON.stringify('Write-Output ' + bodyOnly)}; document.querySelector('#composer-send').click(); true`);
+  const attachText = () => ev(`(() => { const a = document.querySelector('#composer-attach'); return a && !a.hidden ? a.innerText : ''; })()`);
+  check('errors button shows the new-error count', /새 콘솔 에러 \d+건/.test(await ev(`document.querySelector('#br-errors-to-chat').textContent`)) && !(await ev(`document.querySelector('#br-errors-to-chat').disabled`)));
+  await ev(`document.querySelector('#composer-input').value = '1번 버튼 눌러도 결제가 안 돼'; const b = document.querySelector('#br-errors-to-chat'); b.click(); b.click(); true`); // fast double click
+  check('click attaches the new console errors to the chat input', await waitFor(async () => /boom-on-load/.test(await attachText())), await attachText());
+  check('attachment shows the count', /콘솔 에러 \d+건 첨부/.test(await attachText()));
+  check('typed text untouched — page text never enters the editable input', (await composerVal()) === '1번 버튼 눌러도 결제가 안 돼');
+  check('one attachment after a fast double click', (await ev(`document.querySelectorAll('#composer-attach .composer-attach-head').length`)) === 1);
+  check('attachment is not selectable text', (await ev(`getComputedStyle(document.querySelector('#composer-attach')).userSelect`)) === 'none');
+  check('errors stay "new" until actually sent', await ev(`document.querySelector('#br-err-count').classList.contains('has')`));
+  await ev(`document.querySelector('#composer-attach-remove').click(), true`);
+  check('✕ removes the attachment', (await attachText()) === '' && !(await ev(`window.CarrotcapBrowser.hasAttachment()`)));
+  await ev(`document.querySelector('#br-errors-to-chat').click(), true`);
+  await waitFor(async () => /boom-on-load/.test(await attachText()));
+
+  await ev(`document.querySelector('#composer-notice').textContent = ''; document.querySelector('#composer-send').click(); true`);
   await sleep(800);
-  check('edited block (no "# ", no header) is still refused for the plain shell', /에이전트 페인에만/.test(await notice()) && (await composerVal()).includes('boom-on-load'), await notice());
-  check('shell never received the edited page text', !/boom-on-load/.test(await screen()));
-  // Paste routes into the plain terminal: Ctrl+Shift+V (clipboard) and a DOM paste event (Ctrl+V).
-  await ev(`window.carrotcap.writeClipboard(${JSON.stringify('Write-Output ' + bodyOnly)})`);
-  await ev(`document.querySelector('#composer-notice').textContent = ''; document.querySelector('.tab-page.active .pane.active .xterm-helper-textarea').focus(), true`);
-  await app.key('V', 'KeyV', 86, 2 | 8); // ctrl+shift
-  await sleep(600);
-  check('Ctrl+Shift+V of page text into the plain shell is refused', /직접 붙여넣을 수 없습니다/.test(await notice()) && !/boom-on-load/.test(await screen()), await notice());
-  const domPaste = await ev(`(() => { const dt = new DataTransfer(); dt.setData('text/plain', ${JSON.stringify('Write-Output ' + bodyOnly)}); const e = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }); document.querySelector('.tab-page.active .pane.active .xterm-helper-textarea').dispatchEvent(e); return e.defaultPrevented; })()`);
-  await sleep(600);
-  check('Ctrl+V (paste event) of page text into the plain shell is blocked', domPaste === true && !/boom-on-load/.test(await screen()));
-  await ev(`window.carrotcap.writeClipboard('')`);
-  // decorate() failing must not let the text fall through to the plain path (review r2).
+  check('send to a plain PowerShell pane is refused', /에이전트 페인에만/.test(await notice()));
+  check('typed text and attachment kept', (await composerVal()) === '1번 버튼 눌러도 결제가 안 돼' && /boom-on-load/.test(await attachText()));
+  check('pins not consumed by the refused send', (await ev(`document.querySelectorAll('#br-pins .br-pin').length`)) === 1);
+  check('nothing pasted into the shell', !/브라우저 컨텍스트|boom-on-load/.test(await screen()));
+  // decorate() failing must not let an attachment fall through to the plain path.
   await ev(`window.__ccDecorate = window.CarrotcapBrowser.decorate; window.CarrotcapBrowser.decorate = async () => { throw new Error('simulated IPC failure'); }; true`);
-  await ev(`document.querySelector('#composer-notice').textContent = ''; document.querySelector('#composer-input').value = ${JSON.stringify('Write-Output ' + bodyOnly)}; document.querySelector('#composer-send').click(); true`);
+  await ev(`document.querySelector('#composer-notice').textContent = ''; document.querySelector('#composer-send').click(); true`);
   await sleep(800);
-  check('decorate failure with page text is fail-closed (refused, input kept)', /만들지 못했습니다/.test(await notice()) && (await composerVal()).includes('boom-on-load') && !/boom-on-load/.test(await screen()), await notice());
+  check('decorate failure with an attachment is fail-closed (refused, all kept)', /만들지 못했습니다/.test(await notice()) && /boom-on-load/.test(await attachText()) && !/boom-on-load/.test(await screen()), await notice());
   await ev(`window.CarrotcapBrowser.decorate = window.__ccDecorate; delete window.__ccDecorate; true`);
-  // A fast double click inserts the block once.
-  await ev(`document.querySelector('#composer-input').value = ''; const b = document.querySelector('#br-errors-to-chat'); b.click(); b.click(); true`);
-  await waitFor(async () => /boom-on-load/.test(await composerVal()));
-  await sleep(500);
-  check('fast double click inserts the block once', (await composerVal()).split('[콘솔 에러').length === 2, JSON.stringify(await composerVal()));
-  await ev(`document.querySelector('#composer-input').value = ${JSON.stringify(composed)}; true`); // back to the request + block
+  await ev(`document.querySelector('#composer-input').value = '1번 버튼 눌러도 결제가 안 돼'; true`);
 
   console.log('-- agent pane receives the browser context');
   await ev(`document.querySelector('.btn-cli[data-cli="claude"]').click(), true`);
   check('fake agent started', await waitFor(async () => /fake-agent ready/.test(await screen())));
   await sleep(500);
-  // Not even the agent pane takes page text by direct paste (skips main's guard) — review r2.
-  fs.writeFileSync(path.join(tmp, 'agent-received.bin'), '');
-  await ev(`window.carrotcap.writeClipboard(${JSON.stringify('# ' + bodyOnly)})`);
-  await ev(`document.querySelector('#composer-notice').textContent = ''; document.querySelector('.tab-page.active .pane.active .xterm-helper-textarea').focus(), true`);
-  await app.key('V', 'KeyV', 86, 2 | 8);
-  await sleep(600);
-  const agentDomPaste = await ev(`(() => { const dt = new DataTransfer(); dt.setData('text/plain', ${JSON.stringify('# ' + bodyOnly)}); const e = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }); document.querySelector('.tab-page.active .pane.active .xterm-helper-textarea').dispatchEvent(e); return e.defaultPrevented; })()`);
-  await sleep(600);
-  check('direct paste of page text into the agent pane is refused too', /직접 붙여넣을 수 없습니다/.test(await ev(`document.querySelector('#composer-notice').textContent`)) && agentDomPaste === true && !received().includes('boom-on-load'), JSON.stringify(received().slice(0, 80)));
-  await ev(`window.carrotcap.writeClipboard('')`);
   await ev(`document.querySelector('#composer-send').click(), true`);
   check('agent received the [브라우저 컨텍스트] block', await waitFor(() => /\[\S*\s?\S*\]|CARROTCAP/.test(received()) && received().includes('\x1b[201~')), JSON.stringify(received().slice(0, 120)));
   const got = Buffer.from(received(), 'latin1').toString('utf8');
@@ -209,9 +177,9 @@ const server = http.createServer((req, res) => {
   await ev(`document.querySelector('#composer-input').value = 'check errors'; true`);
   await waitFor(async () => !(await ev(`document.querySelector('#br-errors-to-chat').disabled`)));
   await ev(`document.querySelector('#br-errors-to-chat').click(), true`);
-  await waitFor(async () => /boom/.test(await ev(`document.querySelector('#composer-input').value`)));
-  const evilComposed = await ev(`document.querySelector('#composer-input').value`);
-  check('hostile error text in the input box is already cleaned (no ESC / CR / C1 / U+2028)', /boom/.test(evilComposed) && !/[\u001b\r\u0080-\u009F\u{2028}\u{2029}]/u.test(evilComposed), JSON.stringify(evilComposed.slice(0, 200)));
+  await waitFor(async () => /boom/.test(await attachText()));
+  check('hostile error text never enters the editable input', (await composerVal()) === 'check errors');
+  check('attachment preview is plain text (no markup from the page)', (await ev(`document.querySelectorAll('#composer-attach *:not(div):not(span):not(button)').length`)) === 0);
   await ev(`document.querySelector('#composer-send').click(), true`);
   check('agent got the hostile page context', await waitFor(() => received().includes('\x1b[201~')));
   check('annotation mode survived the navigation (review r2 M4)', await ev(`document.querySelector('#br-annotate').classList.contains('active')`));
@@ -222,25 +190,18 @@ const server = http.createServer((req, res) => {
   check('no C1 / U+2028 from the page', !/[\u0080-\u009F\u{2028}\u{2029}]/u.test(inner));
   check('page text still readable', /boom/.test(inner) && /Remove-Item/.test(inner), JSON.stringify(inner.slice(0, 600)));
 
-  console.log('-- errors inserted from a previous document are not sent (task-019 r1)');
+  console.log('-- an attachment belongs to its document (task-019)');
   await ev(`document.querySelector('#composer-input').value = ''; document.querySelector('#br-reload').click(), true`);
   await waitFor(async () => !(await ev(`document.querySelector('#br-errors-to-chat').disabled`)));
   await ev(`document.querySelector('#br-errors-to-chat').click(), true`);
-  await waitFor(async () => /boom/.test(await ev(`document.querySelector('#composer-input').value`)));
-  await ev(`document.querySelector('#br-reload').click(), true`);
-  // The new document's errors go in too: one current block after one stale block (review r2).
-  await waitFor(async () => !(await ev(`document.querySelector('#br-errors-to-chat').disabled`)));
-  await sleep(500);
-  await ev(`document.querySelector('#br-errors-to-chat').click(), true`);
-  await waitFor(async () => (await ev(`document.querySelector('#composer-input').value`)).split('[콘솔 에러').length === 3);
-  const oldDocBlock = await ev(`document.querySelector('#composer-input').value`);
-  check('blocks of two documents in the input box', oldDocBlock.split('[콘솔 에러').length === 3);
+  await waitFor(async () => /boom/.test(await attachText()));
+  await ev(`document.querySelector('#composer-notice').textContent = ''; document.querySelector('#br-reload').click(), true`);
+  check('navigation drops the attachment', await waitFor(async () => (await attachText()) === '' && !(await ev(`window.CarrotcapBrowser.hasAttachment()`))));
+  check('and says so', /콘솔 에러 첨부를 뺐습니다/.test(await notice()), await notice());
   fs.writeFileSync(path.join(tmp, 'agent-received.bin'), '');
-  await ev(`document.querySelector('#composer-notice').textContent = ''; document.querySelector('#composer-send').click(); true`);
-  await sleep(1000);
-  check('a stale block is refused even next to a current one', /페이지가 바뀌었습니다/.test(await ev(`document.querySelector('#composer-notice').textContent`)));
-  check('nothing reached the agent, input kept', received() === '' && (await ev(`document.querySelector('#composer-input').value`)) === oldDocBlock);
-  await ev(`document.querySelector('#composer-input').value = ''; true`);
+  await ev(`document.querySelector('#composer-input').value = 'still here?'; document.querySelector('#composer-send').click(); true`);
+  await waitFor(() => received().includes('still here?'));
+  check('a later send carries no error from the old document', !/boom/.test(received()));
 
   console.log('-- redirect to file: is blocked (review C1)');
   await ev(`document.querySelector('#br-url').value = ${JSON.stringify(site + 'redir')}; document.querySelector('#br-go').click(); true`);
@@ -413,27 +374,26 @@ const server = http.createServer((req, res) => {
   if (process.env.CC_DEBUG) console.log('   shell case:', refused ? 'refused by guard' : 'delivered as comments');
   view2.close();
 
+  console.log('-- closing the browser drops the attachment; history holds typed text only (task-019)');
+  await ev(`document.querySelector('#br-reload').click(), true`);
+  await waitFor(async () => !(await ev(`document.querySelector('#br-errors-to-chat').disabled`)));
+  await ev(`document.querySelector('#br-errors-to-chat').click(), true`);
+  await waitFor(async () => /boom-on-load/.test(await attachText()));
+
   console.log('-- close');
   await ev(`document.querySelector('#toggle-browser').click(), true`);
   check('browser view destroyed on close', await waitFor(async () => !(await app.targets()).some((t) => t.url.startsWith(site))));
   check('layout back to terminal only', !(await ev(`document.body.classList.contains('browser-mode')`)));
-
-  console.log('-- browser closed: inserted/recalled error text still refused (task-019 r1)');
-  await ev(`document.querySelector('#composer-notice').textContent = ''; document.querySelector('#composer-input').value = ${JSON.stringify('Write-Output ' + bodyOnly)}; document.querySelector('#composer-send').click(); true`);
-  await sleep(800);
-  check('page text refused with the browser closed', /브라우저 모드에서 에이전트 페인으로/.test(await ev(`document.querySelector('#composer-notice').textContent`)));
-  check('shell never received it, input kept', !/boom-on-load/.test(await screen()) && (await ev(`document.querySelector('#composer-input').value`)).includes('boom-on-load'));
-  // Real history recall (↑ in an empty input box) of the message that went to the agent.
+  check('closing the browser drops the attachment', (await attachText()) === '' && !(await ev(`window.CarrotcapBrowser.hasAttachment()`)));
+  // Real history recall (↑ in an empty input box): only what was typed, never page text.
   await ev(`document.querySelector('#composer-input').value = ''; document.querySelector('#composer-input').focus(), true`);
-  let recalled = '';
-  for (let i = 0; i < 20 && !/결제가 안 돼/.test(recalled); i++) {
+  const seen = [];
+  for (let i = 0; i < 20; i++) {
     await app.key('ArrowUp', 'ArrowUp', 38);
-    recalled = await ev(`document.querySelector('#composer-input').value`);
+    seen.push(await composerVal());
   }
-  check('history brings back the message with the error block', /결제가 안 돼/.test(recalled) && /boom-on-load/.test(recalled), JSON.stringify(recalled.slice(0, 80)));
-  await ev(`document.querySelector('#composer-notice').textContent = ''; document.querySelector('#composer-send').click(); true`);
-  await sleep(800);
-  check('recalled page text is refused for the plain shell', /브라우저 모드에서 에이전트 페인으로/.test(await ev(`document.querySelector('#composer-notice').textContent`)) && !/boom-on-load/.test(await screen()));
+  check('history recalls typed messages', seen.some((v) => /결제가 안 돼/.test(v)));
+  check('history never contains page text', !seen.some((v) => /boom/.test(v)), JSON.stringify(seen.filter((v) => /boom/.test(v)).slice(0, 1)));
   await ev(`document.querySelector('#composer-input').value = 'Write-Output plain-ok'; document.querySelector('#composer-send').click(); true`);
   check('ordinary text still goes to the shell', await waitFor(async () => /plain-ok[\s\S]*plain-ok/.test(await screen())));
   view.close();

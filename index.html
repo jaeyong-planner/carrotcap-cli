@@ -111,7 +111,7 @@
         <div id="browser-viewport"><div id="browser-frame"></div><div id="browser-empty" class="muted small">주소를 입력하고 열기를 누르세요 — 개발 서버(예: http://localhost:3000)를 띄워 보면서 오른쪽 에이전트와 코딩합니다.</div></div>
         <div class="browser-notes">
           <div id="br-pins" class="br-pins"></div>
-          <button id="br-errors-to-chat" class="btn-ghost br-errors-btn" title="마지막 전송 이후의 새 콘솔 에러를 채팅 입력창에 넣습니다 (보내기 전에 수정 가능)" disabled>새 콘솔 에러 없음</button>
+          <button id="br-errors-to-chat" class="btn-ghost br-errors-btn" title="마지막 전송 이후의 새 콘솔 에러를 채팅 입력창에 첨부합니다 (보내기 전에 ✕로 뺄 수 있음)" disabled>새 콘솔 에러 없음</button>
         </div>
         <div id="browser-console" class="hidden"></div>
       </section>
@@ -124,6 +124,8 @@
         <div id="composer">
           <!-- 알림은 필요할 때만 한 줄로 잠깐 표시 (입력칸 옆에 라벨을 두지 않음) -->
           <div id="composer-notice" class="composer-notice" role="status" hidden></div>
+          <!-- 브라우저 콘솔 에러 첨부: 읽기 전용 칩 (보낼 때 보호 경로로만 붙음, task-019) -->
+          <div id="composer-attach" class="composer-attach" hidden></div>
           <div class="composer-box">
             <textarea id="composer-input" rows="1" spellcheck="false"
                       placeholder="메시지 입력 · Enter 보내기 · Shift+Enter 줄바꿈"></textarea>

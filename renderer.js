@@ -724,10 +724,10 @@
     }
     // task-015: 브라우저 모드면 주석·콘솔 에러·캡처 경로를 [브라우저 컨텍스트]로 앞에 붙인다.
     let prepared = { text: typed, commit: () => {} };
-    // task-019 (review r2): page-derived console-error text may only leave through the guarded
-    // context path — any failure or unexpected result is fail-closed.
-    const pageDerived = !!(window.CarrotcapBrowser && typeof window.CarrotcapBrowser.isTainted === 'function'
-      && window.CarrotcapBrowser.isTainted(typed));
+    // task-019: attached console errors (page text) may only leave through the guarded context
+    // path — any failure or unexpected result is fail-closed.
+    const pageDerived = !!(window.CarrotcapBrowser && typeof window.CarrotcapBrowser.hasAttachment === 'function'
+      && window.CarrotcapBrowser.hasAttachment());
     try {
       if (window.CarrotcapBrowser) {
         prepared = await window.CarrotcapBrowser.decorate(typed, state.folder.rootPath || null, {
@@ -737,10 +737,10 @@
       }
     } catch (err) {
       console.warn('[carrotcap] browser context failed:', err && err.message);
-      if (pageDerived) prepared = { blocked: '브라우저 컨텍스트를 만들지 못했습니다 — 콘솔 에러 줄은 보내지 않았습니다' };
+      if (pageDerived) prepared = { blocked: '브라우저 컨텍스트를 만들지 못했습니다 — 콘솔 에러 첨부는 보내지 않았습니다' };
     }
     if (pageDerived && !prepared.blocked && !prepared.context) {
-      prepared = { blocked: '콘솔 에러 줄은 에이전트 페인으로만 보낼 수 있습니다' };
+      prepared = { blocked: '콘솔 에러 첨부는 에이전트 페인으로만 보낼 수 있습니다' };
     }
     if (prepared.blocked) {
       // 일반 셸에는 페이지 유래 텍스트를 보내지 않는다 — 입력 내용은 그대로 돌려준다.
@@ -777,6 +777,8 @@
     $('#composer-send').onclick = () => { sendComposer(); composerInput.focus(); };
     $('#composer-clear').onclick = () => { composerInput.value = ''; autoGrowComposer(); composerInput.focus(); };
     composerInput.addEventListener('input', autoGrowComposer);
+    // renderer-browser.js tells the user things (e.g. an attachment dropped on navigation)
+    window.addEventListener('carrotcap:notice', (e) => showComposerNotice(String(e.detail || '')));
     composerInput.addEventListener('keydown', (e) => {
       if (e.isComposing) return; // 한글 조합 중 Enter는 조합 확정용
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendComposer(); return; }
@@ -810,19 +812,9 @@
     const r = await api.writeClipboard(text);
     return !!(r && r.ok);
   }
-  // task-019 (review r1): console-error text taken from the browser page is pasted only into
-  // agent panes — never into a plain shell, however it reached the clipboard.
-  // Not even into an agent pane: a direct paste skips main's guarded check (the agent may have
-  // just exited to a shell). The input box's send is the one path for it (review r2).
-  function pasteBlocked(term, text) {
-    const b = window.CarrotcapBrowser;
-    if (!b || typeof b.isTainted !== 'function' || !b.isTainted(text)) return false;
-    showComposerNotice('브라우저 콘솔 에러 줄은 터미널에 직접 붙여넣을 수 없습니다 — 입력창에서 에이전트 페인으로 보내세요');
-    return true;
-  }
   async function pasteIntoTerm(term) {
     const r = await api.readClipboard();
-    if (r && r.ok && r.text && !pasteBlocked(term, r.text)) term.paste(r.text);
+    if (r && r.ok && r.text) term.paste(r.text);
   }
   function attachClipboard(leaf) {
     const term = leaf.term;
@@ -844,12 +836,6 @@
       }
       return true;
     });
-    // Plain Ctrl+V / Shift+Insert reach xterm as a DOM paste event: same rule (capture phase,
-    // before xterm reads the clipboard data).
-    leaf.hostEl.addEventListener('paste', (e) => {
-      const text = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
-      if (text && pasteBlocked(term, text)) { e.preventDefault(); e.stopImmediatePropagation(); }
-    }, true);
     leaf.hostEl.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       if (leaf.ptyId) api.showTermMenu(leaf.ptyId, term.hasSelection());

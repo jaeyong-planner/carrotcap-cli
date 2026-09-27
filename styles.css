@@ -136,6 +136,12 @@ body.browser-mode #work { flex: 2 1 0; min-width: 360px; } /* 브라우저 : 터
 #composer.hidden { display: none; }
 .composer-notice { font-size: 11px; color: #f0c060; padding: 0 2px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .composer-notice.ok { color: #5dd07f; }
+/* 콘솔 에러 첨부 칩 (읽기 전용 — 선택·복사 대상이 아님) */
+.composer-attach { margin-bottom: 4px; padding: 4px 6px 4px 8px; background: #1d1416; border: 1px solid #5a3030; border-radius: 6px; font: 11px 'Cascadia Code', Consolas, monospace; color: #ffb3b3; user-select: none; }
+.composer-attach[hidden] { display: none; }
+.composer-attach-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-weight: 700; color: #ff9b9b; }
+.composer-attach-head .icon-btn { width: 20px; height: 20px; font-size: 11px; }
+.composer-attach-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #d9a0a0; }
 .composer-box {
   display: flex; align-items: stretch; gap: 4px;
   background: #0f0f12; border: 1px solid #2a2a35; border-radius: 8px; padding: 4px 4px 4px 10px;
