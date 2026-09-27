@@ -1843,6 +1843,7 @@ require('./main-skills').setupSkills({
   safeMkdir,
   isAllowedCliCommand,
   findCommand: findCommandSync,
+  taskkillPath: () => path.join(getSystem32Path(), 'taskkill.exe'),
 });
 
 const browserMode = require('./main-browser').setupBrowser({

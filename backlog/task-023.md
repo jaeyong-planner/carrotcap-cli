@@ -23,3 +23,12 @@
 ## 테스트
 - test-skills 14(카탈로그·id 필터·CLAUDE.md 블록 병합), test:skills E2E 21(START 첫 실행 창, 선택 전 실행 없음, 프리셋, 부분 실패 처리, project scope·폴더, skills.json·CLAUDE.md, 두 번째 START 안 물음, SKILLS 재실행 블록 1개, 잘못된 id·허용 밖 폴더 거부, 다시 묻지 않음)
 - 전체: unit 252+67+14, smoke 53, browser 94, resume 27, aor 33, copy 16
+
+## Codex r1 (⚠️ 조건부, Major 4 / Minor 3) 반영
+- 패키징: `renderer-skills.js`를 build.files에 추가 — 패키지 앱으로 E2E 31/31 (`CC_APP_EXE`)
+- 마켓 추가 fallback에 `--scope project`
+- 공급망 확인: 로컬 공식 마켓 사본에서 각 플러그인 구성(스킬·명령·에이전트 수, 훅과 실행 명령, MCP 서버 명령, 버전 / 외부 저장소·고정 커밋)을 읽어 창에 표시. 예) security-guidance 훅 9개(파이썬 실행), playwright `npx @playwright/mcp@latest`, superpowers `obra/superpowers @ 896224c`
+- 외부 제작(superpowers·playwright)은 프리셋에서 빠지고, 직접 체크 + "출처·실행 명령 확인" 동의가 있어야 설치(main도 동의 없으면 거부)
+- Windows 시간 초과: `taskkill /T /F`로 프로세스 트리 종료, 종료 후에만 다음 설치
+- 줄바꿈 유지(CRLF 파일은 CRLF), 하드 링크·링크·폴더인 CLAUDE.md 거부, 규칙 쓰기 실패 시 `rulesPending` 기록 → START가 다시 제안
+- 테스트: test-skills 23, test:skills 31 (동의 흐름, 동의 없는 IPC 거부, 마켓 추가 scope, 하드 링크 거부·원본 무변경·재제안)

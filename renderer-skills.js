@@ -14,6 +14,10 @@
   const neverBtn = $('#skills-never');
   const closeBtn = $('#skills-close');
   const titleNote = $('#skills-reason');
+  const thirdEl = $('#skills-third');
+  const thirdOk = $('#skills-third-ok');
+  const thirdText = $('#skills-third-text');
+  thirdOk.addEventListener('change', () => renderThirdParty());
 
   let catalog = null;
   let current = null; // { root, resolve, busy }
@@ -55,10 +59,52 @@
       const src = document.createElement('div');
       src.className = 'skill-src';
       src.textContent = s.source;
-      body.append(head, desc, src);
+      body.append(head, desc, src, inspectView(s.inspect || {}));
       row.append(cb, body);
       listEl.appendChild(row);
+      cb.addEventListener('change', renderThirdParty);
     }
+    renderThirdParty();
+  }
+  // What the plugin contains and runs, read from the local marketplace copy (review r1).
+  function inspectView(i) {
+    const box = document.createElement('div');
+    box.className = 'skill-inspect';
+    const line = document.createElement('div');
+    const bits = [];
+    if (i.remote) bits.push(`외부 저장소 ${i.remote.replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '')}${i.pinned ? ` @ ${i.pinned.slice(0, 7)} (고정 커밋)` : ''}`);
+    if (Array.isArray(i.components) && i.components.length) bits.push(i.components.join(' · '));
+    if (i.version) bits.push(`v${i.version}`);
+    if (!i.remote && i.pinned) bits.push(`마켓 커밋 ${i.pinned.slice(0, 7)}`);
+    if (i.note) bits.push(i.note);
+    line.textContent = bits.length ? `구성: ${bits.join(' · ')}` : '구성: 스킬·명령만 (실행되는 프로그램 없음)';
+    box.appendChild(line);
+    const runs = [...(i.hooks || []).map((h) => `훅 ${h.event}: ${h.command}`), ...(i.mcp || []).map((m) => `MCP ${m.name}: ${m.command}`)];
+    if (runs.length) {
+      const det = document.createElement('details');
+      const sum = document.createElement('summary');
+      sum.textContent = `실행하는 명령 ${runs.length}개 보기`;
+      det.appendChild(sum);
+      for (const r of runs) {
+        const d = document.createElement('div');
+        d.className = 'skill-run';
+        d.textContent = r;
+        det.appendChild(d);
+      }
+      box.appendChild(det);
+    }
+    return box;
+  }
+  // Third-party picks need an explicit "I checked the source and what it runs".
+  function thirdPartyPicked() {
+    return catalog.catalog.filter((s) => s.thirdParty && checked().includes(s.id)).map((s) => s.id);
+  }
+  function renderThirdParty() {
+    const picked = thirdPartyPicked();
+    thirdEl.hidden = picked.length === 0;
+    thirdText.textContent = picked.length ? `외부 제작 항목 ${picked.join(', ')}의 출처와 실행하는 명령을 확인했고 설치에 동의합니다` : '';
+    if (!picked.length) thirdOk.checked = false;
+    installBtn.disabled = (current && current.busy) || (picked.length > 0 && !thirdOk.checked);
   }
   function renderPresets() {
     presetsEl.textContent = '';
@@ -66,14 +112,19 @@
       const b = document.createElement('button');
       b.className = 'btn-ghost';
       b.textContent = p.label;
-      b.onclick = () => listEl.querySelectorAll('input[type=checkbox]').forEach((c) => { c.checked = p.ids.includes(c.value); });
+      b.onclick = () => {
+        listEl.querySelectorAll('input[type=checkbox]').forEach((c) => { c.checked = p.ids.includes(c.value); });
+        renderThirdParty();
+      };
       presetsEl.appendChild(b);
     }
   }
   function setBusy(busy) {
     if (current) current.busy = busy;
-    for (const b of [installBtn, skipBtn, neverBtn, closeBtn]) b.disabled = busy;
+    for (const b of [skipBtn, neverBtn, closeBtn]) b.disabled = busy;
     listEl.querySelectorAll('input').forEach((c) => { c.disabled = busy; });
+    thirdOk.disabled = busy;
+    renderThirdParty();
   }
   function finish(result) {
     const c = current;
@@ -102,7 +153,7 @@
     progressEl.textContent = '';
     setBusy(true);
     let r;
-    try { r = await api.skillsInstall(current.root, ids); } catch (e) { r = { ok: false, error: e && e.message }; }
+    try { r = await api.skillsInstall(current.root, ids, thirdPartyPicked().length > 0 && thirdOk.checked); } catch (e) { r = { ok: false, error: e && e.message }; }
     setBusy(false);
     if (r && r.ok) { finish({ action: 'installed', installed: r.installed || ids }); return; }
     const line = document.createElement('div');
@@ -126,6 +177,7 @@
   async function needsSetup(root) {
     if (!root) return false;
     const st = await api.skillsStatus(root);
+    if (st && st.rulesPending) return true; // installed, but the CLAUDE.md rules are missing
     return !st || (!st.skipped && !(Array.isArray(st.installed) && st.installed.length));
   }
   async function open(root, opts = {}) {

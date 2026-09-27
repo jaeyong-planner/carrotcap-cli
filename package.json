@@ -44,6 +44,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "renderer-skills.js",
       "renderer-browser.js",
       "main-browser.js",
       "main-skills.js",

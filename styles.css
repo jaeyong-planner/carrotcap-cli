@@ -266,6 +266,11 @@ body.browser-mode #work { flex: 2 1 0; min-width: 360px; } /* 브라우저 : 터
 .skill-done { font-size: 11px; color: var(--green); }
 .skill-desc { font-size: 12px; color: var(--text); margin-top: 2px; }
 .skill-src { font: 11px var(--mono); color: var(--text-2); user-select: text; }
+.skill-inspect { font-size: 11px; color: var(--text-2); margin-top: 2px; }
+.skill-inspect summary { cursor: pointer; color: var(--accent); }
+.skill-run { font: 11px var(--mono); color: var(--yellow); padding-left: 12px; user-select: text; word-break: break-all; }
+.skills-third { display: flex; gap: 6px; align-items: flex-start; color: var(--yellow); }
+.skills-third[hidden] { display: none; }
 .skills-progress { font-family: var(--mono); max-height: 120px; overflow-y: auto; }
 .skill-progress.ok { color: var(--green); }
 .skill-progress.fail { color: var(--red); }

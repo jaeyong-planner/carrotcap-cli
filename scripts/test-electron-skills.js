@@ -24,6 +24,8 @@ const fakeClaude = path.join(bin, 'claude.cmd');
 fs.writeFileSync(fakeClaude, [
   '@echo off',
   `>> "${callLog}" echo %CD% ^| %*`,
+  // with the flag file present the machine "does not know" the official marketplace yet
+  `if "%2"=="marketplace" if "%3"=="list" if exist "${path.join(tmp, 'no-market')}" (echo Configured marketplaces:& exit /b 0)`,
   'if "%2"=="marketplace" (echo Configured marketplaces:& echo   claude-plugins-official& exit /b 0)',
   'if "%3"=="skill-creator@claude-plugins-official" (echo Failed to install plugin 1>&2& exit /b 1)',
   'echo Successfully installed plugin %3 (scope: project)',
@@ -42,7 +44,8 @@ const calls = () => (fs.existsSync(callLog) ? fs.readFileSync(callLog, 'utf8').s
 const state = () => { try { return JSON.parse(fs.readFileSync(path.join(project, '.carrotcap', 'skills.json'), 'utf8')); } catch { return null; } };
 
 (async () => {
-  const app = await launchApp(userData);
+  // CC_APP_EXE: run against a packaged build (copy of carrotcap.exe) instead of the dev tree
+  const app = await launchApp(userData, process.env.CC_APP_EXE ? { exe: process.env.CC_APP_EXE } : {});
   const ev = app.ev;
   const modalOpen = () => ev(`!document.querySelector('#skills-modal').classList.contains('hidden')`);
   const rows = () => ev(`(document.querySelector('.tab-page .xterm-rows')||{}).innerText||''`);
@@ -54,10 +57,23 @@ const state = () => { try { return JSON.parse(fs.readFileSync(path.join(project,
     console.log('-- first START offers the setup');
     await ev(`document.querySelector('.btn-flow[data-flow="start"]').click(), true`);
     check('START opens the skills window', await waitFor(modalOpen, { timeoutMs: 10000 }));
-    const listed = await ev(`[...document.querySelectorAll('#skills-list .skill-row')].map((r) => ({ id: r.querySelector('input').value, on: r.querySelector('input').checked, third: !!r.querySelector('.skill-maker.third') }))`);
+    const listed = await ev(`[...document.querySelectorAll('#skills-list .skill-row')].map((r) => ({ id: r.querySelector('input').value, on: r.querySelector('input').checked, third: !!r.querySelector('.skill-maker.third'), inspect: r.querySelector('.skill-inspect').innerText }))`);
     check('whole catalog listed with makers', listed.length >= 8 && listed.some((r) => r.id === 'superpowers' && r.third) && listed.some((r) => r.id === 'code-review' && !r.third), JSON.stringify(listed.slice(0, 3)));
-    check('web preset preselected', ['superpowers', 'code-review', 'feature-dev', 'frontend-design', 'playwright'].every((id) => listed.find((r) => r.id === id && r.on)) && !listed.find((r) => r.id === 'skill-creator' && r.on));
+    check('every entry shows what it contains', listed.every((r) => /^구성:/.test(r.inspect)));
+    check('web preset preselected — Anthropic plugins only', ['code-review', 'feature-dev', 'security-guidance', 'frontend-design'].every((id) => listed.find((r) => r.id === id && r.on)) && !listed.some((r) => r.third && r.on));
     check('nothing ran before the user chose', calls().length === 0);
+
+    console.log('-- third-party plugins need explicit consent (review r1)');
+    await ev(`document.querySelector('#skills-list input[value="superpowers"]').click(), true`);
+    check('ticking a third-party plugin shows the consent line', await ev(`!document.querySelector('#skills-third').hidden && /superpowers/.test(document.querySelector('#skills-third-text').textContent)`));
+    check('install is disabled until consent', await ev(`document.querySelector('#skills-install').disabled`));
+    const noConsent = await ev(`window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['superpowers'])`);
+    check('main refuses a third-party install without consent', noConsent && noConsent.ok === false && /외부 제작/.test(noConsent.error || '') && calls().length === 0, JSON.stringify(noConsent));
+    await ev(`document.querySelector('#skills-third-ok').click(), true`);
+    check('consent enables install', !(await ev(`document.querySelector('#skills-install').disabled`)));
+    await ev(`document.querySelector('#skills-list input[value="superpowers"]').click(), true`); // untick again
+    check('unticking hides the consent line', await ev(`document.querySelector('#skills-third').hidden && !document.querySelector('#skills-install').disabled`));
+
     // pick the backend preset, then add skill-creator (which the fake fails)
     await ev(`[...document.querySelectorAll('#skills-presets button')].find((b) => b.textContent === '백엔드·API').click(); document.querySelector('#skills-list input[value="skill-creator"]').click(); true`);
     await ev(`document.querySelector('#skills-install').click(), true`);
@@ -65,9 +81,9 @@ const state = () => { try { return JSON.parse(fs.readFileSync(path.join(project,
     const c = calls();
     const installs = c.filter((l) => / plugin install /.test(l));
     check('marketplace checked first (already known → not added)', / plugin marketplace list/.test(c[0] || '') && !c.some((l) => /marketplace add/.test(l)), JSON.stringify(c.slice(0, 2)));
-    check('one install per chosen plugin, project scope, in the project folder', installs.length === 6 && installs.every((l) => l.includes(fs.realpathSync(project)) && /@claude-plugins-official --scope project$/.test(l)), JSON.stringify(installs));
+    check('one install per chosen plugin, project scope, in the project folder', installs.length === 5 && installs.every((l) => l.includes(fs.realpathSync(project)) && /@claude-plugins-official --scope project$/.test(l)), JSON.stringify(installs));
     const st = state();
-    check('skills.json records only what installed', !!st && JSON.stringify(st.installed) === JSON.stringify(['superpowers', 'code-review', 'feature-dev', 'security-guidance', 'pr-review-toolkit']), JSON.stringify(st));
+    check('skills.json records only what installed', !!st && JSON.stringify(st.installed) === JSON.stringify(['code-review', 'feature-dev', 'security-guidance', 'pr-review-toolkit']) && !st.rulesPending, JSON.stringify(st));
     const md = fs.readFileSync(path.join(project, 'CLAUDE.md'), 'utf8');
     check('CLAUDE.md keeps the user text and gains the rules block', md.startsWith('# My project\n\nOwn rules.') && /CARROTCAP:SKILLS:START/.test(md) && /\/code-review/.test(md) && !/skill-creator로/.test(md));
     check('window stays open on a partial failure, with a way on', await modalOpen() && /설치된 것으로 시작/.test(await ev(`document.querySelector('#skills-skip').textContent`)));
@@ -82,15 +98,30 @@ const state = () => { try { return JSON.parse(fs.readFileSync(path.join(project,
     await sleep(1500);
     check('no window, no install calls', !(await modalOpen()) && pluginCalls() === before);
 
-    console.log('-- SKILLS button: re-run keeps one block');
+    console.log('-- SKILLS button: re-run keeps one block; unknown marketplace is added project-scoped');
+    fs.writeFileSync(path.join(tmp, 'no-market'), '');
     await ev(`document.querySelector('#skills-open').click(), true`);
     check('SKILLS opens the window', await waitFor(modalOpen));
-    check('installed ones are shown as installed', await ev(`[...document.querySelectorAll('#skills-list .skill-row')].filter((r) => r.querySelector('.skill-done')).length`) === 5);
+    check('installed ones are shown as installed', await ev(`[...document.querySelectorAll('#skills-list .skill-row')].filter((r) => r.querySelector('.skill-done')).length`) === 4);
     await ev(`document.querySelectorAll('#skills-list input').forEach((c) => { c.checked = c.value === 'frontend-design'; }); document.querySelector('#skills-install').click(); true`);
     check('single install closes the window', await waitFor(async () => !(await modalOpen()), { timeoutMs: 20000 }));
+    check('marketplace added with --scope project', calls().some((l) => / plugin marketplace add anthropics\/claude-plugins-official --scope project$/.test(l)), JSON.stringify(calls().filter((l) => /marketplace/.test(l))));
+    fs.rmSync(path.join(tmp, 'no-market'));
     const md2 = fs.readFileSync(path.join(project, 'CLAUDE.md'), 'utf8');
     check('block replaced, not duplicated; now includes frontend-design too', md2.split('CARROTCAP:SKILLS:START').length === 2 && /frontend-design/.test(md2) && /\/code-review/.test(md2));
-    check('skills.json merged', (state().installed || []).includes('frontend-design') && state().installed.includes('superpowers'));
+    check('skills.json merged', (state().installed || []).includes('frontend-design') && state().installed.includes('code-review'));
+
+    console.log('-- rules that cannot be written are remembered (review r1)');
+    const claudeMd = path.join(project, 'CLAUDE.md');
+    const elsewhere = path.join(tmp, 'elsewhere.md');
+    fs.renameSync(claudeMd, elsewhere);
+    fs.linkSync(elsewhere, claudeMd); // hard link to a file outside the project
+    const hl = await ev(`window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['commit-commands'])`);
+    check('hard-linked CLAUDE.md is refused, install still recorded', hl && hl.ok === false && /CLAUDE\.md/.test(hl.error || '') && state().installed.includes('commit-commands') && state().rulesPending === true, JSON.stringify(hl));
+    check('the linked file was not changed', !/commit-commands/.test(fs.readFileSync(elsewhere, 'utf8')));
+    check('START would offer the setup again', await ev(`window.CarrotcapSkills.needsSetup(${JSON.stringify(project)})`));
+    fs.rmSync(claudeMd);
+    fs.renameSync(elsewhere, claudeMd);
 
     console.log('-- the main side only takes catalog ids and allowed folders');
     const bad = await ev(`window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['evil & calc', '__proto__'])`);
@@ -99,11 +130,8 @@ const state = () => { try { return JSON.parse(fs.readFileSync(path.join(project,
     check('folder outside the allowed workspaces refused', outside && outside.ok === false && /폴더/.test(outside.error || ''));
 
     console.log('-- "don\'t ask again" sticks');
-    const project2 = path.join(tmp, 'second');
-    fs.mkdirSync(project2);
-    // not selectable from here without the folder dialog; the IPC is what the button calls
     const skip = await ev(`window.carrotcap.skillsSkip(${JSON.stringify(project)})`);
-    check('skip recorded', skip === true && state().skipped === true && state().installed.length === 6);
+    check('skip recorded, installs kept', skip === true && state().skipped === true && state().installed.includes('frontend-design'));
   } finally {
     await app.close();
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* shell may hold a file */ }
