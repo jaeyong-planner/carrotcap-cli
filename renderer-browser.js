@@ -31,6 +31,7 @@
     newErrors: 0,
     attach: null,      // 입력창에 첨부한 콘솔 에러 { gen, mark, lines, total, skipped }
     attaching: false,
+    sending: false,    // 입력창 전송 중 — 첨부 새로고침을 막는다 (review r5)
     annotating: false,
     pickToken: 0,
     openToken: 0,
@@ -325,7 +326,14 @@
       // 첨부한 시점까지의 에러만 "보냄" — 그 뒤에 난 에러는 계속 새 에러로 남는다.
       if (attach) {
         api.browserCommit(attach.mark);
-        if (st.attach === attach) { st.attach = null; renderAttach(); }
+        // Any attachment still shown is either this one or one made during the send — the
+        // latter may repeat what was just delivered, so it goes too (review r5).
+        if (st.attach) {
+          const other = st.attach !== attach;
+          st.attach = null;
+          renderAttach();
+          if (other) notify('보내는 동안 바뀐 콘솔 에러 첨부를 뺐습니다 — 필요하면 다시 첨부하세요');
+        }
       }
       // 이번에 보낸 핀만 지운다 — 전송을 준비하는 사이 새로 찍은 핀은 목록·페이지 모두 남는다 (review r2).
       const sent = pins.map((p) => p.n);
@@ -344,12 +352,12 @@
   function renderErrorsButton() {
     if (!errorsToChat) return;
     const n = st.newErrors;
-    errorsToChat.disabled = st.attaching || !st.open || n === 0;
+    errorsToChat.disabled = st.attaching || st.sending || !st.open || n === 0;
     errorsToChat.textContent = n === 0 ? '새 콘솔 에러 없음'
       : st.attach ? `⚠ 새 콘솔 에러 ${n}건 → 첨부 새로고침` : `⚠ 새 콘솔 에러 ${n}건 → 채팅에 첨부`;
   }
   async function attachErrors() {
-    if (st.attaching || !st.open) return;
+    if (st.attaching || st.sending || !st.open) return;
     st.attaching = true; // 빠른 두 번 클릭도 한 번만
     renderErrorsButton();
     try {
@@ -372,6 +380,7 @@
   }
 
   // ---- 이벤트 ----
+  window.addEventListener('carrotcap:sending', (e) => { st.sending = !!e.detail; renderErrorsButton(); });
   function bind() {
     if (errorsToChat) {
       errorsToChat.onclick = () => {

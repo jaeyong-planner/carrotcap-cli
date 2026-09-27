@@ -700,11 +700,14 @@
     composerSending = true;
     const sendBtn = $('#composer-send');
     sendBtn.disabled = true;
+    // renderer-browser.js holds attachment refreshes while a send is in flight (task-019 r5)
+    window.dispatchEvent(new CustomEvent('carrotcap:sending', { detail: true }));
     try {
       await sendComposerOnce();
     } finally {
       composerSending = false;
       sendBtn.disabled = false;
+      window.dispatchEvent(new CustomEvent('carrotcap:sending', { detail: false }));
     }
   }
   async function sendComposerOnce() {

@@ -162,7 +162,9 @@ const server = http.createServer((req, res) => {
   check('pins kept by the cancelled send', (await ev(`document.querySelectorAll('#br-pins .br-pin').length`)) === 1);
   await ev(`window.CarrotcapBrowser.decorate = window.__ccDecorate; delete window.__ccDecorate; document.querySelector('#br-errors-to-chat').click(); true`);
   await waitFor(async () => /boom-on-load/.test(await attachText()));
-  await ev(`document.querySelector('#composer-send').click(), true`);
+  // Refresh clicked right as the send starts: held until the send is over (review r5).
+  await ev(`document.querySelector('#composer-send').click(); const rb = document.querySelector('#br-errors-to-chat'); window.__ccRefreshDisabled = rb.disabled; rb.click(); true`);
+  check('attach button is disabled while a send is in flight', await ev(`window.__ccRefreshDisabled === true`));
   check('agent received the [브라우저 컨텍스트] block', await waitFor(() => /\[\S*\s?\S*\]|CARROTCAP/.test(received()) && received().includes('\x1b[201~')), JSON.stringify(received().slice(0, 120)));
   const got = Buffer.from(received(), 'latin1').toString('utf8');
   check('context names the pinned element and the request', /#buy/.test(got) && /결제가 안 돼/.test(got) && /boom-on-load/.test(got), JSON.stringify(got.slice(0, 300)));
@@ -175,6 +177,7 @@ const server = http.createServer((req, res) => {
   check('sent pins are consumed (list and page cleared)', await waitFor(async () => (await ev(`document.querySelectorAll('#br-pins .br-pin').length`)) === 0 && (await view.ev(`document.querySelectorAll('[data-cc-pin]').length`)) === 0));
   check('sent errors no longer flagged as new', await waitFor(async () => !(await ev(`document.querySelector('#br-err-count').classList.contains('has')`))));
   check('errors button disabled again after sending', await waitFor(async () => await ev(`document.querySelector('#br-errors-to-chat').disabled`)));
+  check('no attachment left after the send (nothing to deliver twice)', (await attachText()) === '' && !(await ev(`window.CarrotcapBrowser.hasAttachment()`)));
 
   console.log('-- hostile page text cannot break out of the paste (review C3)');
   fs.writeFileSync(path.join(tmp, 'agent-received.bin'), '');
