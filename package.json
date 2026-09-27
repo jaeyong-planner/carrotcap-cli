@@ -14,6 +14,7 @@
     "test:browser": "node scripts/test-electron-browser.js",
     "test:aor": "node scripts/test-electron-aor.js",
     "test:launchers": "node scripts/test-launchers.js",
+    "test:copy": "node scripts/test-electron-copy.js",
     "test:media": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-run-media.ps1",
     "pack": "electron-builder --dir",
     "prebuild-check": "node -e \"const p=require.resolve('@homebridge/node-pty-prebuilt-multiarch');const fs=require('fs');const path=require('path');const root=path.join(path.dirname(p),'..');const candidates=[path.join(root,'build','Release'),path.join(root,'prebuilds')];const found=candidates.find(d=>fs.existsSync(d)&&listFiles(d).some(f=>f.endsWith('.node')));function listFiles(d){const out=[];function walk(x){for(const e of fs.readdirSync(x,{withFileTypes:true})){const f=path.join(x,e.name);if(e.isDirectory())walk(f);else out.push(f)}}walk(d);return out}if(!found){console.error('[carrotcap] FATAL: pty native binary missing under '+root+'. Reinstall: npm install');process.exit(1)}console.log('[carrotcap] pty native OK: '+found)\"",

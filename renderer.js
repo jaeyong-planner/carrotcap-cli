@@ -868,6 +868,23 @@
       }
       return true;
     });
+    // Apps that turn on mouse tracking (Claude Code does: ?1000h/?1006h, mouse mode "full")
+    // receive plain drags, so nothing could be selected or copied in their pane. Here a
+    // plain left-button press always starts a text selection — xterm's own "force selection"
+    // is Shift+press, so the press is re-sent with Shift. The wheel still goes to the app;
+    // Shift/Alt/Ctrl+press are left alone (task-022).
+    leaf.hostEl.addEventListener('mousedown', (e) => {
+      if (!e.isTrusted || e.button !== 0 || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+      if (!term.modes || term.modes.mouseTrackingMode === 'none') return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      e.target.dispatchEvent(new MouseEvent('mousedown', {
+        bubbles: true, cancelable: true, composed: true, view: window, detail: e.detail,
+        screenX: e.screenX, screenY: e.screenY, clientX: e.clientX, clientY: e.clientY,
+        button: 0, buttons: e.buttons, shiftKey: true,
+      }));
+      term.focus();
+    }, true);
     leaf.hostEl.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       if (leaf.ptyId) api.showTermMenu(leaf.ptyId, term.hasSelection());
