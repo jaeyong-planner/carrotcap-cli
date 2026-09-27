@@ -30,6 +30,13 @@ const port = 9333 + Math.floor(Math.random() * 500);
 const appData = fs.mkdtempSync(path.join(os.tmpdir(), 'carrotcap-smoke-'));
 const userDataDir = path.join(appData, 'userData');
 const CORRUPT_TEXT = '{ "aor": { broken json';
+// task-027: the registered PATH comes from this file (dev tree) — a tool folder is "installed"
+// into it while the app runs; the app's own PATH never has it
+const regFile = path.join(appData, 'registered-path.json');
+const probeDir = path.join(appData, 'late tool');
+fs.mkdirSync(probeDir, { recursive: true });
+fs.writeFileSync(path.join(probeDir, 'zzccprobe.cmd'), '@echo CC-PROBE-OK' + String.fromCharCode(13, 10));
+fs.writeFileSync(regFile, JSON.stringify({ machine: '', user: '' }));
 if (corruptSettings) {
   fs.mkdirSync(userDataDir, { recursive: true });
   fs.writeFileSync(path.join(userDataDir, 'settings.json'), CORRUPT_TEXT);
@@ -59,7 +66,7 @@ const [cmd, args] = packagedExe
   : [require(path.join(root, 'node_modules', 'electron')), ['.', `--remote-debugging-port=${port}`]];
 const child = spawn(cmd, args, {
   cwd: packagedExe ? path.dirname(packagedExe) : root,
-  env: { ...process.env, CARROTCAP_USER_DATA_DIR: userDataDir },
+  env: { ...process.env, CARROTCAP_USER_DATA_DIR: userDataDir, CARROTCAP_TEST_REGISTRY_PATH: regFile },
   stdio: ['ignore', 'pipe', 'pipe']
 });
 let mainLog = '';
@@ -376,6 +383,38 @@ const PROBE = `(async () => {
   await ev(`document.querySelector('[data-theme-choice="dark"]').click(), true`);
   check('back to dark', await waitFor(async () => (await ev(`document.documentElement.dataset.theme`)) === 'dark' && readUi().theme === 'dark', { timeoutMs: 3000 }));
   await ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })), true`);
+
+  console.log('-- a tool installed after the app started is found in a new pane (task-027)');
+  // Windows only: the registered PATH exists there (and the probe is a .cmd) — review r3
+  if (process.platform === 'win32' && !packagedExe) {
+    // The GROK button checks cli.grok on disk: point it at the probe command, which is not installed yet.
+    const sPath = path.join(userDataDir, 'settings.json');
+    const disk = JSON.parse(fs.readFileSync(sPath, 'utf8'));
+    const grokWas = disk.cli.grok;
+    disk.cli.grok = { command: 'zzccprobe', args: [] };
+    fs.writeFileSync(sPath, JSON.stringify(disk, null, 2));
+    await ev(`window.carrotcap.getSettings().then((s) => window.carrotcap.setSettings(s)).then(() => true)`); // new cli entry → fresh status
+    await ev(`window.dispatchEvent(new Event('focus')), true`);
+    check('before: the CLI shows as not installed', (await ev(`window.carrotcap.cliStatus()`)).grok === false
+      && await waitFor(async () => ev(`document.querySelector('.btn-cli[data-cli="grok"]').classList.contains('missing')`), { timeoutMs: 3000 }));
+    // "installed" now: registered in the user PATH — no new pane, no settings save (review r2)
+    fs.writeFileSync(regFile, JSON.stringify({ machine: '', user: probeDir }));
+    await sleep(5600); // past the 5 s registry cache
+    check('cli:status sees it by itself (the status cache follows the registered PATH)', (await ev(`window.carrotcap.cliStatus()`)).grok === true);
+    await ev(`window.dispatchEvent(new Event('focus')), true`);
+    check('the button is no longer marked missing once the window is focused', await waitFor(async () => ev(`!document.querySelector('.btn-cli[data-cli="grok"]').classList.contains('missing')`), { timeoutMs: 3000 }));
+    disk.cli.grok = grokWas;
+    fs.writeFileSync(sPath, JSON.stringify(disk, null, 2));
+    await ev(`window.carrotcap.getSettings().then((s) => window.carrotcap.setSettings(s)).then(() => true)`);
+    const tabs0 = await ev(`document.querySelectorAll('.tab').length`);
+    await ev(`document.querySelector('#new-tab').click(), true`);
+    await waitFor(async () => (await ev(`document.querySelectorAll('.tab').length`)) === tabs0 + 1 && /PS /.test(await ev(`(document.querySelector('.tab-page.active .xterm-rows')||{}).innerText||''`)), { timeoutMs: 20000 });
+    const pid = await ev(`document.querySelector('.tab-page.active .pane.active').dataset.ptyId`);
+    await ev(`window.carrotcap.writePty(${JSON.stringify(pid)}, ${JSON.stringify('zzccprobe\r')}), true`);
+    check('new pane runs it without restarting the app', await waitFor(async () => /CC-PROBE-OK/.test(await ev(`(document.querySelector('.tab-page.active .xterm-rows')||{}).innerText||''`)), { timeoutMs: 8000 }),
+      await ev(`(document.querySelector('.tab-page.active .xterm-rows')||{}).innerText.slice(-300)`));
+    await ev(`document.querySelector('.tab.active .x') && document.querySelector('.tab.active .x').click(), true`);
+  }
 
   console.log('-- AOR badge / AIOps default');
   const engineFound = (await ev(`window.carrotcap.aorStatus()`)).engineFound;

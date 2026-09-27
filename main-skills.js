@@ -617,6 +617,7 @@ function setupSkills(deps) {
     assertAncestorsClean, safeMkdir, isAllowedCliCommand, findCommand, taskkillPath,
     installTimeoutMs = INSTALL_TIMEOUT_MS, fetchRemote = fetchText,
     hasTypesafeKey = () => !!(process.env.TYPESAFE_API_KEY || '').trim(), // task-025
+    refreshPath = async () => {}, // task-027: re-read the registered PATH before looking up claude
     confirmThirdParty, // async ({ title, detail }) => boolean — a native dialog in main (review r8)
   } = deps;
   let running = false;
@@ -708,6 +709,7 @@ function setupSkills(deps) {
     const s = typeof p.id === 'string' ? catalogEntry(p.id) : null;
     if (!s || !s.marketplace) return { ok: false, error: '별도 마켓이 필요한 항목이 아닙니다' };
     if (marketReady(s.marketplace)) return { ok: true, already: true };
+    await refreshPath(); // before the check: check → running = true stays one synchronous step
     if (running) return { ok: false, error: '이미 설치 중입니다' };
     const exe = claudeCommand();
     if (!exe) return { ok: false, error: 'claude CLI를 찾을 수 없습니다 (settings.json의 cli.claude 확인)' };
@@ -756,6 +758,7 @@ function setupSkills(deps) {
       return i.needsRemoteCheck && (remoteInspected.get(id) || {}).sha !== i.pinned;
     });
     if (unchecked.length) return { ok: false, error: `${unchecked.join(', ')}: 내용을 확인할 수 없거나 아직 확인하지 않았습니다 ("구성 불러오기")` };
+    await refreshPath(); // before the check: check → running = true stays one synchronous step
     if (running) return { ok: false, error: '이미 설치 중입니다' };
     const exe = claudeCommand();
     if (!exe) return { ok: false, error: 'claude CLI를 찾을 수 없습니다 (settings.json의 cli.claude 확인)' };

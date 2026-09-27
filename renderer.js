@@ -563,7 +563,14 @@
   }
 
   // ---------- 터미널(xterm) ----------
-  async function spawnIntoPane(leaf, payload) {
+  // task-027: a pane's shell may take a moment (the spawn waits for the registered PATH):
+  // leaf.spawning lets Quick CLI / flows wait for it instead of failing (review task-027 r4)
+  function spawnIntoPane(leaf, payload) {
+    const p = spawnIntoPaneNow(leaf, payload).finally(() => { if (leaf.spawning === p) leaf.spawning = null; });
+    leaf.spawning = p;
+    return p;
+  }
+  async function spawnIntoPaneNow(leaf, payload) {
     // task-005: when entering AIOps mode in a workspace, auto-run setup once
     // per (rootPath, session) so the user doesn't need to click SETUP first.
     // Skips silently if no folder selected — pane spawns without project state.
@@ -595,6 +602,13 @@
 
     const cols = term.cols, rows = term.rows;
     const result = await api.spawnPty({ ...payload, cols, rows });
+    // task-027: spawning can wait for the registered PATH — the pane or its tab may have been
+    // closed meanwhile; then its shell must not live on unseen (review task-027 r3)
+    if (!state.panes.has(leaf.id) || !leaf.paneEl.isConnected) {
+      if (result && result.id) api.killPty(result.id);
+      try { term.dispose(); } catch { /* already gone */ }
+      return;
+    }
     if (result && result.error) {
       term.write(`\r\n\x1b[31m[carrotcap] ${result.error}\x1b[0m\r\n`);
       return;
@@ -1208,6 +1222,31 @@
       : `cd -- ${posixQuote(dir)} && ${command}`;
   }
 
+  // the active pane once its shell is up (waits while it is still starting)
+  // A command is only ever run in the pane that was active when it was asked for. The caller
+  // pins that pane (clickedPaneId) and calls stillTarget() right before writing: if the user
+  // picked another pane during any wait (shell start, CLI re-check, Jev/CLM check), it is not
+  // sent anywhere (review task-027 r5/r6).
+  const PANE_CHANGED = '준비하는 동안 다른 페인을 선택해서 실행하지 않았습니다 — 다시 눌러 주세요';
+  function stillTarget(leaf) {
+    if (leaf && (state.activePaneId !== leaf.id || state.panes.get(leaf.id) !== leaf)) {
+      setFlowStatus(PANE_CHANGED, 'warn');
+      return null;
+    }
+    const now = activeLeafOrWarn(); // no pane / no shell yet → its own warning
+    return now && (!leaf || now === leaf) ? now : null;
+  }
+  // the pinned pane once its shell is up (waits while it is still starting)
+  async function activeLeafReady(clickedPaneId = state.activePaneId) {
+    if (state.activePaneId !== clickedPaneId) { setFlowStatus(PANE_CHANGED, 'warn'); return null; }
+    const leaf = state.panes.get(clickedPaneId);
+    if (leaf && leaf.type === 'leaf' && !leaf.ptyId && leaf.spawning) {
+      setFlowStatus('터미널을 준비하는 중…');
+      try { await leaf.spawning; } catch { /* reported by the pane */ }
+    }
+    return stillTarget(leaf && leaf.type === 'leaf' ? leaf : null);
+  }
+
   function activeLeafOrWarn() {
     const leaf = state.panes.get(state.activePaneId);
     if (!leaf || leaf.type !== 'leaf' || !leaf.ptyId) {
@@ -1217,7 +1256,10 @@
     return leaf;
   }
 
-  function cliMissing(key) {
+  // task-027: "not found" is checked again before refusing — the CLI may have been installed
+  // after the app started (main re-reads the registered PATH)
+  async function cliMissing(key) {
+    if (state.cliStatus[key] === false) await refreshCliStatus();
     if (state.cliStatus[key] === false) {
       const cmd = state.settings && state.settings.cli && state.settings.cli[key] ? state.settings.cli[key].command : key;
       setFlowStatus(`'${cmd}' 명령을 찾을 수 없습니다. 설치 후 PATH를 확인하세요.`, 'warn');
@@ -1247,11 +1289,13 @@
   }
 
   async function runCli(key, skill) {
-    // a pane must be there before offering any install (review task-025 r1), and still be there after
-    if (!activeLeafOrWarn() || cliMissing(key)) return;
+    const clickedPaneId = state.activePaneId;
+    // a pane must be there before offering any install (review task-025 r1), and still be the same one after
+    const target = await activeLeafReady(clickedPaneId);
+    if (!target || await cliMissing(key)) return;
     let jev = null;
     if (skill === 'jev') { jev = await ensureJev(); if (!jev) return; }
-    const leaf = activeLeafOrWarn();
+    const leaf = stillTarget(target);
     if (!leaf) return;
     const cmd = cliCommandLine(key, jev ? JEV_SKILL : undefined);
     if (!cmd) {
@@ -1294,6 +1338,7 @@
   }
 
   async function runAiopsFlow(step) {
+    const clickedPaneId = state.activePaneId; // task-027: the flow runs in this pane or nowhere
     const setup = await setupAiopsWorkflow();
     if (!setup) return;
     // task-023: the first START in a project offers the skills setup (once; "don't ask" sticks)
@@ -1313,8 +1358,9 @@
     let prompt = flow.prompt;
     let note = '';
     let role = flow.role || CLI_ROLES[flow.cli];
+    const target = await activeLeafReady(clickedPaneId);
+    if (!target || await cliMissing(flow.cli)) return; // before any install offer
     if (flow.systemOne) {
-      if (!activeLeafOrWarn() || cliMissing(flow.cli)) return; // before any install offer
       let clm = null;
       try { clm = await api.clmStatus(); } catch { clm = null; }
       if (clm && clm.up) {
@@ -1327,8 +1373,8 @@
         note = ` — CLM 서버(${(clm && clm.url) || 'settings.json systemOne.clmUrl'})가 꺼져 있어 Jev로 대체했습니다${jev.note}`;
       }
     }
-    const leaf = activeLeafOrWarn();
-    if (!leaf || cliMissing(flow.cli)) return;
+    const leaf = stillTarget(target); // after every wait above: still the same pane
+    if (!leaf) return;
     // task-012: PowerShell은 `<` 입력 리디렉션을 지원하지 않아 예전 `claude < agents\x.md`는
     // 실행 자체가 실패했다. 규약 파일을 읽으라는 첫 프롬프트로 대화형 CLI를 시작한다.
     const launch = cliCommandLine(flow.cli, prompt);
@@ -1367,6 +1413,7 @@
   // ---------- 글로벌 이벤트 ----------
   function bindGlobalEvents() {
     bindSettingsPanel(); // task-026
+    window.addEventListener('focus', () => { refreshCliStatus(); }); // task-027: main caches; cheap
     bindComposer();
     bindResume();
     newTabBtn.onclick = () => createTab();

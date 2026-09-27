@@ -24,6 +24,24 @@ try {
 }
 const { spawn } = require('child_process');
 const { clmBaseUrl, CLM_DEFAULT_URL } = require('./scripts/system-one.js'); // task-025
+// task-027: terminals and CLI checks see the PATH Windows has registered now, not only the
+// copy the app inherited at launch (see main-winpath.js)
+const registeredPath = process.platform === 'win32'
+  ? require('./main-winpath').createRegisteredPath({
+    powershell: () => getPowerShellExePath(),
+    // dev tree / E2E only: a JSON file instead of the registry
+    testFile: (!app.isPackaged && process.env.CARROTCAP_TEST_REGISTRY_PATH) || null,
+    testDelayMs: (!app.isPackaged && Number(process.env.CARROTCAP_TEST_REGISTRY_DELAY_MS)) || 0,
+  })
+  : null;
+function registeredPathEnv(baseEnv) { return registeredPath ? registeredPath.envFor(baseEnv) : baseEnv; }
+function registeredPathReady() {
+  if (!registeredPath) return Promise.resolve();
+  let timer = null;
+  const cap = new Promise((r) => { timer = setTimeout(r, 4500); });
+  // the cap timer never outlives the read (review task-027 r1)
+  return Promise.race([registeredPath.get(), cap]).finally(() => clearTimeout(timer));
+}
 
 const APP_ROOT = __dirname;
 // task-008: mutable state lives in a per-user data dir, never next to the code.
@@ -1298,7 +1316,8 @@ function spawnSession(rawPayload) {
   const { file, args, cwd, kind } = resolved;
 
   const { cols, rows } = payload;
-  const env = { ...process.env, TERM: 'xterm-256color', CARROTCAP: '1' };
+  // task-027: plus the PATH entries Windows has registered now that the app's own copy lacks
+  const env = { ...registeredPathEnv(process.env), TERM: 'xterm-256color', CARROTCAP: '1' };
   // The AOR shell's `claude` wrapper adds --settings from this (task-017).
   const hookSettings = resolveCompressHook(settings);
   if (hookSettings) env.CARROTCAP_CLAUDE_SETTINGS = hookSettings;
@@ -1617,7 +1636,12 @@ handle('aiops:setup', (_e, projectRoot) => {
   return { ok: true, root: real, ...result };
 });
 
-handle('pty:spawn', (_e, payload) => spawnSession(payload));
+// task-027: read the registered PATH first (cached 5s, bounded wait) so a new pane sees tools
+// installed after the app started; if it cannot be read the pane gets the app's PATH as before
+handle('pty:spawn', async (_e, payload) => {
+  await registeredPathReady();
+  return spawnSession(payload);
+});
 // Returns true when the data was written (or queued behind the ready gate).
 function writeToSession(id, data) {
   const s = sessions.get(id);
@@ -1862,13 +1886,17 @@ function whichCommand(cmd) {
     ? [path.join(getSystem32Path(), 'where.exe'), [cmd]]
     : ['/usr/bin/which', [cmd]];
   return new Promise((resolve) => {
-    execFile(file, args, { timeout: 4000, windowsHide: true }, (err, stdout) => {
+    // task-027: look up with the same PATH a pane gets
+    execFile(file, args, { timeout: 4000, windowsHide: true, env: registeredPathEnv(process.env) }, (err, stdout) => {
       resolve(!err && String(stdout).trim().length > 0);
     });
   });
 }
 handle('cli:status', async () => {
-  if (cliStatusCache.value && Date.now() - cliStatusCache.at < 30000) return cliStatusCache.value;
+  await registeredPathReady(); // task-027
+  // a changed registered PATH (a CLI installed meanwhile) makes the cached answer stale (review task-027 r2)
+  const pathSig = registeredPath ? JSON.stringify(registeredPath.peek()) : '';
+  if (cliStatusCache.value && cliStatusCache.pathSig === pathSig && Date.now() - cliStatusCache.at < 30000) return cliStatusCache.value;
   const settings = loadSettings() || {};
   const cli = (settings.cli && typeof settings.cli === 'object') ? settings.cli : {};
   const out = {};
@@ -1877,7 +1905,7 @@ handle('cli:status', async () => {
     const cmd = val && typeof val.command === 'string' ? val.command : '';
     out[key] = CMD_NAME_RE.test(cmd) ? await whichCommand(cmd) : isAllowedCliCommand(cmd);
   }));
-  cliStatusCache = { at: Date.now(), value: out };
+  cliStatusCache = { at: Date.now(), value: out, pathSig };
   return out;
 });
 
@@ -1953,7 +1981,7 @@ function findCommandSync(cmd) {
     ? [path.join(getSystem32Path(), 'where.exe'), [cmd]]
     : ['/usr/bin/which', [cmd]];
   try {
-    const lines = String(execFileSync(file, args, { timeout: 4000, windowsHide: true, encoding: 'utf8' })).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const lines = String(execFileSync(file, args, { timeout: 4000, windowsHide: true, encoding: 'utf8', env: registeredPathEnv(process.env) })).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
     const ok = process.platform === 'win32' ? lines.find((l) => /\.(exe|cmd|bat)$/i.test(l)) : lines[0];
     return ok && path.isAbsolute(ok) ? ok : null;
   } catch { return null; }
@@ -1970,6 +1998,7 @@ require('./main-skills').setupSkills({
   safeMkdir,
   isAllowedCliCommand,
   findCommand: findCommandSync,
+  refreshPath: registeredPathReady, // task-027
   taskkillPath: () => path.join(getSystem32Path(), 'taskkill.exe'),
   // third-party installs: the user approves in a native dialog shown by main (review r8)
   // task-025: whether a Jev key exists (keys.env or the app environment) — never the value
