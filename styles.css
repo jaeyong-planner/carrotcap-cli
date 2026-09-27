@@ -38,6 +38,38 @@
   /* type */
   --mono: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'IBM Plex Mono', 'SF Mono', Consolas, monospace;
   --sans: 'Segoe UI', system-ui, sans-serif;
+  --overlay: rgba(22, 27, 34, 0.92); /* 페인 위 안내 띠 */
+  color-scheme: dark;
+}
+
+/* 화이트 테마 (task-026) — 같은 역할의 색을 흰 배경용으로. 글자색 대비(WCAG AA 4.5:1 이상, 흰 배경 / --panel 기준 실측):
+ * text 15.8/14.8 · text-2 6.1/5.7 · accent 5.2/4.9 · green 5.1/4.8 · yellow 4.9/4.6 · red 5.4/5.0 · brand 5.2/4.9
+ * 색 글자는 --raised(hover 바탕) 위에 두지 않는다 — 그 위에서는 4.2~4.5:1로 내려간다. */
+:root[data-theme="light"] {
+  --bg: #FFFFFF;
+  --panel: #F6F8FA;
+  --raised: #EAEEF2;
+  --border: #D0D7DE;
+  --border-muted: #EAEEF2;
+  --text: #1F2328;
+  --text-2: #59636E;
+  --on-accent: #FFFFFF;
+  --accent: #0969DA;
+  --accent-2: #0550AE;
+  --accent-bg: rgba(9, 105, 218, 0.10);
+  --green: #1A7F37;
+  --green-bg: rgba(26, 127, 55, 0.10);
+  --green-border: rgba(26, 127, 55, 0.45);
+  --yellow: #9A6700;
+  --red: #CF222E;
+  --red-bg: rgba(207, 34, 46, 0.08);
+  --red-border: rgba(207, 34, 46, 0.45);
+  --purple: #8250DF;
+  --brand: #C2410C;
+  --brand-bg: rgba(194, 65, 12, 0.10);
+  --brand-border: rgba(194, 65, 12, 0.45);
+  --overlay: rgba(246, 248, 250, 0.95);
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -54,6 +86,30 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
   -webkit-app-region: drag;
 }
 #tabbar button, #tabbar .tab, #tabbar .badge { -webkit-app-region: no-drag; }
+
+/* ---------- 설정 (task-026) ---------- */
+.settings-btn {
+  background: transparent; color: var(--text-2); border: 1px solid var(--border);
+  border-radius: 6px; cursor: pointer; width: 30px; height: 26px; font-size: 15px; line-height: 1; padding: 0;
+}
+.settings-btn:hover, .settings-btn[aria-expanded="true"] { color: var(--accent); border-color: var(--accent); background: var(--accent-bg); }
+.settings-panel {
+  position: fixed; top: 44px; left: 8px; z-index: 900; width: 280px; max-height: calc(100vh - 56px); overflow-y: auto;
+  background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(1, 4, 9, 0.35); padding: 10px 12px;
+}
+:root[data-theme="light"] .settings-panel { box-shadow: 0 8px 24px rgba(31, 35, 40, 0.15); }
+.settings-panel.hidden { display: none; }
+.set-group { padding: 8px 0; border-bottom: 1px solid var(--border-muted); }
+.set-group:last-child { border-bottom: 0; }
+.set-title { font-size: 11px; font-weight: 600; letter-spacing: 0.4px; color: var(--text-2); margin-bottom: 6px; }
+.set-seg { display: flex; }
+.set-seg .btn-ghost { flex: 1; border-radius: 0; margin-left: -1px; }
+.set-seg .btn-ghost:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+.set-seg .btn-ghost:last-child { border-radius: 0 6px 6px 0; }
+.set-seg .btn-ghost.active, .set-row .btn-ghost.active { color: var(--accent); border-color: var(--accent); background: var(--accent-bg); position: relative; }
+.set-row { display: flex; align-items: center; gap: 6px; }
+.set-value { min-width: 28px; text-align: center; font: 12px var(--mono); color: var(--text); }
 .brand { font-weight: 700; color: var(--brand); padding: 0 8px; letter-spacing: 0.5px; }
 #tabs { display: flex; gap: 4px; flex-wrap: nowrap; overflow-x: auto; max-width: 60%; }
 #tabs::-webkit-scrollbar { height: 0; }
@@ -220,7 +276,7 @@ body.browser-mode #work { flex: 2 1 0; min-width: 360px; } /* 브라우저 : 터
 .pane .head {
   position: absolute; top: 0; left: 0; right: 0; height: 22px; padding: 0 8px;
   display: flex; align-items: center; justify-content: space-between;
-  background: rgba(22, 27, 34, 0.92); color: var(--text-2); font-size: 11px; z-index: 5;
+  background: var(--overlay); color: var(--text-2); font-size: 11px; z-index: 5;
 }
 .pane .head .kind { color: var(--accent); font-weight: 600; letter-spacing: 0.5px; }
 .resume-box { margin-top: 8px; padding: 8px; border: 1px solid var(--accent); border-radius: 6px; background: var(--accent-bg); }

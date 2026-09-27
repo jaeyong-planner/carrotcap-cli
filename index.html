@@ -14,15 +14,51 @@
 
     <!-- 상단 탭 바 -->
     <header id="tabbar">
+      <button id="settings-open" class="settings-btn" title="설정 (테마 · 글꼴 · 모드 · 보기 · 파일)" aria-label="설정" aria-haspopup="dialog" aria-controls="settings-panel" aria-expanded="false">⚙</button>
       <div class="brand">🥕 CARROTCAP</div>
       <div id="tabs"></div>
       <button id="new-tab" title="새 탭 (Ctrl+Shift+T)">＋</button>
       <div class="spacer"></div>
-      <button id="toggle-browser" class="btn-ghost" title="브라우저 모드: 가운데 브라우저 + 오른쪽 에이전트 터미널">브라우저</button>
-      <button id="toggle-composer" class="btn-ghost" title="입력창 보이기/숨기기 (Ctrl+Shift+Space: 입력창으로 이동)">입력창</button>
-      <button id="open-aor-editor" class="btn-ghost" title="CLAUDE.md(AOR) 편집">AOR</button>
       <span id="aor-status" class="badge"></span>
     </header>
+
+    <!-- 설정 (task-026): 테마·글꼴·모드·보기·파일을 한곳에 -->
+    <div id="settings-panel" class="settings-panel hidden" role="dialog" aria-label="설정">
+      <div class="set-group">
+        <div class="set-title">화면 테마</div>
+        <div class="set-seg" id="theme-choice">
+          <button class="btn-ghost" data-theme-choice="dark" title="검정 배경">다크</button>
+          <button class="btn-ghost" data-theme-choice="light" title="화이트 배경 (터미널 색도 밝은 배경용)">화이트</button>
+          <button class="btn-ghost" data-theme-choice="system" title="Windows 설정을 따름">시스템</button>
+        </div>
+      </div>
+      <div class="set-group">
+        <div class="set-title">터미널 글꼴 크기</div>
+        <div class="set-row">
+          <button id="font-dec" class="btn-ghost" title="작게">−</button>
+          <span id="font-size-value" class="set-value">14</span>
+          <button id="font-inc" class="btn-ghost" title="크게">＋</button>
+        </div>
+      </div>
+      <div class="set-group">
+        <div class="set-title">모드</div>
+        <label class="row"><input type="checkbox" id="aor-mode-toggle" /> AOR 모드</label>
+        <label class="row"><input type="checkbox" id="aor-toggle" /> AIOps 모드</label>
+        <div class="mode-hint muted small">AOR: routed PowerShell. AIOps: AOR + Claude(코딩)/Codex(리뷰)/Grok(미디어) 협업 구조 자동 세팅</div>
+      </div>
+      <div class="set-group">
+        <div class="set-title">보기</div>
+        <div class="set-row">
+          <button id="toggle-browser" class="btn-ghost" title="브라우저 모드: 가운데 브라우저 + 오른쪽 에이전트 터미널">브라우저</button>
+          <button id="toggle-composer" class="btn-ghost" title="입력창 보이기/숨기기 (Ctrl+Shift+Space: 입력창으로 이동)">입력창</button>
+        </div>
+      </div>
+      <div class="set-group">
+        <div class="set-title">파일</div>
+        <button id="open-aor-editor" class="btn-ghost full" title="CLAUDE.md(AOR) 편집">AOR 규칙 (CLAUDE.md) 편집</button>
+        <button id="keys-open" class="btn-ghost full" title="%USERPROFILE%\.carrotcap\keys.env 를 메모장으로 엽니다 (TYPESAFE_API_KEY · CLM_API_KEY)">🔑 API 키 (keys.env)</button>
+      </div>
+    </div>
 
     <div id="body">
       <!-- 좌측 사이드바 -->
@@ -62,7 +98,6 @@
             <button class="btn-flow" data-flow="clm" title="Claude + CLM-8B 판단 (CLM 서버가 없으면 Jev로 대체) — 먼저 판단할 곳을 찾고 요청 대기">CLM</button>
             <button id="skills-open" class="btn-flow" title="이 프로젝트에서 Claude가 쓸 스킬(플러그인)을 고르고 설치">SKILLS</button>
           </div>
-          <button id="keys-open" class="btn-ghost full" title="%USERPROFILE%\.carrotcap\keys.env 를 메모장으로 엽니다 (TYPESAFE_API_KEY · CLM_API_KEY)">🔑 API 키 (keys.env)</button>
           <div id="flow-status" class="flow-status muted small">프로젝트 폴더를 선택한 뒤 SETUP을 누르세요</div>
           <!-- 이전 세션 이어하기 (task-013) -->
           <div id="resume-box" class="resume-box hidden">
@@ -88,12 +123,6 @@
           <button id="close-pane" class="btn-ghost full" title="활성 페인 닫기">✕ 활성 페인 닫기</button>
         </div>
 
-        <div class="side-section">
-          <div class="side-head"><span>MODE</span></div>
-          <label class="row"><input type="checkbox" id="aor-mode-toggle" /> AOR 모드</label>
-          <label class="row"><input type="checkbox" id="aor-toggle" /> AIOps 모드</label>
-          <div class="mode-hint muted small">AOR: routed PowerShell. AIOps: AOR + Claude(코딩)/Codex(리뷰)/Grok(미디어) 협업 구조 자동 세팅</div>
-        </div>
       </aside>
 
       <!-- 브라우저 모드 (task-015): 가운데 브라우저, 오른쪽(#work)은 에이전트 터미널 -->

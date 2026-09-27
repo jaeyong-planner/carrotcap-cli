@@ -378,6 +378,17 @@ put('skills/typesafe-ai/SKILL.md', '# Build with TypeSafe');
     const outMk = await ev(`window.carrotcap.skillsAddMarketplace(${JSON.stringify(tmp)}, 'typesafe')`);
     check('add-marketplace only for catalog entries with their own marketplace, only in allowed folders', badMk.ok === false && outMk.ok === false && /폴더/.test(outMk.error || ''), JSON.stringify([badMk, outMk]));
 
+    console.log('-- task-026 fix: official entries never offer "마켓 추가" (the install adds that marketplace)');
+    fs.renameSync(market, market + '.away');
+    try {
+      const cat = await ev(`window.carrotcap.skillsCatalog()`);
+      check('official marketplace missing → official entries still "ready", typesafe reports its own marketplace',
+        cat.catalog.filter((c) => c.marketplace === 'claude-plugins-official').every((c) => c.marketReady === true)
+        && cat.catalog.find((c) => c.id === 'typesafe').marketReady === true, JSON.stringify(cat.catalog.map((c) => [c.id, c.marketReady])));
+    } finally {
+      fs.renameSync(market + '.away', market);
+    }
+
     console.log('-- task-025: "API 키" button → keys.env');
     const keysFile = process.env.CARROTCAP_KEYS_FILE;
     await ev(`document.querySelector('#keys-open').click(), true`);

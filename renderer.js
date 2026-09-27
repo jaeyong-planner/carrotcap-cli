@@ -42,6 +42,9 @@
 
   // ---------- 부트 ----------
   async function boot() {
+    // task-026: the saved theme first, so a white-theme start never shows the dark page (review r1)
+    state.settings = await api.getSettings();
+    applyTheme();
     // task-021: xterm measures the cell size when a terminal opens — load the bundled
     // JetBrains Mono first so the first panes do not keep fallback-font metrics.
     try {
@@ -51,7 +54,6 @@
       ]);
     } catch { /* fallback fonts in the stack */ }
     try { state.platform = await api.platform(); } catch { state.platform = 'win32'; }
-    state.settings = await api.getSettings();
     try {
       const st = await api.aorStatus();
       state.aorEngineFound = !!st.engineFound;
@@ -197,15 +199,128 @@
   // styles.css :root 팔레트와 같은 색. ANSI 16색을 기능별로 고정해 CLI 출력의
   // 성공(green)·경고(yellow)·에러(red)·경로/명령(blue·cyan)이 앱 UI와 같은 뜻으로 보인다.
   const TERM_FONT = "'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'IBM Plex Mono', 'SF Mono', Consolas, monospace";
-  const TERM_THEME = {
-    background: '#0D1117', foreground: '#E6EDF3',
-    cursor: '#58A6FF', cursorAccent: '#0D1117',
-    selectionBackground: 'rgba(88, 166, 255, 0.30)',
-    black: '#484F58', red: '#F85149', green: '#3FB950', yellow: '#D29922',
-    blue: '#58A6FF', magenta: '#BC8CFF', cyan: '#39C5CF', white: '#B1BAC4',
-    brightBlack: '#6E7681', brightRed: '#FF7B72', brightGreen: '#56D364', brightYellow: '#E3B341',
-    brightBlue: '#79C0FF', brightMagenta: '#D2A8FF', brightCyan: '#56D4DD', brightWhite: '#FFFFFF'
+  const TERM_THEMES = {
+    dark: {
+      background: '#0D1117', foreground: '#E6EDF3',
+      cursor: '#58A6FF', cursorAccent: '#0D1117',
+      selectionBackground: 'rgba(88, 166, 255, 0.30)',
+      black: '#484F58', red: '#F85149', green: '#3FB950', yellow: '#D29922',
+      blue: '#58A6FF', magenta: '#BC8CFF', cyan: '#39C5CF', white: '#B1BAC4',
+      brightBlack: '#6E7681', brightRed: '#FF7B72', brightGreen: '#56D364', brightYellow: '#E3B341',
+      brightBlue: '#79C0FF', brightMagenta: '#D2A8FF', brightCyan: '#56D4DD', brightWhite: '#FFFFFF'
+    },
+    // task-026: white background. CLIs assume a dark terminal and print "white"/"bright" text,
+    // so white/brightWhite map to readable grays and every color is dark enough for white.
+    light: {
+      background: '#FFFFFF', foreground: '#1F2328',
+      cursor: '#0969DA', cursorAccent: '#FFFFFF',
+      selectionBackground: 'rgba(9, 105, 218, 0.20)',
+      black: '#24292F', red: '#CF222E', green: '#116329', yellow: '#7D4E00',
+      blue: '#0969DA', magenta: '#8250DF', cyan: '#1B7C83', white: '#59636E',
+      brightBlack: '#57606A', brightRed: '#A40E26', brightGreen: '#1A7F37', brightYellow: '#633C01',
+      brightBlue: '#0550AE', brightMagenta: '#6639BA', brightCyan: '#136061', brightWhite: '#424A53'
+    }
   };
+  // Per theme: on white, bold must not switch to the (lighter) bright colors, and any color a
+  // program picks itself (256-color / truecolor) is darkened to at least 4.5:1 (WCAG AA).
+  const TERM_OPTS = {
+    dark: { drawBoldTextInBrightColors: true, minimumContrastRatio: 1 },
+    light: { drawBoldTextInBrightColors: false, minimumContrastRatio: 4.5 }
+  };
+  // ---------- 테마 (task-026): dark / light / system ----------
+  const darkQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+  function themePref() {
+    const t = state.settings && state.settings.ui && state.settings.ui.theme;
+    return t === 'light' || t === 'system' ? t : 'dark';
+  }
+  function resolvedTheme() {
+    const p = themePref();
+    if (p === 'system') return darkQuery && !darkQuery.matches ? 'light' : 'dark';
+    return p;
+  }
+  function termFontSize() {
+    const n = state.settings && state.settings.ui && state.settings.ui.fontSize;
+    return Number.isInteger(n) && n >= 8 && n <= 32 ? n : 14;
+  }
+  function eachLeaf(fn) {
+    for (const t of state.tabs) walkPanes(state.panes.get(t.rootPaneId), (p) => { if (p.type === 'leaf') fn(p); });
+  }
+  function applyTheme() {
+    const name = resolvedTheme();
+    document.documentElement.dataset.theme = name;
+    eachLeaf((leaf) => {
+      if (!leaf.term) return;
+      leaf.term.options.theme = TERM_THEMES[name];
+      Object.assign(leaf.term.options, TERM_OPTS[name]);
+    });
+    renderSettingsPanel();
+  }
+  if (darkQuery && darkQuery.addEventListener) darkQuery.addEventListener('change', () => { if (themePref() === 'system') applyTheme(); });
+
+  // ---------- 설정 패널 (task-026) ----------
+  function renderSettingsPanel() {
+    const p = themePref();
+    document.querySelectorAll('[data-theme-choice]').forEach((b) => {
+      b.classList.toggle('active', b.dataset.themeChoice === p);
+      b.setAttribute('aria-pressed', String(b.dataset.themeChoice === p));
+    });
+    const v = $('#font-size-value');
+    if (v) v.textContent = String(termFontSize());
+  }
+  function settingsOpen() { return !$('#settings-panel').classList.contains('hidden'); }
+  function setSettingsOpen(open) {
+    const panel = $('#settings-panel');
+    const trigger = $('#settings-open');
+    // closing while focus is inside: give it back to ⚙ so it never sits in a hidden panel (review r1)
+    if (!open && panel.contains(document.activeElement)) trigger.focus();
+    panel.classList.toggle('hidden', !open);
+    trigger.setAttribute('aria-expanded', String(open));
+    if (open) {
+      renderSettingsPanel();
+      const first = panel.querySelector('[data-theme-choice].active') || panel.querySelector('button, input');
+      if (first) first.focus();
+    }
+  }
+  // Only ui.theme / ui.fontSize change here; main keeps everything else as it is on disk.
+  // Resolves true once saved; on failure state.settings is put back and nothing is applied (review r1).
+  async function saveUi(patch) {
+    state.settings = state.settings || {};
+    const prevUi = state.settings.ui;
+    state.settings.ui = { ...(prevUi || {}), ...patch };
+    let ok = false;
+    try { ok = (await api.setSettings(state.settings)) !== false; } catch { ok = false; }
+    if (!ok) {
+      state.settings.ui = prevUi;
+      setFlowStatus('설정을 저장하지 못해 이전 값으로 되돌렸습니다', 'warn');
+      renderSettingsPanel();
+    }
+    return ok;
+  }
+  async function setTheme(pref) {
+    if (!['dark', 'light', 'system'].includes(pref) || pref === themePref()) return;
+    if (await saveUi({ theme: pref })) applyTheme();
+  }
+  async function setFontSize(n) {
+    const size = Math.min(32, Math.max(8, Math.round(n)));
+    if (size === termFontSize()) return;
+    if (!(await saveUi({ fontSize: size }))) return;
+    eachLeaf((leaf) => { if (leaf.term) leaf.term.options.fontSize = size; });
+    fitAllIn(rootOfTab(state.activeTabId)); // other tabs refit when they are activated
+    renderSettingsPanel();
+  }
+  function bindSettingsPanel() {
+    $('#settings-open').onclick = (e) => { e.stopPropagation(); setSettingsOpen(!settingsOpen()); };
+    document.querySelectorAll('[data-theme-choice]').forEach((b) => { b.onclick = () => setTheme(b.dataset.themeChoice); });
+    $('#font-dec').onclick = () => setFontSize(termFontSize() - 1);
+    $('#font-inc').onclick = () => setFontSize(termFontSize() + 1);
+    // closes on Esc and on a click outside (the panel itself and the ⚙ button stay)
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && settingsOpen()) { setSettingsOpen(false); $('#settings-open').focus(); e.stopPropagation(); }
+    }, true);
+    document.addEventListener('mousedown', (e) => {
+      if (settingsOpen() && !e.target.closest('#settings-panel') && !e.target.closest('#settings-open')) setSettingsOpen(false);
+    });
+  }
 
   // ---------- 페인 / 분할 트리 ----------
   function createLeafPane() {
@@ -457,12 +572,14 @@
       const ok = await setupAiopsWorkflow();
       if (ok) state.aiopsAutoSetupDone.add(state.folder.rootPath);
     }
+    const themeName = resolvedTheme();
     const term = new Terminal({
       fontFamily: (state.settings && state.settings.ui && state.settings.ui.fontFamily) || TERM_FONT,
-      fontSize: (state.settings && state.settings.ui && state.settings.ui.fontSize) || 14,
+      fontSize: termFontSize(),
       lineHeight: 1.15,
       cursorBlink: true,
-      theme: TERM_THEME
+      theme: TERM_THEMES[themeName],
+      ...TERM_OPTS[themeName]
     });
     const fit = FitAddon ? new FitAddon() : null;
     if (fit) term.loadAddon(fit);
@@ -1249,6 +1366,7 @@
 
   // ---------- 글로벌 이벤트 ----------
   function bindGlobalEvents() {
+    bindSettingsPanel(); // task-026
     bindComposer();
     bindResume();
     newTabBtn.onclick = () => createTab();

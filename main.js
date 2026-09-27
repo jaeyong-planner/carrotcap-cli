@@ -2,7 +2,7 @@
 // 책임: BrowserWindow 띄우기, node-pty로 실제 셸 스폰, IPC로 렌더러와 통신,
 //      폴더 다이얼로그/트리/검색, AOR 엔진(routed shell) 통합 진입점.
 
-const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, Menu, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -140,7 +140,27 @@ function applyRendererSettings(disk, input) {
     next.aor = aor;
   }
   if (typeof v.defaultProjectPath === 'string') next.defaultProjectPath = v.defaultProjectPath;
+  // task-026: the settings panel changes the theme and the terminal font size (fontFamily stays as on disk)
+  if (v.ui && ('theme' in v.ui || 'fontSize' in v.ui)) {
+    const ui = (base.ui && typeof base.ui === 'object' && !Array.isArray(base.ui)) ? { ...base.ui } : {};
+    if ('theme' in v.ui) ui.theme = v.ui.theme;
+    if ('fontSize' in v.ui) ui.fontSize = v.ui.fontSize;
+    next.ui = ui;
+  }
   return next;
+}
+
+// task-026: theme → the window's own background (before the page paints) and native widgets
+function uiThemeOf(settings) {
+  const t = settings && settings.ui && settings.ui.theme;
+  return UI_THEMES.includes(t) ? t : 'dark';
+}
+const WINDOW_BG = { dark: '#0D1117', light: '#FFFFFF' };
+function applyNativeTheme(settings) {
+  const pref = uiThemeOf(settings);
+  try { nativeTheme.themeSource = pref; } catch { /* not in tests */ }
+  const dark = pref === 'dark' || (pref === 'system' && nativeTheme && nativeTheme.shouldUseDarkColors);
+  return dark ? WINDOW_BG.dark : WINDOW_BG.light;
 }
 
 function validateSettings(input) {
@@ -193,7 +213,7 @@ function validateSettings(input) {
   if (input.ui && typeof input.ui === 'object' && !Array.isArray(input.ui)) {
     const ui = {};
     if (typeof input.ui.theme === 'string' && UI_THEMES.includes(input.ui.theme)) ui.theme = input.ui.theme;
-    if (typeof input.ui.fontSize === 'number' && Number.isFinite(input.ui.fontSize) && input.ui.fontSize >= 8 && input.ui.fontSize <= 64) {
+    if (typeof input.ui.fontSize === 'number' && Number.isFinite(input.ui.fontSize) && input.ui.fontSize >= 8 && input.ui.fontSize <= 32) {
       ui.fontSize = Math.floor(input.ui.fontSize);
     }
     if (typeof input.ui.fontFamily === 'string') ui.fontFamily = clipString(input.ui.fontFamily, 256);
@@ -1442,7 +1462,7 @@ function createWindow() {
     height: 900,
     minWidth: 900,
     minHeight: 600,
-    backgroundColor: '#0f0f12',
+    backgroundColor: applyNativeTheme(loadSettings() || {}), // task-026: no dark flash in the light theme
     title: 'CARROTCAP CLI',
     autoHideMenuBar: true,
     webPreferences: {
@@ -1517,9 +1537,13 @@ function settingsBaseForWrite() {
   return ensureBuiltinCli(migrateSettings(base).settings).settings;
 }
 handle('settings:set', (_e, next) => {
-  saveSettings(applyRendererSettings(settingsBaseForWrite(), next));
+  const saved = applyRendererSettings(settingsBaseForWrite(), next);
+  saveSettings(saved);
   cliStatusCache = { at: 0, value: null }; // CLI commands may have changed
   compressHookCache = null;                // aor.compressHook may have changed
+  // task-026: theme picked in the settings panel → window background + native widgets
+  const bg = applyNativeTheme(saved);
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setBackgroundColor(bg);
   return true;
 });
 
@@ -1989,6 +2013,13 @@ const browserMode = require('./main-browser').setupBrowser({
 });
 
 app.whenReady().then(() => {
+  // task-026: with the "system" theme, the window background follows a Windows theme change too
+  // (the page itself follows through prefers-color-scheme) — review r1
+  nativeTheme.on('updated', () => {
+    const s = loadSettings() || {};
+    if (uiThemeOf(s) !== 'system' || !mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.setBackgroundColor(nativeTheme.shouldUseDarkColors ? WINDOW_BG.dark : WINDOW_BG.light);
+  });
   // Self-heal the `carrotcap` CLI registration. Runs only when packaged.
   // This makes a single GUI launch sufficient to repair a broken CLI install
   // on any future PC, without re-running the installer.

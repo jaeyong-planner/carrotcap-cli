@@ -35,6 +35,13 @@ if (corruptSettings) {
   fs.writeFileSync(path.join(userDataDir, 'settings.json'), CORRUPT_TEXT);
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// task-026: poll until cond() is truthy (or time runs out) — returns the last result
+async function waitFor(cond, { timeoutMs = 5000, stepMs = 100 } = {}) {
+  const end = Date.now() + timeoutMs;
+  let v;
+  do { v = await cond(); if (v) return v; await sleep(stepMs); } while (Date.now() < end);
+  return v;
+}
 
 let pass = 0;
 let fail = 0;
@@ -312,6 +319,63 @@ const PROBE = `(async () => {
   check('cli:status finds installed claude', status && status.claude === true);
   const seededCli = await ev(`window.carrotcap.getSettings().then((s) => Object.keys(s.cli).join(','))`);
   check('seeded settings have no gemini', !/gemini|agy|antigravity/.test(seededCli) && /grok/.test(seededCli), seededCli);
+
+  console.log('-- settings panel and themes (task-026)');
+  const readUi = () => { try { return JSON.parse(fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf8')).ui || {}; } catch { return {}; } };
+  check('⚙ is the first thing in the tab bar (top-left)', (await ev(`document.querySelector('#tabbar').firstElementChild.id`)) === 'settings-open');
+  check('settings moved into the panel; header and sidebar no longer have them',
+    await ev(`['toggle-browser','toggle-composer','open-aor-editor','aor-toggle','aor-mode-toggle','keys-open'].every((id) => document.getElementById(id) && document.getElementById(id).closest('#settings-panel'))
+      && !document.querySelector('#tabbar #toggle-browser') && ![...document.querySelectorAll('#sidebar .side-head')].some((h) => /MODE/.test(h.textContent))`));
+  check('panel starts closed', await ev(`document.querySelector('#settings-panel').classList.contains('hidden') && document.querySelector('#settings-open').getAttribute('aria-expanded') === 'false'`));
+  await ev(`document.querySelector('#settings-open').click(), true`);
+  check('⚙ opens it; dark is the default choice', await ev(`!document.querySelector('#settings-panel').classList.contains('hidden') && document.querySelector('#settings-open').getAttribute('aria-expanded') === 'true'
+    && document.querySelector('[data-theme-choice="dark"]').classList.contains('active') && document.documentElement.dataset.theme === 'dark'`));
+  const uiBefore = JSON.parse(fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf8'));
+  await ev(`document.querySelector('[data-theme-choice="light"]').click(), true`);
+  check('white theme: page and every terminal turn white at once', await waitFor(async () => ev(`document.documentElement.dataset.theme === 'light' && getComputedStyle(document.body).backgroundColor === 'rgb(255, 255, 255)'
+    && [...document.querySelectorAll('.xterm-viewport')].length > 0 && [...document.querySelectorAll('.xterm-viewport')].every((v) => getComputedStyle(v).backgroundColor === 'rgb(255, 255, 255)')`), { timeoutMs: 3000 }));
+  check('terminal text is dark on white', await ev(`/rgb\\((3[01]|2\\d), (3[0-9]|2\\d), (4[0-9]|3\\d)\\)/.test(getComputedStyle(document.querySelector('.xterm-rows')).color)`), await ev(`getComputedStyle(document.querySelector('.xterm-rows')).color`));
+  const afterLight = JSON.parse(fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf8'));
+  check('saved as ui.theme = light; cli / aor untouched', afterLight.ui.theme === 'light' && JSON.stringify(afterLight.cli) === JSON.stringify(uiBefore.cli) && JSON.stringify(afterLight.aor) === JSON.stringify(uiBefore.aor));
+  const size0 = await ev(`Number(document.querySelector('#font-size-value').textContent)`);
+  await ev(`document.querySelector('#font-inc').click(), true`);
+  check('font +1: every terminal and settings.json follow', await waitFor(async () => readUi().fontSize === size0 + 1, { timeoutMs: 3000 })
+    && (await ev(`Number(document.querySelector('#font-size-value').textContent)`)) === size0 + 1
+    && (await waitFor(async () => ev(`[...document.querySelectorAll('.tab-page.active .xterm-rows')].every((r) => getComputedStyle(r).fontSize === '${size0 + 1}px')`), { timeoutMs: 3000 })), JSON.stringify(readUi())); // hidden tabs re-render when shown
+  // a terminal opened after the change and one in another tab get the same theme and size (review task-026 r2)
+  const nPanes = await ev(`document.querySelectorAll('.tab-page.active .xterm').length`);
+  await ev(`document.querySelector('.btn-split[data-dir="right"]').click(), true`);
+  check('a new split terminal opens white and at the new size', await waitFor(async () => ev(`(() => { const x = [...document.querySelectorAll('.tab-page.active .xterm')]; if (x.length !== ${nPanes} + 1) return false;
+    const last = x[x.length - 1]; return getComputedStyle(last.querySelector('.xterm-viewport')).backgroundColor === 'rgb(255, 255, 255)' && getComputedStyle(last.querySelector('.xterm-rows')).fontSize === '${size0 + 1}px'; })()`), { timeoutMs: 8000 }));
+  await ev(`document.querySelector('#close-pane').click(), true`);
+  const otherTab = await ev(`(() => { const t = [...document.querySelectorAll('.tab')].find((el) => !el.classList.contains('active')); if (!t) return false; t.click(); return true; })()`);
+  if (otherTab) {
+    check('another tab, once shown, has the new size and the white palette', await waitFor(async () => ev(`[...document.querySelectorAll('.tab-page.active .xterm')].every((x) => getComputedStyle(x.querySelector('.xterm-rows')).fontSize === '${size0 + 1}px' && getComputedStyle(x.querySelector('.xterm-viewport')).backgroundColor === 'rgb(255, 255, 255)')`), { timeoutMs: 3000 }));
+    await ev(`[...document.querySelectorAll('.tab')][0].click(), true`);
+    await sleep(400); // a tab switch focuses its terminal on a short timer — let it land first
+  }
+  await ev(`document.querySelector('#settings-open').getAttribute('aria-expanded') === 'true' || document.querySelector('#settings-open').click(), true`);
+  await ev(`document.querySelector('#font-dec').click(), true`);
+  await waitFor(async () => readUi().fontSize === size0, { timeoutMs: 3000 });
+  await ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })), true`);
+  check('Esc closes the panel; focus back on ⚙', await ev(`document.querySelector('#settings-panel').classList.contains('hidden') && document.activeElement.id === 'settings-open'`), await ev(`JSON.stringify({ hidden: document.querySelector('#settings-panel').classList.contains('hidden'), active: document.activeElement.id || document.activeElement.className, expanded: document.querySelector('#settings-open').getAttribute('aria-expanded') })`));
+  await ev(`document.querySelector('#settings-open').click(), true`);
+  check('opening moves focus into the panel (the chosen theme)', await ev(`document.activeElement.dataset.themeChoice === 'light'`));
+  await ev(`document.querySelector('#pane-area').dispatchEvent(new MouseEvent('mousedown', { bubbles: true })), true`);
+  check('a click outside closes it; focus not left in the hidden panel', await ev(`document.querySelector('#settings-panel').classList.contains('hidden') && !document.querySelector('#settings-panel').contains(document.activeElement)`));
+  // the OS switching dark ↔ light while "system" is chosen (CDP media emulation fires the change listener)
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
+  await ev(`document.querySelector('#settings-open').click(); document.querySelector('[data-theme-choice="system"]').click(); true`);
+  check('system theme: OS dark → dark', await waitFor(async () => (await ev(`document.documentElement.dataset.theme`)) === 'dark' && readUi().theme === 'system', { timeoutMs: 3000 }));
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] });
+  check('…the OS turns light → page and open terminals turn white without a click', await waitFor(async () => ev(`document.documentElement.dataset.theme === 'light'
+    && [...document.querySelectorAll('.tab-page.active .xterm-viewport')].every((v) => getComputedStyle(v).backgroundColor === 'rgb(255, 255, 255)')`), { timeoutMs: 3000 }));
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
+  check('…and back to dark', await waitFor(async () => ev(`document.documentElement.dataset.theme === 'dark'`), { timeoutMs: 3000 }));
+  await send('Emulation.setEmulatedMedia', { features: [] });
+  await ev(`document.querySelector('[data-theme-choice="dark"]').click(), true`);
+  check('back to dark', await waitFor(async () => (await ev(`document.documentElement.dataset.theme`)) === 'dark' && readUi().theme === 'dark', { timeoutMs: 3000 }));
+  await ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })), true`);
 
   console.log('-- AOR badge / AIOps default');
   const engineFound = (await ev(`window.carrotcap.aorStatus()`)).engineFound;

@@ -848,6 +848,16 @@ console.log('-- settings persist: renderer saves never drop what the user set (t
   check('compressHook toggle still works', applyRendererSettings(disk, { aor: { compressHook: false } }).aor.compressHook === false);
   check('renderer cannot inject a cli entry', !('evil' in applyRendererSettings(disk, { cli: { evil: { command: 'calc', args: [] } } }).cli));
   check('missing/corrupt disk file: only renderer keys', JSON.stringify(applyRendererSettings(null, { defaultProjectPath: 'C:\\p' })) === '{"defaultProjectPath":"C:\\\\p"}');
+  // task-026: the settings panel writes ui.theme and ui.fontSize — nothing else under ui
+  const themed = applyRendererSettings(disk, { ui: { theme: 'light', fontSize: 16, fontFamily: 'Evil Mono' } });
+  check('theme + font size from the settings panel applied', themed.ui.theme === 'light' && themed.ui.fontSize === 16);
+  check('…fontFamily and the rest kept as on disk', themed.ui.fontFamily === 'D2Coding' && JSON.stringify(themed.cli) === JSON.stringify(disk.cli) && themed.aor.engineRoot === 'D:\\my-engine');
+  check('unknown theme / out-of-range size dropped', applyRendererSettings(disk, { ui: { theme: 'neon', fontSize: 3 } }).ui.theme === undefined && applyRendererSettings(disk, { ui: { theme: 'neon', fontSize: 3 } }).ui.fontSize === 15);
+  check('system theme accepted', applyRendererSettings({}, { ui: { theme: 'system' } }).ui.theme === 'system');
+  // the same 8-32 range as the panel: a larger value never reaches disk (review task-026 r1)
+  check('font size 32 accepted, 33 and 64 keep the disk value', applyRendererSettings(disk, { ui: { fontSize: 32 } }).ui.fontSize === 32
+    && applyRendererSettings(disk, { ui: { fontSize: 33 } }).ui.fontSize === 15 && applyRendererSettings(disk, { ui: { fontSize: 64 } }).ui.fontSize === 15);
+  check('font size 8 accepted, 7 dropped', applyRendererSettings(disk, { ui: { fontSize: 8 } }).ui.fontSize === 8 && applyRendererSettings(disk, { ui: { fontSize: 7 } }).ui.fontSize === 15);
 
   const r1 = ensureBuiltinCli({ cli: { claude: { command: 'claude', args: [] } }, ui: {} });
   check('missing codex/grok restored', r1.changed && r1.settings.cli.codex.command === 'codex' && r1.settings.cli.grok.command === 'grok' && r1.settings.cli.claude.command === 'claude');

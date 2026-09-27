@@ -678,7 +678,10 @@ function setupSkills(deps) {
         // what the window shows for a local plugin, kept for the check after install (review r6)
         if (digest) localShown.set(id, { sha: null, digest }); else localShown.delete(id);
         const mkt = marketOf(id);
-        return { id, label: label || id, maker, thirdParty: !!thirdParty, source, desc, inspect, marketplace: mkt, marketReady: marketReady(mkt, configDir) };
+        // only an entry from its own marketplace needs "마켓 추가"; the official one is added by
+        // the install itself when missing (task-023), so it always counts as ready here (task-026 fix)
+        const ready = mkt === MARKETPLACE ? true : marketReady(mkt, configDir);
+        return { id, label: label || id, maker, thirdParty: !!thirdParty, source, desc, inspect, marketplace: mkt, marketReady: ready };
       }),
       presets: Object.fromEntries(Object.entries(PRESETS).map(([k, v]) => [k, { label: v.label, ids: v.ids.slice() }])),
     };
