@@ -225,12 +225,11 @@
   // 본문이 남아 있으면 페이지 유래로 본다 — 그 텍스트는 에이전트 페인에만, 보호 경로로만 간다.
   const MAX_TAINT = 50;
   const MIN_SNIPPET = 8; // 너무 짧은 본문은 오탐을 막으려고 레벨까지 붙여 비교
-  function taintOf(text) {
-    if (typeof text !== 'string' || !text) return null;
-    for (let i = st.taint.length - 1; i >= 0; i--) {
-      if (st.taint[i].snippets.some((s) => text.includes(s))) return st.taint[i];
-    }
-    return null;
+  // Every inserted block whose text is (still) in `text` — blocks from several documents can
+  // sit in the input box together, and each one is checked (review r2).
+  function taintsOf(text) {
+    if (typeof text !== 'string' || !text) return [];
+    return st.taint.filter((t) => t.snippets.some((s) => text.includes(s)));
   }
   function isAgentTarget(target) {
     return !!(target && AGENT_CLIS.has(target.cli) && target.bracketedPaste);
@@ -241,7 +240,8 @@
   //   반환: { text, commit } | { blocked: '이유' }
   async function decorate(text, projectRoot, target) {
     const plain = { text, commit: () => {} };
-    const tainted = taintOf(text);
+    const taints = taintsOf(text);
+    const tainted = taints.length > 0;
     if (!tainted && (!st.active || !st.open)) return plain;
     if (tainted && (!st.active || !st.open)) {
       return { blocked: '입력 내용에 브라우저 콘솔 에러 줄이 있습니다 — 브라우저 모드에서 에이전트 페인으로 보내거나 그 줄을 지우세요' };
@@ -253,7 +253,7 @@
       return { blocked: '브라우저 주석·콘솔 에러는 CLAUDE/CODEX 버튼으로 실행한 에이전트 페인에만 보낼 수 있습니다' };
     }
     // 넣어 둔 에러는 그 문서의 것 — 페이지가 바뀌었으면 새 문서 설명으로 보내지 않는다.
-    if (tainted && tainted.gen !== st.pageGen) {
+    if (taints.some((t) => t.gen !== st.pageGen)) {
       return { blocked: '페이지가 바뀌었습니다 — 넣어 둔 콘솔 에러 줄을 지우고 새로 넣어 주세요' };
     }
     const ctx = await api.browserContext({ projectRoot, screenshot: st.pins.length > 0, includeErrors: false, gen: st.pageGen });
@@ -280,10 +280,12 @@
     // 실행되지 않는다 (줄바꿈은 이미 제거되어 주석을 벗어날 수 없음). 에이전트에게는 그냥 읽히는 텍스트.
     const block = lines.map((l) => `# ${l}`).join('\n') + '\n' + (text || '(주석 위치의 문제를 확인해줘)');
     const commit = () => {
-      // 넣은 시점까지의 에러만 "보냄" — 그 뒤에 난 에러는 계속 새 에러로 남는다. 한 번만.
-      if (tainted && !tainted.committed) {
-        tainted.committed = true;
-        api.browserCommit(tainted.mark);
+      // 넣은 시점까지의 에러만 "보냄" — 그 뒤에 난 에러는 계속 새 에러로 남는다. 이번에 함께 간
+      // 블록 모두를 한 번에: main의 커서는 가장 늦은 표시까지 가고, 각 블록은 한 번만 처리된다.
+      const fresh = taints.filter((t) => !t.committed);
+      if (fresh.length) {
+        for (const t of fresh) t.committed = true;
+        api.browserCommit(Math.max(...fresh.map((t) => t.mark)));
       }
       // 이번에 보낸 핀만 지운다 — 전송을 준비하는 사이 새로 찍은 핀은 목록·페이지 모두 남는다 (review r2).
       const sent = pins.map((p) => p.n);
@@ -366,5 +368,5 @@
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind);
   else bind();
 
-  window.CarrotcapBrowser = { decorate, isActive: () => st.active && st.open, isTainted: (t) => !!taintOf(t), isAgentTarget };
+  window.CarrotcapBrowser = { decorate, isActive: () => st.active && st.open, isTainted: (t) => taintsOf(t).length > 0, isAgentTarget };
 })();

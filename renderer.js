@@ -724,6 +724,10 @@
     }
     // task-015: 브라우저 모드면 주석·콘솔 에러·캡처 경로를 [브라우저 컨텍스트]로 앞에 붙인다.
     let prepared = { text: typed, commit: () => {} };
+    // task-019 (review r2): page-derived console-error text may only leave through the guarded
+    // context path — any failure or unexpected result is fail-closed.
+    const pageDerived = !!(window.CarrotcapBrowser && typeof window.CarrotcapBrowser.isTainted === 'function'
+      && window.CarrotcapBrowser.isTainted(typed));
     try {
       if (window.CarrotcapBrowser) {
         prepared = await window.CarrotcapBrowser.decorate(typed, state.folder.rootPath || null, {
@@ -733,6 +737,10 @@
       }
     } catch (err) {
       console.warn('[carrotcap] browser context failed:', err && err.message);
+      if (pageDerived) prepared = { blocked: '브라우저 컨텍스트를 만들지 못했습니다 — 콘솔 에러 줄은 보내지 않았습니다' };
+    }
+    if (pageDerived && !prepared.blocked && !prepared.context) {
+      prepared = { blocked: '콘솔 에러 줄은 에이전트 페인으로만 보낼 수 있습니다' };
     }
     if (prepared.blocked) {
       // 일반 셸에는 페이지 유래 텍스트를 보내지 않는다 — 입력 내용은 그대로 돌려준다.
@@ -804,17 +812,12 @@
   }
   // task-019 (review r1): console-error text taken from the browser page is pasted only into
   // agent panes — never into a plain shell, however it reached the clipboard.
-  function leafOfTerm(term) {
-    for (const [, p] of state.panes) if (p.type === 'leaf' && p.term === term) return p;
-    return null;
-  }
+  // Not even into an agent pane: a direct paste skips main's guarded check (the agent may have
+  // just exited to a shell). The input box's send is the one path for it (review r2).
   function pasteBlocked(term, text) {
     const b = window.CarrotcapBrowser;
     if (!b || typeof b.isTainted !== 'function' || !b.isTainted(text)) return false;
-    const leaf = leafOfTerm(term);
-    const agent = !!leaf && b.isAgentTarget({ cli: leaf.cli || null, bracketedPaste: !!(term.modes && term.modes.bracketedPasteMode) });
-    if (agent) return false;
-    showComposerNotice('브라우저 콘솔 에러 줄은 에이전트 페인에만 붙여넣을 수 있습니다');
+    showComposerNotice('브라우저 콘솔 에러 줄은 터미널에 직접 붙여넣을 수 없습니다 — 입력창에서 에이전트 페인으로 보내세요');
     return true;
   }
   async function pasteIntoTerm(term) {
