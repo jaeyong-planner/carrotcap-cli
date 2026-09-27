@@ -912,7 +912,7 @@
     const hint = document.createElement('span');
     hint.className = 'select-hint';
     hint.textContent = '드래그로 선택·복사';
-    hint.title = '이 프로그램은 마우스를 씁니다 — 일반 왼쪽 클릭·드래그는 텍스트 선택(자동 복사)에 쓰이고, 휠과 Shift/Alt/Ctrl+클릭은 프로그램으로 갑니다';
+    hint.title = '이 프로그램은 마우스를 씁니다 — 왼쪽 클릭·드래그(Shift 포함)는 텍스트 선택(자동 복사)에 쓰이고, 휠·오른쪽 클릭·Alt/Ctrl+클릭은 프로그램으로 갑니다';
     hint.hidden = true;
     if (leaf.headEl) leaf.headEl.insertBefore(hint, leaf.headEl.querySelector('.x'));
     const refreshHint = () => { hint.hidden = !term.modes || term.modes.mouseTrackingMode === 'none'; };

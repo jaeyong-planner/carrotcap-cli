@@ -43,3 +43,4 @@
 - 마우스 추적 앱: 세 번 클릭 줄 복사, 일반 클릭은 선택(앱에 안 감), Ctrl+클릭·휠·오른쪽 클릭은 앱으로(SGR 보고 확인)
 - 툴팁: "일반 왼쪽 클릭·드래그는 선택, 휠과 Shift/Alt/Ctrl+클릭은 프로그램으로"
 - 테스트: unit 252, aor 33, copy 14, smoke 53, browser 94
+- r3: ⚠️ 조건부(Critical·Major 없음) Minor 1 반영 — Windows에서 Shift+클릭은 xterm 강제 선택이라 선택으로 동작: 툴팁 수정, Alt+클릭 전달·Shift+클릭 선택 E2E 추가 (copy 16)

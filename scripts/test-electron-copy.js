@@ -110,6 +110,16 @@ process.env.CC_MOUSE_LOG = mouseLog; // inherited by the app and its panes
     await sleep(600);
     check('Ctrl+click still goes to the program (SGR mouse report)', /\x1b\[<\d+;\d+;\d+M/.test(logText()), JSON.stringify(logText()));
     fs.writeFileSync(mouseLog, '');
+    await app.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: wx, y: box.y, button: 'left', buttons: 1, clickCount: 1, modifiers: 1 });
+    await app.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: wx, y: box.y, button: 'left', buttons: 0, clickCount: 1, modifiers: 1 });
+    await sleep(600);
+    check('Alt+click still goes to the program (SGR mouse report)', /\x1b\[<\d+;\d+;\d+M/.test(logText()), JSON.stringify(logText()));
+    fs.writeFileSync(mouseLog, '');
+    await app.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: wx, y: box.y, button: 'left', buttons: 1, clickCount: 1, modifiers: 8 });
+    await app.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: wx, y: box.y, button: 'left', buttons: 0, clickCount: 1, modifiers: 8 });
+    await sleep(600);
+    check('Shift+click is a selection (xterm force-selection), not sent to the program', !/\x1b\[</.test(logText()), JSON.stringify(logText()));
+    fs.writeFileSync(mouseLog, '');
     await app.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: wx, y: box.y, deltaX: 0, deltaY: -120 });
     await sleep(600);
     check('the wheel still goes to the program', /\x1b\[<6[45];/.test(logText()), JSON.stringify(logText()));
