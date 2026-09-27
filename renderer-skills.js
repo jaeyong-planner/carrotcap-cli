@@ -21,6 +21,7 @@
 
   let catalog = null;
   let current = null; // { root, resolve, busy }
+  const remoteDone = new Map(); // id → inspection of the pinned commit (this session)
 
   async function loadCatalog() {
     if (!catalog) catalog = await api.skillsCatalog();
@@ -59,17 +60,43 @@
       const src = document.createElement('div');
       src.className = 'skill-src';
       src.textContent = s.source;
-      body.append(head, desc, src, inspectView(s.inspect || {}));
+      body.append(head, desc, src, inspectView(s, remoteDone.get(s.id) || s.inspect || {}));
       row.append(cb, body);
       listEl.appendChild(row);
       cb.addEventListener('change', renderThirdParty);
     }
     renderThirdParty();
   }
-  // What the plugin contains and runs, read from the local marketplace copy (review r1).
-  function inspectView(i) {
+  // What the plugin contains and runs — local marketplace copy, or for a remote plugin the
+  // pinned commit fetched from GitHub on request (review r1/r2).
+  function inspectView(s, i) {
     const box = document.createElement('div');
     box.className = 'skill-inspect';
+    if (i.needsRemoteCheck && !i.inspected) {
+      const line = document.createElement('div');
+      line.textContent = `구성: 외부 저장소 ${String(i.remote || '').replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '')}${i.pinned ? ` @ ${i.pinned.slice(0, 7)} (고정 커밋)` : ''} — 설치 전에 내용을 확인해야 합니다`;
+      const btn = document.createElement('button');
+      btn.className = 'btn-ghost skill-inspect-btn';
+      btn.textContent = '구성 불러오기 (GitHub)';
+      btn.onclick = async (e) => {
+        e.preventDefault();
+        btn.disabled = true;
+        btn.textContent = '불러오는 중…';
+        let r;
+        try { r = await api.skillsInspectRemote(s.id); } catch (err) { r = { ok: false, error: err && err.message }; }
+        if (r && r.ok) {
+          remoteDone.set(s.id, r.inspect);
+          box.replaceWith(inspectView(s, r.inspect));
+          renderThirdParty();
+        } else {
+          btn.disabled = false;
+          btn.textContent = '다시 시도';
+          line.textContent = `구성을 불러오지 못했습니다 — ${(r && r.error) || '알 수 없는 오류'} (확인 전에는 설치할 수 없습니다)`;
+        }
+      };
+      box.append(line, btn);
+      return box;
+    }
     const line = document.createElement('div');
     const bits = [];
     if (i.remote) bits.push(`외부 저장소 ${i.remote.replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '')}${i.pinned ? ` @ ${i.pinned.slice(0, 7)} (고정 커밋)` : ''}`);
@@ -101,8 +128,21 @@
   }
   function renderThirdParty() {
     const picked = thirdPartyPicked();
+    // remote plugins picked but not inspected yet: consent is not possible
+    const unchecked = picked.filter((id) => {
+      const s = catalog.catalog.find((x) => x.id === id);
+      if (!s || !s.inspect || !s.inspect.available) return true; // cannot be verified → not installable
+      return s.inspect.needsRemoteCheck && !remoteDone.has(id);
+    });
     thirdEl.hidden = picked.length === 0;
-    thirdText.textContent = picked.length ? `외부 제작 항목 ${picked.join(', ')}의 출처와 실행하는 명령을 확인했고 설치에 동의합니다` : '';
+    if (unchecked.length) {
+      thirdOk.checked = false;
+      thirdOk.disabled = true;
+      thirdText.textContent = `${unchecked.join(', ')}: 내용을 확인해야 설치할 수 있습니다 ("구성 불러오기" — 마켓 정보가 없으면 설치 불가)`;
+    } else {
+      thirdOk.disabled = !!(current && current.busy);
+      thirdText.textContent = picked.length ? `외부 제작 항목 ${picked.join(', ')}의 출처와 실행하는 명령을 확인했고 설치에 동의합니다` : '';
+    }
     if (!picked.length) thirdOk.checked = false;
     installBtn.disabled = (current && current.busy) || (picked.length > 0 && !thirdOk.checked);
   }
@@ -123,7 +163,6 @@
     if (current) current.busy = busy;
     for (const b of [skipBtn, neverBtn, closeBtn]) b.disabled = busy;
     listEl.querySelectorAll('input').forEach((c) => { c.disabled = busy; });
-    thirdOk.disabled = busy;
     renderThirdParty();
   }
   function finish(result) {

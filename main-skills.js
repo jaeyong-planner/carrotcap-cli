@@ -127,17 +127,58 @@ function gitHead(dir) {
   } catch { return null; }
 }
 const short = (s, n = 140) => (String(s).length > n ? String(s).slice(0, n - 1) + '…' : String(s));
-// { version, pinned, remote, components: [..], hooks: [{event, command}], mcp: [{name, command}] }
-function inspectPlugin(id, configDir = claudeConfigDir()) {
+// hooks.json-style object → [{ event, command }]
+function parseHooks(cfg) {
+  const out = [];
+  const hooks = cfg && typeof cfg === 'object' ? (cfg.hooks && typeof cfg.hooks === 'object' ? cfg.hooks : cfg) : null;
+  if (!hooks || typeof hooks !== 'object') return out;
+  for (const [event, groups] of Object.entries(hooks)) {
+    for (const g of Array.isArray(groups) ? groups : []) {
+      for (const h of (g && Array.isArray(g.hooks)) ? g.hooks : []) {
+        if (h && typeof h.command === 'string') out.push({ event, command: short(h.command) });
+      }
+    }
+  }
+  return out;
+}
+// .mcp.json-style object → [{ name, command }]
+function parseMcp(cfg) {
+  const out = [];
+  const servers = cfg && typeof cfg === 'object' ? (cfg.mcpServers && typeof cfg.mcpServers === 'object' ? cfg.mcpServers : cfg) : null;
+  if (!servers || typeof servers !== 'object') return out;
+  for (const [name, v] of Object.entries(servers)) {
+    if (v && typeof v === 'object' && (typeof v.command === 'string' || typeof v.url === 'string')) {
+      out.push({ name, command: short(typeof v.command === 'string' ? [v.command, ...(Array.isArray(v.args) ? v.args : [])].join(' ') : `원격 ${v.url}`) });
+    }
+  }
+  return out;
+}
+function summarize(out, counts) {
+  out.components = [];
+  if (counts.skills) out.components.push(`스킬 ${counts.skills}`);
+  if (counts.commands) out.components.push(`명령 ${counts.commands}`);
+  if (counts.agents) out.components.push(`에이전트 ${counts.agents}`);
+  if (out.hooks.length) out.components.push(`훅 ${out.hooks.length}개 (명령 실행)`);
+  if (out.mcp.length) out.components.push(`MCP 서버 ${out.mcp.length}개 (프로그램 실행)`);
+  if (counts.scripts) out.components.push(`실행 파일·스크립트 ${counts.scripts}개`);
+  return out;
+}
+function marketEntry(id, configDir) {
   const mdir = path.join(configDir, 'plugins', 'marketplaces', MARKETPLACE);
   const market = readJson(path.join(mdir, '.claude-plugin', 'marketplace.json'));
   const entry = market && Array.isArray(market.plugins) ? market.plugins.find((p) => p && p.name === id) : null;
+  return { mdir, entry };
+}
+// { available, version, pinned, remote, needsRemoteCheck, components, hooks, mcp }
+function inspectPlugin(id, configDir = claudeConfigDir()) {
+  const { mdir, entry } = marketEntry(id, configDir);
   if (!entry) return { available: false, note: '로컬 마켓플레이스 정보 없음 — 설치 때 받아 옵니다' };
   const out = { available: true, components: [], hooks: [], mcp: [] };
   if (entry.source && typeof entry.source === 'object') {
     out.remote = entry.source.url || entry.source.repo || '';
     out.pinned = entry.source.sha || entry.source.ref || null;
-    out.note = out.pinned ? '외부 저장소의 고정된 커밋을 설치 — 구성은 설치 전에 저장소에서 확인' : '외부 저장소 — 구성은 설치 전에 저장소에서 확인';
+    out.needsRemoteCheck = true; // contents live in another repository: fetch them before consenting
+    out.note = '외부 저장소 — "구성 불러오기"로 고정 커밋의 내용을 확인한 뒤 설치할 수 있습니다';
     return out;
   }
   if (typeof entry.source !== 'string' || !/^\.\//.test(entry.source)) return out;
@@ -151,39 +192,97 @@ function inspectPlugin(id, configDir = claudeConfigDir()) {
       if (d.isDirectory() && fs.existsSync(path.join(pdir, 'skills', d.name, 'SKILL.md'))) skills++;
     }
   } catch { /* none */ }
-  const commands = countFiles(path.join(pdir, 'commands'), /\.md$/i);
-  const agents = countFiles(path.join(pdir, 'agents'), /\.md$/i);
-  const hooksCfg = readJson(path.join(pdir, 'hooks', 'hooks.json'));
-  if (hooksCfg && hooksCfg.hooks && typeof hooksCfg.hooks === 'object') {
-    for (const [event, groups] of Object.entries(hooksCfg.hooks)) {
-      for (const g of Array.isArray(groups) ? groups : []) {
-        for (const h of (g && Array.isArray(g.hooks)) ? g.hooks : []) {
-          if (h && typeof h.command === 'string') out.hooks.push({ event, command: short(h.command) });
-        }
-      }
+  out.hooks = [...parseHooks(readJson(path.join(pdir, 'hooks', 'hooks.json'))), ...parseHooks(manifest.hooks && typeof manifest.hooks === 'object' ? manifest.hooks : null)];
+  out.mcp = [...parseMcp(readJson(path.join(pdir, '.mcp.json'))), ...parseMcp(manifest.mcpServers && typeof manifest.mcpServers === 'object' ? manifest.mcpServers : null)];
+  return summarize(out, {
+    skills,
+    commands: countFiles(path.join(pdir, 'commands'), /\.md$/i),
+    agents: countFiles(path.join(pdir, 'agents'), /\.md$/i),
+  });
+}
+
+// ---- remote plugins: read the pinned commit from GitHub before consent (review r2) ----
+const GITHUB_REPO_RE = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/;
+const SCRIPT_RE = /\.(sh|bash|zsh|py|js|mjs|cjs|ts|ps1|psm1|cmd|bat|exe|rb|pl)$/i;
+function fetchText(url, { timeoutMs = 15000, maxBytes = 4 * 1024 * 1024 } = {}) {
+  return new Promise((resolve, reject) => {
+    if (!/^https:\/\/(api\.github\.com|raw\.githubusercontent\.com)\//.test(url)) return reject(new Error('not a GitHub URL'));
+    const req = require('https').get(url, { headers: { 'User-Agent': 'carrotcap-cli', Accept: 'application/vnd.github+json' }, timeout: timeoutMs }, (res) => {
+      if (res.statusCode !== 200) { res.resume(); return reject(new Error(`HTTP ${res.statusCode}`)); }
+      let size = 0;
+      const chunks = [];
+      res.on('data', (c) => { size += c.length; if (size > maxBytes) { req.destroy(new Error('too large')); return; } chunks.push(c); });
+      res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+  });
+}
+async function inspectRemotePlugin(id, { configDir = claudeConfigDir(), fetch = fetchText } = {}) {
+  const { entry } = marketEntry(id, configDir);
+  const src = entry && entry.source && typeof entry.source === 'object' ? entry.source : null;
+  const m = src && typeof src.url === 'string' ? GITHUB_REPO_RE.exec(src.url) : null;
+  const sha = src && typeof src.sha === 'string' && /^[0-9a-f]{40}$/.test(src.sha) ? src.sha : null;
+  if (!m || !sha) throw new Error('고정 커밋이 있는 GitHub 저장소가 아니라 내용을 확인할 수 없습니다');
+  const [, owner, repo] = m;
+  const tree = JSON.parse(await fetch(`https://api.github.com/repos/${owner}/${repo}/git/trees/${sha}?recursive=1`));
+  if (!tree || !Array.isArray(tree.tree)) throw new Error('저장소 목록을 읽지 못했습니다');
+  if (tree.truncated) throw new Error('저장소가 너무 커서 전체 목록을 확인할 수 없습니다');
+  const files = tree.tree.filter((t) => t && t.type === 'blob' && typeof t.path === 'string').map((t) => t.path);
+  const raw = async (p) => JSON.parse(await fetch(`https://raw.githubusercontent.com/${owner}/${repo}/${sha}/${p.split('/').map(encodeURIComponent).join('/')}`));
+  const manifest = files.includes('.claude-plugin/plugin.json') ? await raw('.claude-plugin/plugin.json') : {};
+  const out = { available: true, remote: src.url, pinned: sha, inspected: true, hooks: [], mcp: [], version: manifest.version || null };
+  // hooks: hooks/hooks.json, or what plugin.json points to / holds inline
+  const hookFiles = new Set(files.filter((p) => /^hooks\/hooks\.json$/.test(p)));
+  if (typeof manifest.hooks === 'string') hookFiles.add(manifest.hooks.replace(/^\.\//, ''));
+  for (const p of hookFiles) if (files.includes(p)) out.hooks.push(...parseHooks(await raw(p)));
+  if (manifest.hooks && typeof manifest.hooks === 'object') out.hooks.push(...parseHooks(manifest.hooks));
+  const mcpFiles = new Set(files.filter((p) => p === '.mcp.json'));
+  if (typeof manifest.mcpServers === 'string') mcpFiles.add(manifest.mcpServers.replace(/^\.\//, ''));
+  for (const p of mcpFiles) if (files.includes(p)) out.mcp.push(...parseMcp(await raw(p)));
+  if (manifest.mcpServers && typeof manifest.mcpServers === 'object') out.mcp.push(...parseMcp(manifest.mcpServers));
+  return summarize(out, {
+    skills: files.filter((p) => /^skills\/[^/]+\/SKILL\.md$/.test(p)).length,
+    commands: files.filter((p) => /^commands\/[^/]+\.md$/.test(p)).length,
+    agents: files.filter((p) => /^agents\/[^/]+\.md$/.test(p)).length,
+    scripts: files.filter((p) => SCRIPT_RE.test(p)).length,
+  });
+}
+
+// Runs one `claude plugin ...` call; resolves only after the process (tree) is gone.
+function makeRunner({ taskkillPath, timeoutMs = INSTALL_TIMEOUT_MS } = {}) {
+  function killTree(child) {
+    // On Windows a .cmd runs under cmd.exe: kill the whole tree so the real claude stops too.
+    if (process.platform === 'win32' && child.pid && taskkillPath) {
+      execFile(taskkillPath(), ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }, () => {});
+    } else {
+      try { child.kill('SIGKILL'); } catch { /* gone */ }
     }
   }
-  const mcpCfg = readJson(path.join(pdir, '.mcp.json'));
-  const servers = mcpCfg && (mcpCfg.mcpServers || mcpCfg);
-  if (servers && typeof servers === 'object') {
-    for (const [name, v] of Object.entries(servers)) {
-      if (v && typeof v === 'object' && typeof v.command === 'string') {
-        out.mcp.push({ name, command: short([v.command, ...(Array.isArray(v.args) ? v.args : [])].join(' ')) });
-      }
-    }
-  }
-  if (skills) out.components.push(`스킬 ${skills}`);
-  if (commands) out.components.push(`명령 ${commands}`);
-  if (agents) out.components.push(`에이전트 ${agents}`);
-  if (out.hooks.length) out.components.push(`훅 ${out.hooks.length}개 (명령 실행)`);
-  if (out.mcp.length) out.components.push(`MCP 서버 ${out.mcp.length}개 (프로그램 실행)`);
-  return out;
+  return function run(exe, args, cwd) {
+    return new Promise((resolve) => {
+      // .cmd/.bat need a shell on Windows; every argument is a fixed token (no quoting needed)
+      const viaShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(exe);
+      const child = viaShell
+        ? spawn(`"${exe}" ${args.join(' ')}`, { cwd, shell: true, windowsHide: true })
+        : spawn(exe, args, { cwd, windowsHide: true });
+      let out = '';
+      let timedOut = false;
+      const add = (d) => { out = (out + d).slice(-4000); };
+      child.stdout.on('data', add);
+      child.stderr.on('data', add);
+      const t = setTimeout(() => { timedOut = true; add('\n(시간 초과)'); killTree(child); }, timeoutMs);
+      child.on('error', (e) => { clearTimeout(t); resolve({ code: -1, out: String(e.message), timedOut }); });
+      child.on('close', (code) => { clearTimeout(t); resolve({ code: timedOut ? -1 : code, out, timedOut }); });
+    });
+  };
 }
 
 function setupSkills(deps) {
   const {
     handle, getWindow, loadSettings, resolveAllowedDir, safeRealpath, isPathInsideRoot,
     assertAncestorsClean, safeMkdir, isAllowedCliCommand, findCommand, taskkillPath,
+    installTimeoutMs = INSTALL_TIMEOUT_MS, fetchRemote = fetchText,
   } = deps;
   let running = false;
 
@@ -209,9 +308,15 @@ function setupSkills(deps) {
       if (lst.nlink > 1) throw new Error(`${rel} is hard-linked elsewhere`);
     }
     assertAncestorsClean(file, root);
+    let before = null;
+    try { before = fs.readFileSync(file, 'utf8'); } catch { /* new file */ }
     fs.writeFileSync(file, text, 'utf8');
     const real = safeRealpath(file);
-    if (!real || !isPathInsideRoot(real, root)) throw new Error(`${rel} escaped the project`);
+    if (!real || !isPathInsideRoot(real, root)) {
+      // swapped between the check and the write: undo what we just wrote there (review r2)
+      try { if (before === null) fs.rmSync(file, { force: true }); else fs.writeFileSync(file, before, 'utf8'); } catch { /* best effort */ }
+      throw new Error(`${rel} escaped the project`);
+    }
   }
   function writeState(root, state) {
     safeMkdir(path.join(root, '.carrotcap'), root);
@@ -223,31 +328,9 @@ function setupSkills(deps) {
     if (!isAllowedCliCommand(cmd)) return null;
     return path.isAbsolute(cmd) ? cmd : findCommand(cmd);
   }
-  function killTree(child) {
-    // On Windows a .cmd runs under cmd.exe: kill the whole tree so the real claude stops too.
-    if (process.platform === 'win32' && child.pid) {
-      execFile(taskkillPath(), ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }, () => {});
-    } else {
-      try { child.kill('SIGKILL'); } catch { /* gone */ }
-    }
-  }
-  function run(exe, args, cwd) {
-    return new Promise((resolve) => {
-      // .cmd/.bat need a shell on Windows; every argument is a fixed token (no quoting needed)
-      const viaShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(exe);
-      const child = viaShell
-        ? spawn(`"${exe}" ${args.join(' ')}`, { cwd, shell: true, windowsHide: true })
-        : spawn(exe, args, { cwd, windowsHide: true });
-      let out = '';
-      const add = (d) => { out = (out + d).slice(-4000); };
-      child.stdout.on('data', add);
-      child.stderr.on('data', add);
-      // resolve only on close, so a timed-out install is really gone before the next one
-      const t = setTimeout(() => { add('\n(시간 초과)'); killTree(child); }, INSTALL_TIMEOUT_MS);
-      child.on('error', (e) => { clearTimeout(t); resolve({ code: -1, out: String(e.message) }); });
-      child.on('close', (code) => { clearTimeout(t); resolve({ code, out }); });
-    });
-  }
+  const run = makeRunner({ taskkillPath, timeoutMs: installTimeoutMs });
+  // Remote plugins whose pinned commit the user has inspected in this session (review r2).
+  const remoteInspected = new Map();
 
   handle('skills:catalog', () => {
     const configDir = claudeConfigDir();
@@ -258,6 +341,17 @@ function setupSkills(deps) {
       })),
       presets: Object.fromEntries(Object.entries(PRESETS).map(([k, v]) => [k, { label: v.label, ids: v.ids.slice() }])),
     };
+  });
+  handle('skills:inspect-remote', async (_e, id) => {
+    const s = SKILL_CATALOG.find((x) => x.id === id);
+    if (!s) return { ok: false, error: '알 수 없는 스킬' };
+    try {
+      const r = await inspectRemotePlugin(id, { fetch: fetchRemote });
+      remoteInspected.set(id, r.pinned);
+      return { ok: true, inspect: r };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
   });
   handle('skills:status', (_e, projectRoot) => {
     const root = resolveAllowedDir(projectRoot);
@@ -279,6 +373,15 @@ function setupSkills(deps) {
     // third-party entries need the explicit confirmation the window asks for
     const third = ids.filter((id) => SKILL_CATALOG.find((s) => s.id === id).thirdParty);
     if (third.length && p.confirmThirdParty !== true) return { ok: false, error: `외부 제작 항목(${third.join(', ')})은 출처·동작 확인에 동의해야 설치됩니다` };
+    // a remote plugin only after its pinned commit was actually inspected (and still is the one listed)
+    // A third-party plugin whose contents cannot be verified at all is not installable.
+    const unchecked = ids.filter((id) => {
+      if (!SKILL_CATALOG.find((s) => s.id === id).thirdParty) return false;
+      const i = inspectPlugin(id);
+      if (!i.available) return true;
+      return i.needsRemoteCheck && remoteInspected.get(id) !== i.pinned;
+    });
+    if (unchecked.length) return { ok: false, error: `${unchecked.join(', ')}: 내용을 확인할 수 없거나 아직 확인하지 않았습니다 ("구성 불러오기")` };
     if (running) return { ok: false, error: '이미 설치 중입니다' };
     const exe = claudeCommand();
     if (!exe) return { ok: false, error: 'claude CLI를 찾을 수 없습니다 (settings.json의 cli.claude 확인)' };
@@ -326,4 +429,5 @@ function setupSkills(deps) {
 module.exports = {
   setupSkills, SKILL_CATALOG, PRESETS, MARKETPLACE, SKILLS_BLOCK_START, SKILLS_BLOCK_END,
   sanitizeSkillIds, buildSkillsBlock, mergeSkillsBlock, installArgs, marketplaceAddArgs, inspectPlugin,
+  inspectRemotePlugin, makeRunner, parseHooks, parseMcp,
 };

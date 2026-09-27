@@ -71,6 +71,7 @@ const api = {
   skillsCatalog: () => ipcRenderer.invoke('skills:catalog'),
   skillsStatus: (projectRoot) => ipcRenderer.invoke('skills:status', projectRoot),
   skillsSkip: (projectRoot) => ipcRenderer.invoke('skills:skip', projectRoot),
+  skillsInspectRemote: (id) => ipcRenderer.invoke('skills:inspect-remote', id),
   skillsInstall: (projectRoot, ids, confirmThirdParty = false) => ipcRenderer.invoke('skills:install', { projectRoot, ids, confirmThirdParty }),
   onSkillsProgress: (handler) => {
     const wrap = (_e, payload) => handler(payload);

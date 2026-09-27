@@ -32,3 +32,11 @@
 - Windows 시간 초과: `taskkill /T /F`로 프로세스 트리 종료, 종료 후에만 다음 설치
 - 줄바꿈 유지(CRLF 파일은 CRLF), 하드 링크·링크·폴더인 CLAUDE.md 거부, 규칙 쓰기 실패 시 `rulesPending` 기록 → START가 다시 제안
 - 테스트: test-skills 23, test:skills 31 (동의 흐름, 동의 없는 IPC 거부, 마켓 추가 scope, 하드 링크 거부·원본 무변경·재제안)
+
+## Codex r2 (⚠️ 조건부, Major 1 / Minor 2) 반영
+- 원격(외부 저장소) 플러그인: "구성 불러오기"로 고정 커밋의 파일 목록·plugin.json·hooks.json·.mcp.json을 GitHub에서 읽어 스킬·명령·에이전트 수, 훅/MCP 실행 명령, 스크립트 파일 수, 버전을 표시. 확인 전에는 동의 체크 자체가 비활성, main도 거부. 실측: superpowers v6.0.3 @896224c — 스킬 14, SessionStart 훅 1개(`run-hook.cmd session-start`), 스크립트 51개
+- 내용을 확인할 수 없는 외부 항목(마켓 정보 없음·GitHub 아닌 원격·목록 잘림)은 설치 불가
+- 쓰기 직후 프로젝트 밖으로 벗어난 것이 확인되면 방금 쓴 내용을 되돌리거나(기존 파일) 지움(새 파일)
+- 시간 초과 테스트는 손자 프로세스(cmd 아래 powershell)로 — 트리 종료 없이는 살아남는 것을 먼저 확인
+- E2E: 로컬 마켓 사본으로 구성 표시, playwright 동의 흐름, superpowers 확인 전 거부(동의해도), 동시 설치 거부, 창이 열려 있는 동안 브라우저 뷰 크기 0
+- 테스트: test-skills 32, test:skills 38

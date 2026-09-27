@@ -68,6 +68,65 @@ console.log('-- what a plugin contains (local marketplace copy)');
   fs.rmSync(cfg, { recursive: true, force: true });
 }
 
-console.log('');
-console.log(`Summary: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+(async () => {
+  const fs = require('fs'); const os = require('os'); const path = require('path');
+  console.log('-- remote plugin: pinned commit read from GitHub before consent (review r2)');
+  const sha = '896224c4b1879920ab573417e68fd51d2ccc9072';
+  const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-rm-'));
+  const md = path.join(cfg, 'plugins', 'marketplaces', 'claude-plugins-official', '.claude-plugin');
+  fs.mkdirSync(md, { recursive: true });
+  fs.writeFileSync(path.join(md, 'marketplace.json'), JSON.stringify({ name: 'claude-plugins-official', plugins: [
+    { name: 'superpowers', source: { source: 'url', url: 'https://github.com/obra/superpowers.git', sha } },
+    { name: 'playwright', source: { source: 'url', url: 'https://example.com/x.git', sha } },
+  ] }));
+  const files = {
+    '.claude-plugin/plugin.json': JSON.stringify({ name: 'superpowers', version: '5.0.0' }),
+    'hooks/hooks.json': JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'bash ${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh' }] }] } }),
+  };
+  const seen = [];
+  const fakeFetch = async (url) => {
+    seen.push(url);
+    if (url.startsWith('https://api.github.com/')) return JSON.stringify({ truncated: false, tree: [
+      { type: 'blob', path: '.claude-plugin/plugin.json' }, { type: 'blob', path: 'hooks/hooks.json' }, { type: 'blob', path: 'hooks/session-start.sh' },
+      { type: 'blob', path: 'skills/brainstorming/SKILL.md' }, { type: 'blob', path: 'skills/tdd/SKILL.md' }, { type: 'blob', path: 'commands/plan.md' },
+      { type: 'blob', path: 'agents/reviewer.md' }, { type: 'blob', path: 'lib/helper.js' }, { type: 'tree', path: 'skills' },
+    ] });
+    const p = url.split(`/${sha}/`)[1];
+    if (files[p]) return files[p];
+    throw new Error('HTTP 404');
+  };
+  const r = await sk.inspectRemotePlugin('superpowers', { configDir: cfg, fetch: fakeFetch });
+  check('reads the tree at the pinned commit only', seen[0] === `https://api.github.com/repos/obra/superpowers/git/trees/${sha}?recursive=1` && seen.slice(1).every((u) => u.includes(`/obra/superpowers/${sha}/`)), JSON.stringify(seen));
+  check('counts skills, commands, agents and scripts', ['스킬 2', '명령 1', '에이전트 1', '실행 파일·스크립트 2개'].every((c) => r.components.includes(c)), JSON.stringify(r.components));
+  check('lists the hook commands it runs', r.hooks.length === 1 && /session-start\.sh/.test(r.hooks[0].command) && r.components.includes('훅 1개 (명령 실행)'));
+  check('marks the result as inspected with version and commit', r.inspected === true && r.pinned === sha && r.version === '5.0.0');
+  let threw = '';
+  try { await sk.inspectRemotePlugin('playwright', { configDir: cfg, fetch: fakeFetch }); } catch (e) { threw = e.message; }
+  check('a non-GitHub source cannot be inspected (so it cannot be consented to)', /확인할 수 없습니다/.test(threw), threw);
+  threw = '';
+  try { await sk.inspectRemotePlugin('superpowers', { configDir: cfg, fetch: async () => JSON.stringify({ truncated: true, tree: [] }) }); } catch (e) { threw = e.message; }
+  check('a truncated listing is refused', /너무 커서/.test(threw), threw);
+  check('local copy flags remote plugins as needing the check', sk.inspectPlugin('superpowers', cfg).needsRemoteCheck === true);
+  fs.rmSync(cfg, { recursive: true, force: true });
+
+  if (process.platform === 'win32') {
+    console.log('-- timeout kills the whole process tree (review r1/r2)');
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-to-'));
+    const marker = path.join(d, 'still-running.txt');
+    const slow = path.join(d, 'slow claude.cmd');
+    // the marker is written by a grandchild, like the real claude running under cmd.exe:
+    // killing only the shell would leave it running
+    fs.writeFileSync(slow, `@echo off\r\npowershell -NoProfile -Command "Start-Sleep -Seconds 4; Set-Content -LiteralPath '${marker}' late"\r\n`);
+    const run = sk.makeRunner({ taskkillPath: () => path.join(process.env.SystemRoot, 'System32', 'taskkill.exe'), timeoutMs: 1200 });
+    const t0 = Date.now();
+    const res = await run(slow, ['plugin', 'install', 'x'], d);
+    check('times out and reports it', res.timedOut === true && res.code === -1 && /시간 초과/.test(res.out) && Date.now() - t0 < 5000, JSON.stringify(res));
+    await new Promise((ok) => setTimeout(ok, 6500));
+    check('the child (not just cmd.exe) was stopped — its later step never ran', !fs.existsSync(marker));
+    fs.rmSync(d, { recursive: true, force: true });
+  }
+
+  console.log('');
+  console.log(`Summary: ${pass} passed, ${fail} failed`);
+  process.exit(fail === 0 ? 0 : 1);
+})().catch((e) => { console.error(e); process.exit(1); });

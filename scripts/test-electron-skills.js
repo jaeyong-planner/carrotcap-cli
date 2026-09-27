@@ -28,10 +28,24 @@ fs.writeFileSync(fakeClaude, [
   `if "%2"=="marketplace" if "%3"=="list" if exist "${path.join(tmp, 'no-market')}" (echo Configured marketplaces:& exit /b 0)`,
   'if "%2"=="marketplace" (echo Configured marketplaces:& echo   claude-plugins-official& exit /b 0)',
   'if "%3"=="skill-creator@claude-plugins-official" (echo Failed to install plugin 1>&2& exit /b 1)',
+  // a slow one, to see that a second install waits its turn
+  'if "%3"=="claude-md-management@claude-plugins-official" ping -n 4 127.0.0.1 >nul',
   'echo Successfully installed plugin %3 (scope: project)',
   'exit /b 0',
 ].join('\r\n') + '\r\n');
 fs.writeFileSync(path.join(project, 'CLAUDE.md'), '# My project\n\nOwn rules.\n');
+// The official marketplace copy the app inspects (launchApp points CLAUDE_CONFIG_DIR here).
+const market = path.join(userData, 'claude-config', 'plugins', 'marketplaces', 'claude-plugins-official');
+const put = (rel, text) => { fs.mkdirSync(path.dirname(path.join(market, rel)), { recursive: true }); fs.writeFileSync(path.join(market, rel), text); };
+put('.claude-plugin/marketplace.json', JSON.stringify({ name: 'claude-plugins-official', plugins: [
+  { name: 'superpowers', source: { source: 'url', url: 'https://github.com/obra/superpowers.git', sha: '896224c4b1879920ab573417e68fd51d2ccc9072' } },
+  { name: 'playwright', source: './external_plugins/playwright' },
+  { name: 'code-review', source: './plugins/code-review' },
+  { name: 'security-guidance', source: './plugins/security-guidance' },
+] }));
+put('external_plugins/playwright/.mcp.json', JSON.stringify({ playwright: { command: 'npx', args: ['@playwright/mcp@latest'] } }));
+put('plugins/code-review/commands/code-review.md', '# review');
+put('plugins/security-guidance/hooks/hooks.json', JSON.stringify({ hooks: { PostToolUse: [{ hooks: [{ type: 'command', command: 'python3 check.py' }] }] } }));
 fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({
   settingsVersion: 4,
   aor: { enabled: false, autoStart: false },
@@ -63,16 +77,27 @@ const state = () => { try { return JSON.parse(fs.readFileSync(path.join(project,
     check('web preset preselected — Anthropic plugins only', ['code-review', 'feature-dev', 'security-guidance', 'frontend-design'].every((id) => listed.find((r) => r.id === id && r.on)) && !listed.some((r) => r.third && r.on));
     check('nothing ran before the user chose', calls().length === 0);
 
+    const inspectOf = (id) => ev(`document.querySelector('#skills-list input[value="${id}"]').closest('.skill-row').querySelector('.skill-inspect').innerText`);
+    check('local plugins show what they run (MCP / hook commands)', /MCP 서버 1개/.test(await inspectOf('playwright')) && /훅 1개/.test(await inspectOf('security-guidance')) && /명령 1/.test(await inspectOf('code-review')));
+    check('a remote plugin offers "구성 불러오기" before anything else', /구성 불러오기/.test(await inspectOf('superpowers')) && /896224c/.test(await inspectOf('superpowers')));
+
     console.log('-- third-party plugins need explicit consent (review r1)');
-    await ev(`document.querySelector('#skills-list input[value="superpowers"]').click(), true`);
-    check('ticking a third-party plugin shows the consent line', await ev(`!document.querySelector('#skills-third').hidden && /superpowers/.test(document.querySelector('#skills-third-text').textContent)`));
+    await ev(`document.querySelector('#skills-list input[value="playwright"]').click(), true`);
+    check('ticking a third-party plugin shows the consent line', await ev(`!document.querySelector('#skills-third').hidden && /playwright/.test(document.querySelector('#skills-third-text').textContent)`));
     check('install is disabled until consent', await ev(`document.querySelector('#skills-install').disabled`));
-    const noConsent = await ev(`window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['superpowers'])`);
+    const noConsent = await ev(`window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['playwright'])`);
     check('main refuses a third-party install without consent', noConsent && noConsent.ok === false && /외부 제작/.test(noConsent.error || '') && calls().length === 0, JSON.stringify(noConsent));
     await ev(`document.querySelector('#skills-third-ok').click(), true`);
     check('consent enables install', !(await ev(`document.querySelector('#skills-install').disabled`)));
-    await ev(`document.querySelector('#skills-list input[value="superpowers"]').click(), true`); // untick again
+    await ev(`document.querySelector('#skills-list input[value="playwright"]').click(), true`); // untick again
     check('unticking hides the consent line', await ev(`document.querySelector('#skills-third').hidden && !document.querySelector('#skills-install').disabled`));
+
+    console.log('-- a remote plugin is installable only after its pinned commit was inspected (review r2)');
+    await ev(`document.querySelector('#skills-list input[value="superpowers"]').click(), true`);
+    check('consent is not even possible before "구성 불러오기"', await ev(`document.querySelector('#skills-third-ok').disabled && document.querySelector('#skills-install').disabled && /구성 불러오기/.test(document.querySelector('#skills-third-text').textContent)`));
+    const noInspect = await ev(`window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['superpowers'], true)`);
+    check('main refuses it even with consent', noInspect && noInspect.ok === false && /확인/.test(noInspect.error || '') && calls().length === 0, JSON.stringify(noInspect));
+    await ev(`document.querySelector('#skills-list input[value="superpowers"]').click(), true`);
 
     // pick the backend preset, then add skill-creator (which the fake fails)
     await ev(`[...document.querySelectorAll('#skills-presets button')].find((b) => b.textContent === '백엔드·API').click(); document.querySelector('#skills-list input[value="skill-creator"]').click(); true`);
@@ -122,6 +147,27 @@ const state = () => { try { return JSON.parse(fs.readFileSync(path.join(project,
     check('START would offer the setup again', await ev(`window.CarrotcapSkills.needsSetup(${JSON.stringify(project)})`));
     fs.rmSync(claudeMd);
     fs.renameSync(elsewhere, claudeMd);
+
+    console.log('-- one install at a time (review r2)');
+    const both = await ev(`Promise.all([window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['claude-md-management']), new Promise((r) => setTimeout(r, 300)).then(() => window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['commit-commands']))])`);
+    check('a second install while one runs is refused', both[0].ok === true && both[1].ok === false && /이미 설치 중/.test(both[1].error || ''), JSON.stringify(both.map((b) => b.error || b.ok)));
+
+    console.log('-- the browser view does not cover the window (review r2)');
+    const http = require('http');
+    const srv = http.createServer((q, s) => { s.writeHead(200, { 'content-type': 'text/html' }); s.end('<title>page</title><h1>page</h1>'); });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    const site = `http://127.0.0.1:${srv.address().port}/`;
+    await ev(`document.querySelector('#toggle-browser').click(); document.querySelector('#br-url').value = ${JSON.stringify(site)}; document.querySelector('#br-go').click(); true`);
+    const page = await app.connect((t) => t.type === 'page' && t.url === site);
+    const viewWidth = () => ev(`window.CarrotcapBrowser.lastBounds().width || 0`);
+    await waitFor(async () => (await page.ev('innerWidth')) > 100 && (await viewWidth()) > 100);
+    await ev(`window.CarrotcapSkills.open(${JSON.stringify(project)}, { reason: 'manual' }); true`);
+    check('browser view shrinks to nothing while the skills window is open', await waitFor(async () => (await viewWidth()) === 0 && (await modalOpen())));
+    await ev(`document.querySelector('#skills-close').click(), true`);
+    check('and comes back when it closes', await waitFor(async () => (await viewWidth()) > 100));
+    page.close();
+    srv.close();
+    await ev(`document.querySelector('#toggle-browser').click(), true`);
 
     console.log('-- the main side only takes catalog ids and allowed folders');
     const bad = await ev(`window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['evil & calc', '__proto__'])`);
