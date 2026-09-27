@@ -192,8 +192,12 @@ const server = http.createServer((req, res) => {
   await waitFor(async () => /boom/.test(await attachText()));
   check('hostile error text never enters the editable input', (await composerVal()) === 'check errors');
   check('attachment preview is plain text (no markup from the page)', (await ev(`document.querySelectorAll('#composer-attach *:not(div):not(span):not(button)').length`)) === 0);
-  await ev(`document.querySelector('#composer-send').click(), true`);
+  // Reverse race: a refresh already requested, then send — the send still goes (review r6).
+  await ev(`document.querySelector('#composer-notice').textContent = ''; document.querySelector('#br-errors-to-chat').click(); document.querySelector('#composer-send').click(); true`);
   check('agent got the hostile page context', await waitFor(() => received().includes('\x1b[201~')));
+  check('a refresh in flight does not cancel the send', !/첨부가 바뀌어/.test(await notice()), await notice());
+  await sleep(800);
+  check('and leaves no attachment behind', (await attachText()) === '' && !(await ev(`window.CarrotcapBrowser.hasAttachment()`)));
   check('annotation mode survived the navigation (review r2 M4)', await ev(`document.querySelector('#br-annotate').classList.contains('active')`));
   const evil = Buffer.from(received(), 'latin1').toString('utf8');
   const inner = evil.slice(evil.indexOf('\x1b[200~') + 6, evil.lastIndexOf('\x1b[201~'));
@@ -396,8 +400,12 @@ const server = http.createServer((req, res) => {
   console.log('-- closing the browser drops the attachment; history holds typed text only (task-019)');
   await ev(`document.querySelector('#br-reload').click(), true`);
   await waitFor(async () => !(await ev(`document.querySelector('#br-errors-to-chat').disabled`)));
+  await sleep(1000); // let the reload's navigation events settle (they would drop a new attachment)
   await ev(`document.querySelector('#br-errors-to-chat').click(), true`);
   await waitFor(async () => /boom-on-load/.test(await attachText()));
+  await sleep(300);
+
+  check('attachment present before closing', /boom-on-load/.test(await attachText()), `${await attachText()} | btn=${await ev(`document.querySelector('#br-errors-to-chat').textContent`)} disabled=${await ev(`document.querySelector('#br-errors-to-chat').disabled`)}`);
 
   console.log('-- close');
   // Refresh the attachment and close in the same tick: the late lookup must not re-attach (review r4).
@@ -406,6 +414,7 @@ const server = http.createServer((req, res) => {
   check('layout back to terminal only', !(await ev(`document.body.classList.contains('browser-mode')`)));
   await sleep(1000);
   check('closing the browser drops the attachment (and a late lookup does not bring it back)', (await attachText()) === '' && !(await ev(`window.CarrotcapBrowser.hasAttachment()`)));
+  check('and says so', /브라우저를 닫아 콘솔 에러 첨부를 뺐습니다/.test(await notice()), await notice());
   // Real history recall (↑ in an empty input box): only what was typed, never page text.
   await ev(`document.querySelector('#composer-input').value = ''; document.querySelector('#composer-input').focus(), true`);
   const seen = [];

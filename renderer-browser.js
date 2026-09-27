@@ -70,7 +70,7 @@
       st.open = false;
       st.pins = [];
       renderPins();
-      dropAttachment();
+      dropAttachment('브라우저를 닫아 콘솔 에러 첨부를 뺐습니다');
       renderErrorsButton();
     }
     // 오른쪽 터미널 폭이 바뀌었으니 xterm 크기 재계산 (renderer.js의 resize 핸들러)
@@ -368,6 +368,9 @@
       const ctx = await api.browserContext({ screenshot: false, includeErrors: true, noToken: true, gen });
       // The browser may have closed/reopened or the page changed while we waited (review r4).
       if (!st.active || !st.open || openToken !== st.openToken || gen !== st.pageGen) return;
+      // A send started meanwhile: it goes with the attachment it prepared — replacing it now
+      // would cancel that send. The refresh is simply dropped (review r6).
+      if (st.sending) return;
       if (!ctx || ctx.stale || !Array.isArray(ctx.errors) || !ctx.errors.length) return;
       const lines = ctx.errors.map((e) => `[${oneLine(e.level, 10)}] ${oneLine(e.message)}${e.source ? ` (${oneLine(e.source, 300)}${e.line ? ':' + e.line : ''})` : ''}`);
       st.attach = { gen: ctx.gen, mark: ctx.errorMark, lines, total: lines.length + (ctx.errorsSkipped || 0), skipped: ctx.errorsSkipped || 0 };
