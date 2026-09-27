@@ -1,6 +1,6 @@
 {
   "name": "carrotcap-cli",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "CARROTCAP CLI terminal app with split panes, folder sidebar, and quick CLI launchers.",
   "main": "main.js",
   "author": "CarrotCap",
