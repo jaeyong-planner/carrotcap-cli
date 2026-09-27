@@ -582,6 +582,7 @@ function setupSkills(deps) {
     handle, getWindow, loadSettings, resolveAllowedDir, safeRealpath, isPathInsideRoot,
     assertAncestorsClean, safeMkdir, isAllowedCliCommand, findCommand, taskkillPath,
     installTimeoutMs = INSTALL_TIMEOUT_MS, fetchRemote = fetchText,
+    confirmThirdParty, // async ({ title, detail }) => boolean — a native dialog in main (review r8)
   } = deps;
   let running = false;
 
@@ -599,6 +600,22 @@ function setupSkills(deps) {
     } catch { return null; }
   }
   // Write <root>/<rel> only if it stays a plain, singly linked file inside the project.
+  function thirdPartySummary(ids) {
+    const lines = [];
+    for (const id of ids) {
+      const s = SKILL_CATALOG.find((x) => x.id === id);
+      const seen = remoteInspected.get(id);
+      const i = seen ? seen.shown : inspectPlugin(id);
+      lines.push(`■ ${id} — ${s.maker}`, `  출처: ${s.source}${i.pinned ? ` @ ${String(i.pinned).slice(0, 7)}` : ''}`);
+      if (Array.isArray(i.components) && i.components.length) lines.push(`  구성: ${i.components.join(' · ')}`);
+      for (const h of (i.hooks || []).slice(0, 5)) lines.push(`  훅 ${h.event}: ${h.command}`);
+      for (const m of (i.mcp || []).slice(0, 5)) lines.push(`  MCP ${m.name}: ${m.command}`);
+      const c = i.security && i.security.counts;
+      if (c) lines.push(`  보안 점검: 네트워크 ${c.network} · 파일 삭제 ${c.delete} · 환경변수·자격증명 ${c.secrets} · 셸·프로그램 실행 ${c.exec}`);
+      for (const e of i.external || []) lines.push(`  ⚠ 실행할 때 외부 패키지를 받아 실행: ${e}`);
+    }
+    return { title: `외부 제작 플러그인 ${ids.length}개를 이 프로젝트에 설치할까요?`, detail: lines.join('\n') };
+  }
   // no window shown (direct call): compare with the local copy as it is now, if there is one
   const localDigest = (id) => { const i = inspectPlugin(id); return i.digest && !i.needsRemoteCheck ? { sha: null, digest: i.digest } : null; };
   const writeInside = (root, rel, text, expect) => writeInsideProject(root, rel, text, { safeRealpath, isPathInsideRoot, assertAncestorsClean, expect });
@@ -635,7 +652,7 @@ function setupSkills(deps) {
     if (!s) return { ok: false, error: '알 수 없는 스킬' };
     try {
       const r = await inspectRemotePlugin(id, { fetch: fetchRemote });
-      remoteInspected.set(id, { sha: r.pinned, digest: r.digest });
+      remoteInspected.set(id, { sha: r.pinned, digest: r.digest, shown: r });
       const { digest, ...shown } = r; // hashes stay in main
       return { ok: true, inspect: shown };
     } catch (e) {
@@ -676,6 +693,13 @@ function setupSkills(deps) {
     if (!exe) return { ok: false, error: 'claude CLI를 찾을 수 없습니다 (settings.json의 cli.claude 확인)' };
     running = true;
     try {
+      // Third-party: the renderer's tick is not trusted on its own — main asks the user itself
+      // with a native dialog listing what will be installed and what it runs (review r8).
+      if (third.length) {
+        if (typeof confirmThirdParty !== 'function') return { ok: false, error: '외부 제작 항목을 확인할 창을 열 수 없습니다' };
+        const approved = await confirmThirdParty(thirdPartySummary(third));
+        if (approved !== true) return { ok: false, error: '외부 제작 항목 설치를 취소했습니다', cancelled: true };
+      }
       // The official marketplace is built in; add it (project scope) only if this machine does not know it.
       const list = await run(exe, ['plugin', 'marketplace', 'list'], root);
       if (!new RegExp(`\\b${MARKETPLACE}\\b`).test(list.out)) {

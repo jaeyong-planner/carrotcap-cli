@@ -1844,6 +1844,26 @@ require('./main-skills').setupSkills({
   isAllowedCliCommand,
   findCommand: findCommandSync,
   taskkillPath: () => path.join(getSystem32Path(), 'taskkill.exe'),
+  // third-party installs: the user approves in a native dialog shown by main (review r8)
+  confirmThirdParty: async ({ title, detail }) => {
+    // E2E only (never in the packaged app): the answer comes from a file, and each asked dialog is logged
+    if (!app.isPackaged && process.env.CARROTCAP_TEST_CONFIRM_FILE) {
+      fs.appendFileSync(process.env.CARROTCAP_TEST_CONFIRM_FILE + '.log', JSON.stringify({ title, detail }) + '\n');
+      try { return fs.readFileSync(process.env.CARROTCAP_TEST_CONFIRM_FILE, 'utf8').trim() === 'yes'; } catch { return false; }
+    }
+    if (!mainWindow || mainWindow.isDestroyed()) return false;
+    const r = await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      title: 'CARROTCAP CLI — 외부 제작 플러그인',
+      message: title,
+      detail: `${detail}\n\n설치하면 위 명령이 Claude 세션에서 실행될 수 있습니다.`,
+      buttons: ['설치', '취소'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    return r.response === 0;
+  },
   // E2E only (never in the packaged app): answer GitHub reads from a local { url: text } file
   ...(!app.isPackaged && process.env.CARROTCAP_TEST_GITHUB_FIXTURE ? {
     fetchRemote: async (url) => {

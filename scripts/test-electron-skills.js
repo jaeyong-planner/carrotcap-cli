@@ -47,6 +47,12 @@ put('.claude-plugin/marketplace.json', JSON.stringify({ name: 'claude-plugins-of
 ] }));
 put('external_plugins/playwright/.mcp.json', JSON.stringify({ playwright: { command: 'npx', args: ['@playwright/mcp@latest'] } }));
 put('plugins/code-review/commands/code-review.md', '# review');
+put('plugins/code-review/assets/icon.png', 'PNG-BYTES');
+// main's native confirmation for third-party installs: answered from this file in the dev tree
+const confirmFile = path.join(tmp, 'confirm');
+fs.writeFileSync(confirmFile, 'yes');
+process.env.CARROTCAP_TEST_CONFIRM_FILE = confirmFile;
+const asked = () => (fs.existsSync(confirmFile + '.log') ? fs.readFileSync(confirmFile + '.log', 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
 put('plugins/security-guidance/hooks/hooks.json', JSON.stringify({ hooks: { PostToolUse: [{ hooks: [{ type: 'command', command: 'python3 check.py' }] }] } }));
 fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({
   settingsVersion: 4,
@@ -138,6 +144,16 @@ fs.writeFileSync(recFile, JSON.stringify(rec));
     check('main refuses a third-party install without consent', noConsent && noConsent.ok === false && /외부 제작/.test(noConsent.error || '') && calls().length === 0, JSON.stringify(noConsent));
     await ev(`document.querySelector('#skills-third-ok').click(), true`);
     check('consent enables install', !(await ev(`document.querySelector('#skills-install').disabled`)));
+    if (!process.env.CC_APP_EXE) {
+      console.log('-- main asks the user itself before a third-party install (review r8)');
+      fs.writeFileSync(confirmFile, 'no');
+      const nCalls = calls().length;
+      const forged = await ev(`window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['playwright'], true)`);
+      const q = asked().slice(-1)[0] || {};
+      check('the renderer flag alone installs nothing: the user said no in the dialog', forged && forged.ok === false && forged.cancelled === true && calls().length === nCalls, JSON.stringify(forged));
+      check('the dialog names the plugin, its maker, source and what it runs', /playwright — Microsoft/.test(q.detail || '') && /MCP playwright: npx @playwright\/mcp@latest/.test(q.detail || '') && /외부 패키지를 받아 실행/.test(q.detail || '') && /보안 점검/.test(q.detail || ''), JSON.stringify(q));
+      fs.writeFileSync(confirmFile, 'yes');
+    }
     await ev(`document.querySelector('#skills-list input[value="playwright"]').click(), true`); // untick again
     check('unticking hides the consent line', await ev(`document.querySelector('#skills-third').hidden && !document.querySelector('#skills-install').disabled`));
 
@@ -148,10 +164,12 @@ fs.writeFileSync(recFile, JSON.stringify(rec));
     check('main refuses it even with consent', noInspect && noInspect.ok === false && /확인/.test(noInspect.error || '') && calls().length === 0, JSON.stringify(noInspect));
     await ev(`document.querySelector('#skills-list input[value="superpowers"]').click(), true`);
 
+    const nAsk = asked().length;
     // pick the backend preset, then add skill-creator (which the fake fails)
     await ev(`[...document.querySelectorAll('#skills-presets button')].find((b) => b.textContent === '백엔드·API').click(); document.querySelector('#skills-list input[value="skill-creator"]').click(); true`);
     await ev(`document.querySelector('#skills-install').click(), true`);
     check('install runs and reports a partial failure', await waitFor(async () => /skill-creator/.test(await ev(`document.querySelector('#skills-progress').innerText`)) && /✗/.test(await ev(`document.querySelector('#skills-progress').innerText`)), { timeoutMs: 30000 }), await ev(`document.querySelector('#skills-progress').innerText`));
+    check('Anthropic-only installs do not open the confirmation dialog', asked().length === nAsk);
     const c = calls();
     const installs = c.filter((l) => / plugin install /.test(l));
     check('marketplace checked first (already known → not added)', / plugin marketplace list/.test(c[0] || '') && !c.some((l) => /marketplace add/.test(l)), JSON.stringify(c.slice(0, 2)));
@@ -270,6 +288,14 @@ fs.writeFileSync(recFile, JSON.stringify(rec));
     const crRun2 = await ev(`window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['code-review'])`);
     check('a file added since it was shown fails the check (review r7)', crRun2 && crRun2.ok === false && /확인하지 않은 파일.*commands\/added\.md/.test((((crRun2.results) || [])[0] || {}).out || ''), JSON.stringify(crRun2));
     fs.rmSync(crExtra);
+    const crPng = path.join(market, 'plugins', 'code-review', 'assets', 'icon.png');
+    fs.writeFileSync(crPng, 'PNG-OTHER');
+    const crRun3 = await ev(`window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['code-review'])`);
+    check('changed image bytes since shown fail the check (review r8)', crRun3 && crRun3.ok === false && /assets\/icon\.png의 내용이 확인한 것과 다릅니다/.test((((crRun3.results) || [])[0] || {}).out || ''), JSON.stringify(crRun3));
+    fs.rmSync(crPng);
+    const crRun4 = await ev(`window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['code-review'])`);
+    check('a shown file missing from the install fails the check', crRun4 && crRun4.ok === false && /설치되지 않았습니다: assets\/icon\.png/.test((((crRun4.results) || [])[0] || {}).out || ''), JSON.stringify(crRun4));
+    fs.writeFileSync(crPng, 'PNG-BYTES');
     const crOk = await ev(`window.carrotcap.skillsInstall(${JSON.stringify(project)}, ['code-review'])`);
     check('unchanged, it installs and is kept', crOk && crOk.ok === true, JSON.stringify(crOk));
 
