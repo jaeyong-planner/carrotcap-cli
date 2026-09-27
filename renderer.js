@@ -757,6 +757,12 @@
       // ESC를 뺀 paste와 Enter를 한 트랜잭션으로 보낸다 — Enter 직전에도 다시 확인하므로
       // 그 사이 에이전트가 끝나 셸로 돌아갔다면 보내지 않는다 (review r5·r8).
       // 둘 다 전달됐을 때만 주석·에러를 "보냄" 처리.
+      // The attachment was removed/refreshed while this send was prepared: send nothing (task-019).
+      if (typeof prepared.valid === 'function' && !prepared.valid()) {
+        composerInput.value = typed; autoGrowComposer();
+        showComposerNotice('콘솔 에러 첨부가 바뀌어 보내지 않았습니다 — 다시 보내세요');
+        return;
+      }
       const delivered = await api.pasteGuarded(ptyId, text, prepared.token, true);
       if (delivered) prepared.commit();
       else { composerInput.value = typed; autoGrowComposer(); showComposerNotice('전송 실패 — 세션을 확인하세요'); }

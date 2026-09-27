@@ -153,6 +153,15 @@ const server = http.createServer((req, res) => {
   await ev(`document.querySelector('.btn-cli[data-cli="claude"]').click(), true`);
   check('fake agent started', await waitFor(async () => /fake-agent ready/.test(await screen())));
   await sleep(500);
+  // ✕ between preparing the send and delivering it: nothing is sent (review r4).
+  fs.writeFileSync(path.join(tmp, 'agent-received.bin'), '');
+  await ev(`window.__ccDecorate = window.CarrotcapBrowser.decorate; window.CarrotcapBrowser.decorate = async (...a) => { const r = await window.__ccDecorate(...a); const x = document.querySelector('#composer-attach-remove'); if (x) x.click(); return r; }; true`);
+  await ev(`document.querySelector('#composer-notice').textContent = ''; document.querySelector('#composer-send').click(); true`);
+  await sleep(1200);
+  check('attachment removed while the send was prepared → nothing sent', /첨부가 바뀌어/.test(await notice()) && received() === '' && (await composerVal()) === '1번 버튼 눌러도 결제가 안 돼', `${await notice()} | ${JSON.stringify(received().slice(0, 60))}`);
+  check('pins kept by the cancelled send', (await ev(`document.querySelectorAll('#br-pins .br-pin').length`)) === 1);
+  await ev(`window.CarrotcapBrowser.decorate = window.__ccDecorate; delete window.__ccDecorate; document.querySelector('#br-errors-to-chat').click(); true`);
+  await waitFor(async () => /boom-on-load/.test(await attachText()));
   await ev(`document.querySelector('#composer-send').click(), true`);
   check('agent received the [브라우저 컨텍스트] block', await waitFor(() => /\[\S*\s?\S*\]|CARROTCAP/.test(received()) && received().includes('\x1b[201~')), JSON.stringify(received().slice(0, 120)));
   const got = Buffer.from(received(), 'latin1').toString('utf8');
@@ -303,6 +312,13 @@ const server = http.createServer((req, res) => {
   check('same call with a current token succeeds', ok === true && await waitFor(() => received().includes('fresh context')));
   const reuse = await ev(`window.carrotcap.pasteGuarded(${JSON.stringify(agentPty)}, '# replay', ${JSON.stringify(cur2 && cur2.token)})`);
   check('a token works only once', reuse === false);
+  // Attaching console errors (a lookup that is never pasted) must not replace the ticket of a
+  // send in flight (review r4).
+  const cur5 = await ev(`(async () => { for (let g = 0; g < 400; g++) { const c = await window.carrotcap.browserContext({ screenshot: false, includeErrors: false, gen: g }); if (c && !c.stale) return c; } return null; })()`);
+  const lookup = await ev(`(async () => { for (let g = 0; g < 400; g++) { const c = await window.carrotcap.browserContext({ screenshot: false, includeErrors: true, noToken: true, gen: g }); if (c && !c.stale) return c; } return null; })()`);
+  check('error lookup with noToken hands out no token', !!lookup && lookup.token === undefined);
+  const afterLookup = await ev(`window.carrotcap.pasteGuarded(${JSON.stringify(agentPty)}, '# after lookup', ${JSON.stringify(cur5 && cur5.token)})`);
+  check('a pending send token survives an error lookup', afterLookup === true && await waitFor(() => received().includes('after lookup')));
   // Redeem right behind a reload request: the IPC can land before
   // did-start-navigation bumps pageGen (review r10).
   const cur3 = await ev(`(async () => { for (let g = 0; g < 400; g++) { const c = await window.carrotcap.browserContext({ screenshot: false, includeErrors: false, gen: g }); if (c && !c.stale) return c; } return null; })()`);
@@ -381,10 +397,12 @@ const server = http.createServer((req, res) => {
   await waitFor(async () => /boom-on-load/.test(await attachText()));
 
   console.log('-- close');
-  await ev(`document.querySelector('#toggle-browser').click(), true`);
+  // Refresh the attachment and close in the same tick: the late lookup must not re-attach (review r4).
+  await ev(`document.querySelector('#br-errors-to-chat').click(); document.querySelector('#toggle-browser').click(); true`);
   check('browser view destroyed on close', await waitFor(async () => !(await app.targets()).some((t) => t.url.startsWith(site))));
   check('layout back to terminal only', !(await ev(`document.body.classList.contains('browser-mode')`)));
-  check('closing the browser drops the attachment', (await attachText()) === '' && !(await ev(`window.CarrotcapBrowser.hasAttachment()`)));
+  await sleep(1000);
+  check('closing the browser drops the attachment (and a late lookup does not bring it back)', (await attachText()) === '' && !(await ev(`window.CarrotcapBrowser.hasAttachment()`)));
   // Real history recall (↑ in an empty input box): only what was typed, never page text.
   await ev(`document.querySelector('#composer-input').value = ''; document.querySelector('#composer-input').focus(), true`);
   const seen = [];

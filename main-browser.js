@@ -488,6 +488,9 @@ function setupBrowser({ handle, getWindow, safeMkdir, assertAncestorsClean, isPa
       out.errorsSkipped = fresh.length - out.errors.length;
       out.errorMark = fresh.length ? fresh[fresh.length - 1].seq : reportedSeq; // pass back to browser:commit
     }
+    // A lookup that will not be pasted (e.g. attaching console errors) must not replace the
+    // one-time ticket of a send in flight (task-019 review r4).
+    if (p.noToken === true) return out;
     out.token = require('crypto').randomBytes(16).toString('hex');
     contextTicket = { token: out.token, gen, view: capturedView };
     return out;

@@ -191,6 +191,7 @@
   }
 
   api.onBrowserState((s) => {
+    if (s && !s.open) dropAttachment(); // the view is gone: its errors go with it
     if (!s || !s.open) return;
     st.url = s.url || '';
     if (document.activeElement !== urlInput && s.url) urlInput.value = s.url;
@@ -333,7 +334,10 @@
       renderPins();
       renderErrorsButton();
     };
-    return { text: block, commit, context: true, token: ctx.token };
+    // valid(): checked right before delivery — if the user removed or refreshed the attachment
+    // while this send was being prepared, nothing is sent (review r4).
+    const valid = () => !attach || st.attach === attach;
+    return { text: block, commit, context: true, token: ctx.token, valid };
   }
 
   // ---- 콘솔 에러 → 입력창 첨부 (task-019) ----
@@ -350,8 +354,13 @@
     renderErrorsButton();
     try {
       const gen = st.pageGen;
-      const ctx = await api.browserContext({ screenshot: false, includeErrors: true, gen });
-      if (!ctx || ctx.stale || gen !== st.pageGen || !Array.isArray(ctx.errors) || !ctx.errors.length) return;
+      const openToken = st.openToken;
+      // noToken: this lookup is never pasted — it must not replace the one-time ticket of a
+      // send in flight (review r4).
+      const ctx = await api.browserContext({ screenshot: false, includeErrors: true, noToken: true, gen });
+      // The browser may have closed/reopened or the page changed while we waited (review r4).
+      if (!st.active || !st.open || openToken !== st.openToken || gen !== st.pageGen) return;
+      if (!ctx || ctx.stale || !Array.isArray(ctx.errors) || !ctx.errors.length) return;
       const lines = ctx.errors.map((e) => `[${oneLine(e.level, 10)}] ${oneLine(e.message)}${e.source ? ` (${oneLine(e.source, 300)}${e.line ? ':' + e.line : ''})` : ''}`);
       st.attach = { gen: ctx.gen, mark: ctx.errorMark, lines, total: lines.length + (ctx.errorsSkipped || 0), skipped: ctx.errorsSkipped || 0 };
       renderAttach();
@@ -364,7 +373,11 @@
 
   // ---- 이벤트 ----
   function bind() {
-    if (errorsToChat) errorsToChat.onclick = () => { attachErrors().catch(() => renderErrorsButton()); };
+    if (errorsToChat) {
+      errorsToChat.onclick = () => {
+        attachErrors().catch(() => { renderErrorsButton(); notify('콘솔 에러 첨부를 만들지 못했습니다 — 다시 시도하세요'); });
+      };
+    }
     renderErrorsButton();
     $('#toggle-browser').onclick = () => setActive(!st.active);
     $('#br-go').onclick = openUrl;
