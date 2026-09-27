@@ -28,3 +28,9 @@
 ## CLI 운영 예시
 - Review: codex "agents/reviewer.md 규약에 따라 최근 변경을 리뷰해줘"
 - Media: powershell -File scripts/run-media.ps1 -TaskId task-001 -Slug logo -Request "..."
+
+## System One 우선 판단 (CLM-8B 서버 우선 · 없으면 Jev, TYPESAFE_API_KEY)
+- 파일·검색 결과·백로그·에러 로그·후보 해법처럼 후보가 많은 좁은 판단(분류·필터·순위·검증)은 통째로 읽기 전에 `node scripts/system-one.js req.json`으로 먼저 거른다. 같은 state의 질문은 한 요청에 묶는다.
+- 결과는 세 갈래로 나눈다: noul ≥ 0.85 진행 / ≤ 0.15 제외 / 사이는 직접 확인. choice·score는 confidence < 0.7이면 직접 확인. 임계값은 출발값이며 logs/system-one/ 기록(backend별)으로 조정한다.
+- 계산·날짜·개수, 권한·보안·실행 결정, 한 번뿐인 판단, 열린 결과물에는 쓰지 않는다. 판단 결과를 이유로 검사를 건너뛰지 않는다.
+- 백엔드가 없거나(exit 3) 오류가 나면(exit 4) 재시도하지 않고 직접 읽는 방식으로 진행한다. Jev 모델은 jev-1.13.0으로 고정한다.

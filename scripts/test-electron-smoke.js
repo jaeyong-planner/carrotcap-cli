@@ -303,9 +303,10 @@ const PROBE = `(async () => {
 
   console.log('-- CLI line-up (task-012)');
   const cliKeys = await ev(`[...document.querySelectorAll('.btn-cli')].map((b) => b.dataset.cli).join(',')`);
-  check('QUICK CLI is claude,codex,grok (no gemini)', cliKeys === 'claude,codex,grok', cliKeys);
+  check('QUICK CLI is claude,codex,grok + JEV (claude with the Jev skill, no gemini)', cliKeys === 'claude,codex,grok,claude', cliKeys);
+  check('the 4th QUICK CLI button is JEV', (await ev(`[...document.querySelectorAll('.btn-cli')][3].dataset.skill + '/' + [...document.querySelectorAll('.btn-cli')][3].textContent`)) === 'jev/JEV');
   const flows = await ev(`[...document.querySelectorAll('.btn-flow[data-flow]')].map((b) => b.dataset.flow).join(',')`);
-  check('flow buttons are start,review,media', flows === 'start,review,media', flows);
+  check('flow buttons are start,review,media,clm', flows === 'start,review,media,clm', flows);
   const status = await ev(`window.carrotcap.cliStatus()`);
   check('cli:status reports every configured CLI', status && ['claude', 'codex', 'grok'].every((k) => typeof status[k] === 'boolean'), JSON.stringify(status));
   check('cli:status finds installed claude', status && status.claude === true);

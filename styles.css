@@ -107,7 +107,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 .tree .node.file { color: var(--text); }
 .tree .node .indent { display: inline-block; }
 
-.cli-buttons { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+.cli-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .btn-cli {
   padding: 8px 4px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px;
   background: var(--raised); color: var(--text); border: 1px solid var(--border);
@@ -280,7 +280,6 @@ body.browser-mode #work { flex: 2 1 0; min-width: 360px; } /* 브라우저 : 터
 .skill-progress.fail { color: var(--red); }
 .skill-progress.running { color: var(--accent); }
 .skills-actions { display: flex; gap: 6px; justify-content: flex-end; }
-.btn-flow.wide { grid-column: 1 / -1; }
 
 /* ---------- 스크롤바 ---------- */
 ::-webkit-scrollbar { width: 8px; height: 8px; }

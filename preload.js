@@ -73,6 +73,11 @@ const api = {
   skillsSkip: (projectRoot) => ipcRenderer.invoke('skills:skip', projectRoot),
   skillsInspectRemote: (id) => ipcRenderer.invoke('skills:inspect-remote', id),
   skillsInstall: (projectRoot, ids, confirmThirdParty = false) => ipcRenderer.invoke('skills:install', { projectRoot, ids, confirmThirdParty }),
+  // task-025: Jev (typesafe plugin)
+  skillsAddMarketplace: (projectRoot, id) => ipcRenderer.invoke('skills:add-marketplace', { projectRoot, id }),
+  jevStatus: (projectRoot) => ipcRenderer.invoke('skills:jev-status', projectRoot || null),
+  clmStatus: () => ipcRenderer.invoke('system-one:clm-status'),
+  openKeys: () => ipcRenderer.invoke('keys:open'),
   onSkillsProgress: (handler) => {
     const wrap = (_e, payload) => handler(payload);
     ipcRenderer.on('skills:progress', wrap);

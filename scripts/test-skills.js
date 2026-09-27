@@ -25,7 +25,7 @@ check('install argv is fixed tokens + the id', JSON.stringify(sk.installArgs('co
 
 console.log('-- CLAUDE.md block');
 const block = sk.buildSkillsBlock(['code-review', 'superpowers', 'bogus']);
-check('block is marked and lists the installed plugins', block.startsWith(sk.SKILLS_BLOCK_START) && block.trimEnd().endsWith(sk.SKILLS_BLOCK_END) && /superpowers, code-review/.test(block));
+check('block is marked and lists the installed plugins', block.startsWith(sk.SKILLS_BLOCK_START) && block.trimEnd().endsWith(sk.SKILLS_BLOCK_END) && /superpowers@claude-plugins-official, code-review@claude-plugins-official/.test(block) && !/bogus/.test(block));
 check('one rule per installed plugin, none for others', /\/code-review/.test(block) && /systematic-debugging/.test(block) && !/frontend-design/.test(block) && !/bogus/.test(block));
 const user = '# My project\n\nOwn rules here.\n';
 const once = sk.mergeSkillsBlock(user, block);
@@ -338,6 +338,50 @@ console.log('-- what a plugin contains (local marketplace copy)');
   const lb = sk.inspectPlugin('playwright', cfg);
   check('local binary → not inspectable (so not installable as third-party)', lb.available === false && /바이너리/.test(lb.note), JSON.stringify(lb));
   fs.rmSync(cfg, { recursive: true, force: true });
+
+  console.log('-- task-025: Jev (typesafe) from its own marketplace');
+  {
+    const ts = sk.SKILL_CATALOG.find((s) => s.id === 'typesafe');
+    check('typesafe is in the catalog, third-party, own marketplace', ts && ts.thirdParty === true && sk.marketOf('typesafe') === 'typesafe-ai' && sk.marketOf('code-review') === sk.MARKETPLACE);
+    check('install / uninstall argv use its marketplace', JSON.stringify(sk.installArgs('typesafe')) === JSON.stringify(['plugin', 'install', 'typesafe@typesafe-ai', '--scope', 'project'])
+      && JSON.stringify(sk.uninstallArgs('typesafe')) === JSON.stringify(['plugin', 'uninstall', 'typesafe@typesafe-ai', '--scope', 'project']));
+    check('marketplace add argv for typesafe-ai is fixed, project scope', JSON.stringify(sk.marketplaceAddArgs('typesafe-ai')) === JSON.stringify(['plugin', 'marketplace', 'add', 'typesafe-ai/skills', '--scope', 'project']));
+    let threw = false;
+    try { sk.marketplaceAddArgs('evil/repo'); } catch { threw = true; }
+    check('unknown marketplace → refused', threw);
+    check('CLAUDE.md block names plugin@marketplace', /typesafe@typesafe-ai/.test(sk.buildSkillsBlock(['typesafe', 'code-review'])) && /code-review@claude-plugins-official/.test(sk.buildSkillsBlock(['typesafe', 'code-review'])));
+    const listOut = 'Configured marketplaces:\n\n  ❯ claude-plugins-official\n    Source: GitHub (anthropics/claude-plugins-official)\n\n  ❯ typesafe-ai\n    Source: GitHub (typesafe-ai/skills)\n';
+    check('marketplace list: exact names only', sk.listsMarketplace(listOut, 'typesafe-ai') && sk.listsMarketplace(listOut, sk.MARKETPLACE) && !sk.listsMarketplace(listOut, 'typesafe') && !sk.listsMarketplace('Configured marketplaces:\n  claude-plugins-official-fork\n', sk.MARKETPLACE));
+
+    // a plugin that IS the marketplace folder ("source": "./")
+    const tcfg = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-ts-'));
+    const tm = path.join(tcfg, 'plugins', 'marketplaces', 'typesafe-ai');
+    const tput = (rel, text) => { fs.mkdirSync(path.dirname(path.join(tm, rel)), { recursive: true }); fs.writeFileSync(path.join(tm, rel), text); };
+    tput('.claude-plugin/marketplace.json', JSON.stringify({ name: 'typesafe-ai', plugins: [{ name: 'typesafe', source: './' }] }));
+    tput('.claude-plugin/plugin.json', JSON.stringify({ name: 'typesafe', version: '0.5.7' }));
+    tput('skills/typesafe-ai/SKILL.md', '# Build with TypeSafe\nexport TYPESAFE_API_KEY\n');
+    tput('.git/HEAD', 'a'.repeat(40));
+    const ti = sk.inspectPlugin('typesafe', tcfg);
+    check('"./" source is inspected: skill counted, version, commit, .git skipped', ti.available === true && ti.components.includes('스킬 1') && ti.version === '0.5.7' && ti.pinned === 'a'.repeat(40) && !Object.keys(ti.digest.files).some((p) => p.startsWith('.git/')), JSON.stringify(ti));
+    check('the API key mention is flagged by the scan', ti.security.counts.secrets >= 1);
+    fs.writeFileSync(path.join(tm, '.claude-plugin', 'marketplace.json'), JSON.stringify({ name: 'typesafe-ai', plugins: [{ name: 'typesafe', source: '.' }] }));
+    check('"." (not "./") is still refused', sk.inspectPlugin('typesafe', tcfg).available === false);
+
+    console.log('-- task-025: is Jev installed?');
+    const rec = (entries) => fs.writeFileSync(path.join(tcfg, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'typesafe@typesafe-ai': entries } }));
+    const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-tsp-'));
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-tso-'));
+    check('no record → not installed', sk.jevInstalled(proj, { configDir: tcfg }) === null);
+    rec([{ scope: 'user', installPath: 'x' }]);
+    check('user scope → installed anywhere, even without a project', sk.jevInstalled(null, { configDir: tcfg }) === 'user');
+    rec([{ scope: 'project', projectPath: other }]);
+    check('project scope for another folder → not here', sk.jevInstalled(proj, { configDir: tcfg }) === null && sk.jevInstalled(null, { configDir: tcfg }) === null);
+    rec([{ scope: 'project', projectPath: other }, { scope: 'local', projectPath: proj.toUpperCase() }]);
+    check('local scope for this folder (case-insensitive) → installed', sk.jevInstalled(proj, { configDir: tcfg }) === 'local');
+    fs.writeFileSync(path.join(tcfg, 'plugins', 'installed_plugins.json'), '{broken');
+    check('broken record → not installed, no throw', sk.jevInstalled(proj, { configDir: tcfg }) === null);
+    for (const d of [tcfg, proj, other]) fs.rmSync(d, { recursive: true, force: true });
+  }
 
   if (process.platform === 'win32') {
     console.log('-- timeout kills the whole process tree (review r1/r2)');

@@ -23,6 +23,7 @@ try {
   console.warn('[carrotcap] pty load failed, falling back to child_process:', err.message);
 }
 const { spawn } = require('child_process');
+const { clmBaseUrl, CLM_DEFAULT_URL } = require('./scripts/system-one.js'); // task-025
 
 const APP_ROOT = __dirname;
 // task-008: mutable state lives in a per-user data dir, never next to the code.
@@ -199,7 +200,49 @@ function validateSettings(input) {
     out.ui = ui;
   }
 
+  // task-025: CLM-8B server used by scripts/system-one.js (same URL rules as the script:
+  // http only on loopback, anything remote over https, no credentials/query)
+  if (input.systemOne && typeof input.systemOne === 'object' && !Array.isArray(input.systemOne)) {
+    const so = {};
+    const clm = typeof input.systemOne.clmUrl === 'string' ? clmBaseUrl(input.systemOne.clmUrl) : null;
+    if (clm) so.clmUrl = clm;
+    out.systemOne = so;
+  }
+
   return out;
+}
+
+// task-025: API keys the user keeps in %USERPROFILE%\.carrotcap\keys.env (KEY=value per line,
+// # comments). Read on every terminal spawn, so a key typed in works without restarting the
+// app. Only these names are read; values go into terminal env only (never to the renderer).
+const USER_KEY_NAMES = ['TYPESAFE_API_KEY', 'CLM_API_KEY'];
+function userKeysPath() {
+  // dev tree / E2E only: a different file (the packaged app always uses the profile file)
+  if (!app.isPackaged && process.env.CARROTCAP_KEYS_FILE) return process.env.CARROTCAP_KEYS_FILE;
+  return path.join(os.homedir(), '.carrotcap', 'keys.env');
+}
+function loadUserKeys() {
+  let text;
+  try {
+    const p = userKeysPath();
+    const st = fs.lstatSync(p);
+    if (!st.isFile() || st.size > 64 * 1024) return {};
+    text = fs.readFileSync(p, 'utf8');
+  } catch { return {}; }
+  const out = {};
+  for (const line of text.replace(/^﻿/, '').split(/\r?\n/)) {
+    const m = /^\s*([A-Z_]+)\s*=\s*(.*?)\s*$/.exec(line);
+    if (!m || !USER_KEY_NAMES.includes(m[1])) continue;
+    const v = m[2].replace(/^(['"])(.*)\1$/, '$2').trim();
+    if (v && v.length <= 512 && !/[\s\0]/.test(v)) out[m[1]] = v;
+  }
+  return out;
+}
+
+// CLM server base URL from settings (default: clm-serve on this machine).
+function resolveClmUrl(settings) {
+  const s = settings && settings.systemOne && typeof settings.systemOne.clmUrl === 'string' ? clmBaseUrl(settings.systemOne.clmUrl) : null;
+  return s || CLM_DEFAULT_URL;
 }
 
 // Each step runs once per settings file (settingsVersion), so a later user choice
@@ -1016,11 +1059,13 @@ function ensureAiopsProjectStructure(projectRoot) {
     safeMkdir(projectScriptsDir, realRoot);
     copyTemplateIfMissing(tmpl.runMedia, path.join(projectScriptsDir, 'run-media.ps1'), realRoot);
     copyTemplateIfMissing(tmpl.runReviewer, path.join(projectScriptsDir, 'run-reviewer.ps1'), realRoot);
+    copyTemplateIfMissing(tmpl.systemOne, path.join(projectScriptsDir, 'system-one.js'), realRoot); // task-025
+    copyTemplateIfMissing(tmpl.setupClm, path.join(projectScriptsDir, 'setup-clm.sh'), realRoot);
   } catch (e) {
     // Non-fatal (e.g. projectRoot/scripts is a symlink): the agents/logs/backlog
     // structure still works, but the caller must tell the user (Codex task-014 r6).
     console.warn('[carrotcap] aiops scripts deployment failed:', e.message);
-    warning = 'AIOps 구조는 만들었지만 scripts/run-media.ps1·run-reviewer.ps1을 복사하지 못했습니다 (scripts 폴더 권한/링크 확인).';
+    warning = 'AIOps 구조는 만들었지만 scripts/run-media.ps1·run-reviewer.ps1·system-one.js·setup-clm.sh를 복사하지 못했습니다 (scripts 폴더 권한/링크 확인).';
   }
 
   const claudePath = path.join(realRoot, 'CLAUDE.md');
@@ -1083,7 +1128,9 @@ function getAiopsTemplateSources() {
     media:         path.join(root, 'agents', 'media.md'),
     reviewer:      path.join(root, 'agents', 'reviewer.md'),
     runMedia:      path.join(root, 'scripts', 'run-media.ps1'),
-    runReviewer:   path.join(root, 'scripts', 'run-reviewer.ps1')
+    runReviewer:   path.join(root, 'scripts', 'run-reviewer.ps1'),
+    systemOne:     path.join(root, 'scripts', 'system-one.js'),
+    setupClm:      path.join(root, 'scripts', 'setup-clm.sh')
   };
 }
 
@@ -1236,6 +1283,9 @@ function spawnSession(rawPayload) {
   const hookSettings = resolveCompressHook(settings);
   if (hookSettings) env.CARROTCAP_CLAUDE_SETTINGS = hookSettings;
   else delete env.CARROTCAP_CLAUDE_SETTINGS;
+  // task-025: scripts/system-one.js in this pane talks to the CLM server from settings
+  env.CLM_URL = resolveClmUrl(settings);
+  Object.assign(env, loadUserKeys()); // keys.env wins over the app's own environment
 
   let proc;
   try {
@@ -1807,6 +1857,59 @@ handle('cli:status', async () => {
   return out;
 });
 
+// task-025: open keys.env in an editor (Notepad on Windows), creating an empty template first.
+// Fixed target only (no path from the renderer); returns the path, never the contents.
+const USER_KEYS_TEMPLATE = [
+  '# CARROTCAP CLI — API 키 (이 파일은 이 PC 사용자 폴더에만 있고, 프로젝트/깃에 들어가지 않습니다)',
+  '# 형식: 이름=값  (따옴표·공백 없이). 저장하면 앱에서 새로 여는 터미널부터 적용됩니다.',
+  '#',
+  '# Jev (TypeSafe) — 키 발급: https://console.typesafe.ai/keys',
+  'TYPESAFE_API_KEY=',
+  '#',
+  '# CLM-8B 서버에 CLM_API_KEY를 걸었을 때만 입력 (로컬 기본 설정이면 비워 두세요)',
+  'CLM_API_KEY=',
+  '',
+].join('\r\n');
+handle('keys:open', async () => {
+  const file = userKeysPath();
+  try {
+    let st = null;
+    try { st = fs.lstatSync(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    if (st && (st.isSymbolicLink() || !st.isFile())) return { ok: false, error: 'keys.env가 일반 파일이 아닙니다' };
+    if (!st) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, USER_KEYS_TEMPLATE, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    }
+    if (!app.isPackaged && process.env.CARROTCAP_TEST_NO_EDITOR) {
+      // E2E: no editor window
+    } else if (process.platform === 'win32') {
+      const child = spawn(path.join(process.env.SystemRoot || 'C:\\Windows', 'notepad.exe'), [file], { detached: true, stdio: 'ignore', windowsHide: false });
+      child.on('error', () => {});
+      child.unref();
+    } else {
+      const err = await shell.openPath(file);
+      if (err) return { ok: false, error: err, path: file };
+    }
+    return { ok: true, path: file };
+  } catch (e) {
+    return { ok: false, error: e.message, path: file };
+  }
+});
+
+// task-025: is the CLM server (settings.systemOne.clmUrl) answering? Any HTTP reply counts;
+// only the URL and the result go back (no key, no body).
+handle('system-one:clm-status', async () => {
+  const url = resolveClmUrl(loadSettings() || {});
+  const mod = url.startsWith('https:') ? require('https') : require('http');
+  const up = await new Promise((resolve) => {
+    // a CLM server answers /v1/models with 2xx; any other reply is not treated as CLM (review task-025 r2)
+    const req = mod.get(`${url}/v1/models`, { timeout: 1500 }, (res) => { res.resume(); resolve(res.statusCode >= 200 && res.statusCode < 300); });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', () => resolve(false));
+  });
+  return { url, up };
+});
+
 // Is a usable AOR engine present? The renderer hides the AOR badge when not.
 handle('aor:status', () => {
   const settings = loadSettings() || {};
@@ -1845,6 +1948,8 @@ require('./main-skills').setupSkills({
   findCommand: findCommandSync,
   taskkillPath: () => path.join(getSystem32Path(), 'taskkill.exe'),
   // third-party installs: the user approves in a native dialog shown by main (review r8)
+  // task-025: whether a Jev key exists (keys.env or the app environment) — never the value
+  hasTypesafeKey: () => !!(loadUserKeys().TYPESAFE_API_KEY || (process.env.TYPESAFE_API_KEY || '').trim()),
   confirmThirdParty: async ({ title, detail }) => {
     // E2E only (never in the packaged app): the answer comes from a file, and each asked dialog is logged
     if (!app.isPackaged && process.env.CARROTCAP_TEST_CONFIRM_FILE) {

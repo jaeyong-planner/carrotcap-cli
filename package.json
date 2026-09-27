@@ -8,7 +8,7 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "test": "node scripts/test-validate-settings.js && node scripts/test-compress-hook.js && node scripts/test-skills.js",
+    "test": "node scripts/test-validate-settings.js && node scripts/test-compress-hook.js && node scripts/test-skills.js && node scripts/test-system-one.js",
     "test:smoke": "node scripts/test-electron-smoke.js",
     "test:resume": "node scripts/test-electron-resume.js",
     "test:browser": "node scripts/test-electron-browser.js",
@@ -59,6 +59,8 @@
       "templates/**/*",
       "scripts/run-media.ps1",
       "scripts/run-reviewer.ps1",
+      "scripts/system-one.js",
+      "scripts/setup-clm.sh",
       "fonts/**/*"
     ],
     "extraResources": [

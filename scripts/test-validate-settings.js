@@ -32,8 +32,11 @@ const aiopsBlock = source.slice(aiopsStart, aiopsEnd);
 
 // Build a sandboxed module: eval the block and export the helpers.
 // APP_ROOT is injectable so missing-template cases can use an empty app root.
-const makeWrapper = (appRoot) => `
+const makeWrapper = (appRoot, packaged = false) => `
 const fs = require('fs');
+const os = require('os');
+const { clmBaseUrl, CLM_DEFAULT_URL } = require(${JSON.stringify(path.join(__dirname, 'system-one.js'))});
+const app = { isPackaged: ${packaged ? "true" : "false"} };
 const APP_ROOT = ${JSON.stringify(appRoot)};
 ${block}
 ${aiopsBlock}
@@ -90,11 +93,14 @@ module.exports = {
   writeJsonAtomic,
   AOR_RAW_KEEP,
   AOR_REPORT_KEEP,
+  resolveClmUrl,
+  loadUserKeys,
+  userKeysPath,
 };
 `;
-function loadHelpers(appRoot, proc = process) {
+function loadHelpers(appRoot, proc = process, packaged = false) {
   const mod = { exports: {} };
-  new Function('module', 'require', 'process', 'path', makeWrapper(appRoot))(mod, require, proc, path);
+  new Function('module', 'require', 'process', 'path', makeWrapper(appRoot, packaged))(mod, require, proc, path);
   return mod.exports;
 }
 const m = { exports: loadHelpers(path.join(__dirname, '..')) };
@@ -110,7 +116,8 @@ const {
   sanitizeHistoryLayout, applyHistorySnapshot, finalizeHistoryRecord, dropResumableLayouts,
   pickResumableSession, isHistoryExpired, HISTORY_MAX_SESSIONS, sanitizeHistoryRecord,
   pruneAorRuntime, AOR_RAW_KEEP, AOR_REPORT_KEEP, buildCompressHookSettings, claudeArgsTakeHook, buildLaunchShims, LAUNCH_SHIM_NAMES, isOwnLaunchShim, isCanonicalInstall,
-  applyRendererSettings, ensureBuiltinCli, isAllowedCliCommand, writeJsonAtomic
+  applyRendererSettings, ensureBuiltinCli, isAllowedCliCommand, writeJsonAtomic,
+  resolveClmUrl, loadUserKeys, userKeysPath
 } = m.exports;
 
 let pass = 0;
@@ -448,7 +455,7 @@ console.log('-- ensureAiopsProjectStructure from templates/aiops (task-009)');
   check('workflow.md from template', out('backlog', 'workflow.md') === tmpl('workflow.md'));
   check('media/reviewer deployed',
     fs.existsSync(path.join(ws, 'agents', 'media.md')) && fs.existsSync(path.join(ws, 'agents', 'reviewer.md')));
-  check('helper scripts deployed', fs.existsSync(path.join(ws, 'scripts', 'run-reviewer.ps1')));
+  check('helper scripts deployed', fs.existsSync(path.join(ws, 'scripts', 'run-reviewer.ps1')) && fs.existsSync(path.join(ws, 'scripts', 'system-one.js')) && fs.existsSync(path.join(ws, 'scripts', 'setup-clm.sh')));
 
   const claude = out('CLAUDE.md');
   check('existing CLAUDE.md content preserved', claude.startsWith('# existing project rules\n'));
@@ -474,7 +481,7 @@ console.log('-- missing templates: refuse before writing (task-009 review)');
   const emptyRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'carrotcap-noroot-'));
   const broken = loadHelpers(emptyRoot);
   const missing = broken.findMissingAiopsTemplates();
-  check('empty app root reports all 8 templates missing', missing.length === 8, missing.join(','));
+  check('empty app root reports all 10 templates missing (task-025: + scripts/system-one.js, setup-clm.sh)', missing.length === 10 && missing.includes(path.join('scripts', 'setup-clm.sh')) && missing.includes(path.join('scripts', 'system-one.js')), missing.join(','));
   check('missing list names templates/aiops/supervisor.md', missing.includes(path.join('templates', 'aiops', 'supervisor.md')));
 
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'carrotcap-partial-'));
@@ -543,6 +550,36 @@ console.log('-- bundled settings.json (task-012)');
   const cleaned = validateSettings(bundled);
   check('bundled CLIs are claude, codex, grok', Object.keys(cleaned.cli).join(',') === 'claude,codex,grok', Object.keys(cleaned.cli).join(','));
   check('bundled settings already at current version', migrateSettings(cleaned).changed === false);
+}
+
+console.log('-- task-025: systemOne settings and keys.env');
+{
+  const bundled = validateSettings(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'settings.json'), 'utf8')));
+  check('bundled systemOne.clmUrl kept (comment dropped)', bundled.systemOne && bundled.systemOne.clmUrl === 'http://127.0.0.1:8700' && !('_comment' in bundled.systemOne), JSON.stringify(bundled.systemOne));
+  check('https remote kept, normalized', validateSettings({ systemOne: { clmUrl: 'https://gpu.example.com/clm/' } }).systemOne.clmUrl === 'https://gpu.example.com/clm');
+  for (const bad of ['http://gpu.example.com:8700', 'https://u:p@x.example', 'javascript:alert(1)', 42]) {
+    check(`clmUrl dropped: ${String(bad)}`, !('clmUrl' in validateSettings({ systemOne: { clmUrl: bad } }).systemOne));
+  }
+  check('resolveClmUrl: default when unset or invalid', resolveClmUrl({}) === 'http://127.0.0.1:8700' && resolveClmUrl({ systemOne: { clmUrl: 'http://evil.example' } }) === 'http://127.0.0.1:8700' && resolveClmUrl({ systemOne: { clmUrl: 'http://localhost:9000' } }) === 'http://localhost:9000');
+
+  const os = require('os');
+  const kd = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-keys-'));
+  const kf = path.join(kd, 'keys.env');
+  const prev = process.env.CARROTCAP_KEYS_FILE;
+  process.env.CARROTCAP_KEYS_FILE = kf;
+  check('dev override of the keys file path', userKeysPath() === kf);
+  const packagedHelpers = loadHelpers(path.join(__dirname, '..'), process, true);
+  check('packaged app ignores CARROTCAP_KEYS_FILE → profile keys.env only', packagedHelpers.userKeysPath() === path.join(os.homedir(), '.carrotcap', 'keys.env'), packagedHelpers.userKeysPath());
+  check('no file → no keys', JSON.stringify(loadUserKeys()) === '{}');
+  fs.writeFileSync(kf, ['\uFEFF# comment', 'TYPESAFE_API_KEY= jv_live_abc ', 'CLM_API_KEY="clm_x"', 'PATH=C:\\evil', '# TYPESAFE_API_KEY=commented', ''].join('\r\n'));
+  const k = loadUserKeys();
+  check('reads only whitelisted names (BOM, CRLF, spaces, quotes ok)', k.TYPESAFE_API_KEY === 'jv_live_abc' && k.CLM_API_KEY === 'clm_x' && !('PATH' in k), JSON.stringify(Object.keys(k)));
+  fs.writeFileSync(kf, 'TYPESAFE_API_KEY=\nCLM_API_KEY=has space\n');
+  check('empty values and values with spaces are ignored', JSON.stringify(loadUserKeys()) === '{}');
+  fs.writeFileSync(kf, 'TYPESAFE_API_KEY=' + 'x'.repeat(70 * 1024));
+  check('oversized file ignored', JSON.stringify(loadUserKeys()) === '{}');
+  if (prev === undefined) delete process.env.CARROTCAP_KEYS_FILE; else process.env.CARROTCAP_KEYS_FILE = prev;
+  fs.rmSync(kd, { recursive: true, force: true });
 }
 
 console.log('-- session history helpers (task-013)');

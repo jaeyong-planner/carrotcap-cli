@@ -43,7 +43,7 @@
       const head = document.createElement('div');
       head.className = 'skill-head';
       const name = document.createElement('strong');
-      name.textContent = s.id;
+      name.textContent = s.label || s.id;
       const maker = document.createElement('span');
       maker.className = 'skill-maker' + (s.thirdParty ? ' third' : '');
       maker.textContent = s.maker;
@@ -60,12 +60,43 @@
       const src = document.createElement('div');
       src.className = 'skill-src';
       src.textContent = s.source;
-      body.append(head, desc, src, inspectView(s, remoteDone.get(s.id) || s.inspect || {}));
+      body.append(head, desc, src, s.marketReady === false ? marketView(s) : inspectView(s, remoteDone.get(s.id) || s.inspect || {}));
       row.append(cb, body);
       listEl.appendChild(row);
       cb.addEventListener('change', renderThirdParty);
     }
     renderThirdParty();
+  }
+  // task-025: the entry's marketplace is not on this machine yet — add it (listing only, nothing
+  // installed), then show the local copy so it can be inspected before installing.
+  function marketView(s) {
+    const box = document.createElement('div');
+    box.className = 'skill-inspect';
+    const line = document.createElement('div');
+    line.textContent = `구성: 마켓 ${s.marketplace}이(가) 이 PC에 없습니다 — 마켓을 추가하면 내용을 확인할 수 있습니다 (추가만으로는 아무것도 설치·실행되지 않음)`;
+    const btn = document.createElement('button');
+    btn.className = 'btn-ghost skill-market-btn';
+    btn.textContent = `마켓 추가 (${s.marketplace})`;
+    btn.onclick = async (e) => {
+      e.preventDefault();
+      if (!current || current.busy) return;
+      btn.disabled = true;
+      btn.textContent = '추가하는 중…';
+      let r;
+      try { r = await api.skillsAddMarketplace(current.root, s.id); } catch (err) { r = { ok: false, error: err && err.message }; }
+      if (r && r.ok) {
+        const keep = checked();
+        catalog = null;
+        await loadCatalog();
+        renderList(keep, current ? current.installed : []);
+      } else {
+        btn.disabled = false;
+        btn.textContent = '다시 시도';
+        line.textContent = `마켓을 추가하지 못했습니다 — ${(r && r.error) || '알 수 없는 오류'}`;
+      }
+    };
+    box.append(line, btn);
+    return box;
   }
   // What the plugin contains and runs — local marketplace copy, or for a remote plugin the
   // pinned commit fetched from GitHub on request (review r1/r2).
@@ -264,18 +295,23 @@
     const st = (await api.skillsStatus(root)) || {};
     const installed = Array.isArray(st.installed) ? st.installed : [];
     renderPresets();
-    renderList(installed.length ? installed : catalog.presets.web.ids, installed);
+    // task-025: opts.select adds entries to the initial ticks (JEV button → typesafe)
+    const extra = Array.isArray(opts.select) ? opts.select.filter((id) => catalog.catalog.some((c) => c.id === id)) : [];
+    const base = extra.length ? installed : (installed.length ? installed : catalog.presets.web.ids);
+    renderList([...new Set([...base, ...extra])], installed);
     progressEl.textContent = '';
     const reason = opts.reason || 'manual';
     titleNote.textContent = reason === 'start'
       ? '처음 시작하는 프로젝트입니다 — 개발에 쓸 스킬을 먼저 세팅할까요?'
-      : '이 프로젝트에서 Claude가 쓸 스킬을 고르세요.';
-    installBtn.textContent = reason === 'start' ? '설치하고 시작' : '설치';
+      : reason === 'jev'
+        ? 'Jev를 쓰려면 typesafe 플러그인이 필요합니다 — 출처와 내용을 확인한 뒤 설치하세요.'
+        : '이 프로젝트에서 Claude가 쓸 스킬을 고르세요.';
+    installBtn.textContent = reason === 'start' ? '설치하고 시작' : reason === 'jev' ? '설치하고 Jev 시작' : '설치';
     skipBtn.textContent = reason === 'start' ? '건너뛰고 시작' : '취소';
     neverBtn.hidden = reason !== 'start';
     closeBtn.hidden = reason === 'start';
     return new Promise((resolve) => {
-      current = { root, resolve, busy: false, reason };
+      current = { root, resolve, busy: false, reason, installed };
       setBusy(false);
       modal.classList.remove('hidden');
       installBtn.focus();

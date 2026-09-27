@@ -1109,10 +1109,34 @@
     return false;
   }
 
-  function runCli(key) {
+  // task-025: Jev = the typesafe plugin's skill inside a claude session (not a separate CLI).
+  const JEV_SKILL = '/typesafe:typesafe-ai';
+  // Plugin installed (user, or this project)? If not, offer the SKILLS window with it ticked.
+  // Resolves to { note } when Jev can start, or null when it should not.
+  async function ensureJev() {
+    const root = state.folder.rootPath || null;
+    let st = null;
+    try { st = await api.jevStatus(root); } catch { st = null; }
+    if (!st) { setFlowStatus('Jev 상태를 확인하지 못했습니다', 'warn'); return null; }
+    if (!st.installed) {
+      if (!root || !window.CarrotcapSkills) { setFlowStatus('Jev(typesafe 플러그인)가 없습니다 — 프로젝트 폴더를 고른 뒤 SKILLS에서 설치하세요', 'warn'); return null; }
+      const r = await window.CarrotcapSkills.open(root, { reason: 'jev', select: ['typesafe'] });
+      if (!r || r.action !== 'installed' || !(r.installed || []).includes('typesafe')) {
+        setFlowStatus('Jev(typesafe 플러그인)를 설치하지 않아 시작하지 않았습니다', 'warn');
+        return null;
+      }
+    }
+    return { note: st.apiKey ? '' : ' — TYPESAFE_API_KEY가 없어 Jev 호출은 안 되고 설계·문서 가이드만 됩니다 (%USERPROFILE%\\.carrotcap\\keys.env 에 넣으면 새 터미널부터 적용)' };
+  }
+
+  async function runCli(key, skill) {
+    // a pane must be there before offering any install (review task-025 r1), and still be there after
+    if (!activeLeafOrWarn() || cliMissing(key)) return;
+    let jev = null;
+    if (skill === 'jev') { jev = await ensureJev(); if (!jev) return; }
     const leaf = activeLeafOrWarn();
-    if (!leaf || cliMissing(key)) return;
-    const cmd = cliCommandLine(key);
+    if (!leaf) return;
+    const cmd = cliCommandLine(key, jev ? JEV_SKILL : undefined);
     if (!cmd) {
       setFlowStatus(`settings.json에 '${key}' CLI 설정이 없습니다`, 'warn');
       return;
@@ -1121,6 +1145,7 @@
     leaf.cli = key;
     if (leaf.term) leaf.term.focus();
     scheduleHistorySave();
+    if (jev) setFlowStatus(`JEV: claude + Jev 스킬을 활성 페인에서 시작했습니다${jev.note}`, jev.note ? 'warn' : 'ok');
   }
 
   async function refreshCliStatus() {
@@ -1167,11 +1192,29 @@
 
     const flow = FLOW_STEPS[step];
     if (!flow) return;
+    // task-025: CLM-8B server first; when it is not running, Jev (typesafe plugin) instead
+    let prompt = flow.prompt;
+    let note = '';
+    let role = flow.role || CLI_ROLES[flow.cli];
+    if (flow.systemOne) {
+      if (!activeLeafOrWarn() || cliMissing(flow.cli)) return; // before any install offer
+      let clm = null;
+      try { clm = await api.clmStatus(); } catch { clm = null; }
+      if (clm && clm.up) {
+        role = `판단 · CLM ${clm.url}`;
+      } else {
+        const jev = await ensureJev();
+        if (!jev) return;
+        prompt = `${JEV_SKILL} ${flow.prompt}`;
+        role = '판단 · Jev 대체';
+        note = ` — CLM 서버(${(clm && clm.url) || 'settings.json systemOne.clmUrl'})가 꺼져 있어 Jev로 대체했습니다${jev.note}`;
+      }
+    }
     const leaf = activeLeafOrWarn();
     if (!leaf || cliMissing(flow.cli)) return;
     // task-012: PowerShell은 `<` 입력 리디렉션을 지원하지 않아 예전 `claude < agents\x.md`는
     // 실행 자체가 실패했다. 규약 파일을 읽으라는 첫 프롬프트로 대화형 CLI를 시작한다.
-    const launch = cliCommandLine(flow.cli, flow.prompt);
+    const launch = cliCommandLine(flow.cli, prompt);
     if (!launch) {
       setFlowStatus(`settings.json에 '${flow.cli}' CLI 설정이 없습니다`, 'warn');
       return;
@@ -1180,7 +1223,7 @@
     leaf.cli = flow.cli;
     if (leaf.term) leaf.term.focus();
     scheduleHistorySave();
-    setFlowStatus(`${step.toUpperCase()}: ${flow.cli} (${CLI_ROLES[flow.cli]}) 을 활성 페인에서 시작했습니다`, 'ok');
+    setFlowStatus(`${step.toUpperCase()}: ${flow.cli} (${role}) 을 활성 페인에서 시작했습니다${note}`, note ? 'warn' : 'ok');
   }
 
   const FLOW_STEPS = {
@@ -1195,6 +1238,12 @@
     media: {
       cli: 'grok',
       prompt: 'agents/media.md 규약을 읽고 대기해줘. 내가 이미지나 영상을 요청하면 그때 만들어 assets/generated/ 에 저장하고 logs/media/ 에 기록해줘.'
+    },
+    // task-025: System One judgments first — CLM-8B, Jev when no CLM server (CLAUDE.md §8)
+    clm: {
+      cli: 'claude',
+      systemOne: true,
+      prompt: 'CLAUDE.md의 System One 우선 판단 규칙(§8)대로 일한다. 판단은 node scripts/system-one.js 로 받는다(CLM 우선, 안 되면 Jev). 먼저 이 프로젝트에서 미리 판단하면 토큰·시간을 줄일 곳(분류·필터·순위·검증)을 backlog/와 폴더 구조에서 찾아 3개 이내로 제안하고 내 요청을 기다려. 코드 수정은 내가 고른 뒤에만 한다.'
     }
   };
 
@@ -1210,9 +1259,16 @@
       b.onclick = () => splitActive(b.dataset.dir);
     });
     document.querySelectorAll('.btn-cli').forEach(b => {
-      b.onclick = () => runCli(b.dataset.cli);
+      b.onclick = () => runCli(b.dataset.cli, b.dataset.skill);
     });
     $('#aiops-setup').onclick = () => setupAiopsWorkflow();
+    // task-025: keys.env in Notepad (main creates the empty template; contents never come back)
+    $('#keys-open').onclick = async () => {
+      let r = null;
+      try { r = await api.openKeys(); } catch { r = null; }
+      if (r && r.ok) setFlowStatus(`API 키 파일을 열었습니다: ${r.path} — 저장하면 새로 여는 터미널부터 적용`, 'ok');
+      else setFlowStatus(`API 키 파일을 열지 못했습니다${r && r.error ? ` — ${r.error}` : ''}`, 'warn');
+    };
     $('#skills-open').onclick = async () => {
       if (!state.folder.rootPath) { setFlowStatus('프로젝트 폴더를 먼저 선택하세요', 'warn'); return; }
       const res = await window.CarrotcapSkills.open(state.folder.rootPath, { reason: 'manual' });

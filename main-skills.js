@@ -52,8 +52,18 @@ const SKILL_CATALOG = [
   { id: 'skill-creator', maker: 'Anthropic', source: 'claude-plugins-official/plugins/skill-creator',
     desc: '반복 작업을 새 스킬로 만들고 개선',
     rule: '세 번 이상 반복되는 절차는 skill-creator로 프로젝트 스킬로 만든다.' },
+  // task-025: a separate marketplace (typesafe-ai/skills); the plugin is the marketplace root ("./")
+  { id: 'typesafe', label: 'typesafe (Jev)', marketplace: 'typesafe-ai', marketplaceSource: 'typesafe-ai/skills',
+    maker: 'TypeSafe AI (외부 제작 · 별도 마켓)', thirdParty: true, source: 'https://github.com/typesafe-ai/skills',
+    desc: 'Jev 판단 모델 — 분류·필터·순위·검증을 확률로 받는 설계·코드 가이드 (/typesafe:typesafe-ai, 호출에는 TYPESAFE_API_KEY 필요)',
+    rule: '분류·필터·순위·검증처럼 뜻을 읽는 좁은 판단은 Jev(/typesafe:typesafe-ai, node scripts/system-one.js — CLM 우선, Jev 대체)로 먼저 받고, 계산·권한·실행은 코드에 둔다. 확률이 애매한 판단은 사람 확인으로 넘긴다.' },
 ];
 const SKILL_IDS = new Set(SKILL_CATALOG.map((s) => s.id));
+// Which marketplace a catalog id comes from (default: the official one).
+const catalogEntry = (id) => SKILL_CATALOG.find((s) => s.id === id) || null;
+const marketOf = (id) => (catalogEntry(id) || {}).marketplace || MARKETPLACE;
+const marketSourceOf = (mkt) => (mkt === MARKETPLACE ? MARKETPLACE_SOURCE : (SKILL_CATALOG.find((s) => s.marketplace === mkt) || {}).marketplaceSource || null);
+const pluginKey = (id) => `${id}@${marketOf(id)}`;
 // Presets pick Anthropic plugins only; third-party ones (superpowers, playwright) must be
 // ticked by hand and confirmed after reading what they contain (review task-023 r1).
 const PRESETS = {
@@ -75,7 +85,7 @@ function buildSkillsBlock(ids) {
     SKILLS_BLOCK_START,
     '## 스킬 사용 규칙 (CARROTCAP이 설정 — 이 블록은 SKILLS 버튼으로 다시 만들어짐)',
     '',
-    `설치된 Claude Code 플러그인 (프로젝트 범위, ${MARKETPLACE}): ${list.join(', ') || '없음'}`,
+    `설치된 Claude Code 플러그인 (프로젝트 범위): ${list.map(pluginKey).join(', ') || '없음'}`,
     '',
     ...SKILL_CATALOG.filter((s) => list.includes(s.id)).map((s) => `- ${s.rule}`),
     SKILLS_BLOCK_END,
@@ -102,9 +112,13 @@ function mergeSkillsBlock(current, rawBlock) {
 }
 
 // argv for one `claude plugin ...` call — constants and catalog ids only.
-function installArgs(id) { return ['plugin', 'install', `${id}@${MARKETPLACE}`, '--scope', 'project']; }
-function uninstallArgs(id) { return ['plugin', 'uninstall', `${id}@${MARKETPLACE}`, '--scope', 'project']; }
-function marketplaceAddArgs() { return ['plugin', 'marketplace', 'add', MARKETPLACE_SOURCE, '--scope', 'project']; }
+function installArgs(id) { return ['plugin', 'install', pluginKey(id), '--scope', 'project']; }
+function uninstallArgs(id) { return ['plugin', 'uninstall', pluginKey(id), '--scope', 'project']; }
+function marketplaceAddArgs(mkt = MARKETPLACE) {
+  const src = marketSourceOf(mkt);
+  if (!src) throw new Error(`unknown marketplace ${mkt}`);
+  return ['plugin', 'marketplace', 'add', src, '--scope', 'project'];
+}
 
 // ---- what a plugin contains, from the local marketplace copy (review r1) ----
 function claudeConfigDir(env = process.env) {
@@ -165,8 +179,10 @@ function summarize(out, counts) {
   if (counts.scripts) out.components.push(`실행 파일·스크립트 ${counts.scripts}개`);
   return out;
 }
+function marketDir(mkt, configDir) { return path.join(configDir, 'plugins', 'marketplaces', mkt); }
+function marketReady(mkt, configDir = claudeConfigDir()) { return fs.existsSync(path.join(marketDir(mkt, configDir), '.claude-plugin', 'marketplace.json')); }
 function marketEntry(id, configDir) {
-  const mdir = path.join(configDir, 'plugins', 'marketplaces', MARKETPLACE);
+  const mdir = marketDir(marketOf(id), configDir);
   const market = readJson(path.join(mdir, '.claude-plugin', 'marketplace.json'));
   const entry = market && Array.isArray(market.plugins) ? market.plugins.find((p) => p && p.name === id) : null;
   return { mdir, entry };
@@ -185,12 +201,15 @@ function inspectPlugin(id, configDir = claudeConfigDir()) {
   }
   // only "./<folder>" inside the marketplace copy can be read here (review r7)
   const unsupported = { available: false, note: '지원하지 않는 출처 형식 — 내용을 확인할 수 없습니다' };
-  if (typeof entry.source !== 'string' || !/^\.\/[A-Za-z0-9_.\-/]+$/.test(entry.source) || entry.source.split('/').includes('..')) return unsupported;
-  const pdir = path.join(mdir, ...entry.source.slice(2).split('/'));
+  // "./" = the plugin is the marketplace folder itself (typesafe-ai, task-025)
+  const atRoot = entry.source === './';
+  if (typeof entry.source !== 'string' || (!atRoot && !/^\.\/[A-Za-z0-9_.\-/]+$/.test(entry.source)) || entry.source.split('/').includes('..')) return unsupported;
+  const pdir = atRoot ? mdir : path.join(mdir, ...entry.source.slice(2).split('/'));
   try {
     const realM = fs.realpathSync.native(mdir);
     const relP = path.relative(realM, fs.realpathSync.native(pdir));
-    if (!relP || relP.startsWith('..') || path.isAbsolute(relP)) return unsupported;
+    if ((!relP && !atRoot) || relP.startsWith('..') || path.isAbsolute(relP)) return unsupported;
+    if (atRoot && fs.lstatSync(mdir).isSymbolicLink()) return unsupported;
   } catch { return unsupported; }
   const manifest = readJson(path.join(pdir, '.claude-plugin', 'plugin.json')) || {};
   out.version = manifest.version || entry.version || null;
@@ -378,7 +397,7 @@ function bytesHash(buf) { return require('crypto').createHash('sha256').update(b
 // that was inspected, with exactly the files that were shown (review r5).
 function verifyInstalledCopy(id, root, { sha, digest }, { configDir = claudeConfigDir(), realpath = (p) => fs.realpathSync.native(p) } = {}) {
   const rec = readJson(path.join(configDir, 'plugins', 'installed_plugins.json'));
-  const list = rec && rec.plugins && Array.isArray(rec.plugins[`${id}@${MARKETPLACE}`]) ? rec.plugins[`${id}@${MARKETPLACE}`] : [];
+  const list = rec && rec.plugins && Array.isArray(rec.plugins[pluginKey(id)]) ? rec.plugins[pluginKey(id)] : [];
   const same = (a, b) => { try { return realpath(a).toLowerCase() === realpath(b).toLowerCase(); } catch { return false; } };
   const e = list.find((x) => x && x.scope === 'project' && typeof x.projectPath === 'string' && same(x.projectPath, root));
   if (!e) return '설치 기록을 찾을 수 없습니다';
@@ -482,6 +501,21 @@ function readInsideProject(root, rel, { safeRealpath, isPathInsideRoot, assertAn
   }
 }
 
+// task-025: typesafe@typesafe-ai installed for the user, or for this project (scope project/local).
+function jevInstalled(root, { configDir = claudeConfigDir(), realpath = (p) => fs.realpathSync.native(p) } = {}) {
+  const rec = readJson(path.join(configDir, 'plugins', 'installed_plugins.json'));
+  const key = pluginKey('typesafe');
+  const list = rec && rec.plugins && Array.isArray(rec.plugins[key]) ? rec.plugins[key] : [];
+  const same = (a, b) => { try { return realpath(a).toLowerCase() === realpath(b).toLowerCase(); } catch { return false; } };
+  const hit = list.find((x) => x && (x.scope === 'user'
+    || ((x.scope === 'project' || x.scope === 'local') && root && typeof x.projectPath === 'string' && same(x.projectPath, root))));
+  return hit ? hit.scope : null;
+}
+// `claude plugin marketplace list` names each marketplace on its own line ("  ❯ name" / "  name")
+function listsMarketplace(out, mkt) {
+  return String(out).split(/\r?\n/).some((l) => l.replace(/^[\s>❯•*-]+/, '').split(/\s+/)[0] === mkt);
+}
+
 async function inspectRemotePlugin(id, { configDir = claudeConfigDir(), fetch = fetchText } = {}) {
   const { entry } = marketEntry(id, configDir);
   const src = entry && entry.source && typeof entry.source === 'object' ? entry.source : null;
@@ -582,6 +616,7 @@ function setupSkills(deps) {
     handle, getWindow, loadSettings, resolveAllowedDir, safeRealpath, isPathInsideRoot,
     assertAncestorsClean, safeMkdir, isAllowedCliCommand, findCommand, taskkillPath,
     installTimeoutMs = INSTALL_TIMEOUT_MS, fetchRemote = fetchText,
+    hasTypesafeKey = () => !!(process.env.TYPESAFE_API_KEY || '').trim(), // task-025
     confirmThirdParty, // async ({ title, detail }) => boolean — a native dialog in main (review r8)
   } = deps;
   let running = false;
@@ -638,11 +673,12 @@ function setupSkills(deps) {
     const configDir = claudeConfigDir();
     return {
       marketplace: MARKETPLACE,
-      catalog: SKILL_CATALOG.map(({ id, maker, thirdParty, source, desc }) => {
+      catalog: SKILL_CATALOG.map(({ id, label, maker, thirdParty, source, desc }) => {
         const { digest, ...inspect } = inspectPlugin(id, configDir);
         // what the window shows for a local plugin, kept for the check after install (review r6)
         if (digest) localShown.set(id, { sha: null, digest }); else localShown.delete(id);
-        return { id, maker, thirdParty: !!thirdParty, source, desc, inspect };
+        const mkt = marketOf(id);
+        return { id, label: label || id, maker, thirdParty: !!thirdParty, source, desc, inspect, marketplace: mkt, marketReady: marketReady(mkt, configDir) };
       }),
       presets: Object.fromEntries(Object.entries(PRESETS).map(([k, v]) => [k, { label: v.label, ids: v.ids.slice() }])),
     };
@@ -658,6 +694,35 @@ function setupSkills(deps) {
     } catch (e) {
       return { ok: false, error: e.message };
     }
+  });
+  // task-025: a catalog entry from a marketplace this machine does not have yet. Adding a
+  // marketplace only clones its listing (nothing is installed or run); the window then shows
+  // the local copy so the user can inspect it before installing.
+  handle('skills:add-marketplace', async (_e, payload) => {
+    const p = (payload && typeof payload === 'object') ? payload : {};
+    const root = resolveAllowedDir(p.projectRoot);
+    if (!root) return { ok: false, error: '프로젝트 폴더를 먼저 선택하세요' };
+    const s = typeof p.id === 'string' ? catalogEntry(p.id) : null;
+    if (!s || !s.marketplace) return { ok: false, error: '별도 마켓이 필요한 항목이 아닙니다' };
+    if (marketReady(s.marketplace)) return { ok: true, already: true };
+    if (running) return { ok: false, error: '이미 설치 중입니다' };
+    const exe = claudeCommand();
+    if (!exe) return { ok: false, error: 'claude CLI를 찾을 수 없습니다 (settings.json의 cli.claude 확인)' };
+    running = true;
+    try {
+      const m = await run(exe, marketplaceAddArgs(s.marketplace), root);
+      const last = m.out.split('\n').filter(Boolean).slice(-1)[0] || '';
+      if (m.code !== 0) return { ok: false, error: `마켓플레이스 ${s.marketplace}를 추가하지 못했습니다 — ${last}` };
+      if (!marketReady(s.marketplace)) return { ok: false, error: '마켓을 추가했지만 목록 파일을 찾을 수 없습니다' };
+      return { ok: true };
+    } finally {
+      running = false;
+    }
+  });
+  // task-025: can Jev (typesafe plugin) be used here, and is the API key set? (never the key itself)
+  handle('skills:jev-status', (_e, projectRoot) => {
+    const root = projectRoot ? resolveAllowedDir(projectRoot) : null;
+    return { installed: jevInstalled(root), apiKey: hasTypesafeKey() === true };
   });
   handle('skills:status', (_e, projectRoot) => {
     const root = resolveAllowedDir(projectRoot);
@@ -700,13 +765,15 @@ function setupSkills(deps) {
         const approved = await confirmThirdParty(thirdPartySummary(third));
         if (approved !== true) return { ok: false, error: '외부 제작 항목 설치를 취소했습니다', cancelled: true };
       }
-      // The official marketplace is built in; add it (project scope) only if this machine does not know it.
+      // Each marketplace the picks come from is added (project scope) only if this machine does not know it.
       const list = await run(exe, ['plugin', 'marketplace', 'list'], root);
-      if (!new RegExp(`\\b${MARKETPLACE}\\b`).test(list.out)) {
-        send({ id: '(marketplace)', status: 'running' });
-        const m = await run(exe, marketplaceAddArgs(), root);
-        send({ id: '(marketplace)', status: m.code === 0 ? 'ok' : 'fail', out: m.out.slice(-400) });
-        if (m.code !== 0) return { ok: false, error: '공식 마켓플레이스를 추가하지 못했습니다', results: [] };
+      for (const mkt of [...new Set(ids.map(marketOf))]) {
+        if (listsMarketplace(list.out, mkt)) continue;
+        const tag = mkt === MARKETPLACE ? '(marketplace)' : `(marketplace ${mkt})`;
+        send({ id: tag, status: 'running' });
+        const m = await run(exe, marketplaceAddArgs(mkt), root);
+        send({ id: tag, status: m.code === 0 ? 'ok' : 'fail', out: m.out.slice(-400) });
+        if (m.code !== 0) return { ok: false, error: mkt === MARKETPLACE ? '공식 마켓플레이스를 추가하지 못했습니다' : `마켓플레이스 ${mkt}를 추가하지 못했습니다`, results: [] };
       }
       const results = [];
       for (const id of ids) {
@@ -721,7 +788,7 @@ function setupSkills(deps) {
           if (bad) {
             const u = await run(exe, uninstallArgs(id), root);
             ok = false;
-            out = `${bad} — ${u.code === 0 ? '설치를 되돌렸습니다' : '되돌리지 못했습니다, 직접 제거하세요: claude plugin uninstall ' + id + '@' + MARKETPLACE + ' --scope project'}`;
+            out = `${bad} — ${u.code === 0 ? '설치를 되돌렸습니다' : '되돌리지 못했습니다, 직접 제거하세요: claude plugin uninstall ' + pluginKey(id) + ' --scope project'}`;
           }
         }
         results.push({ id, ok, out });
@@ -738,7 +805,7 @@ function setupSkills(deps) {
           writeInside(root, 'CLAUDE.md', mergeSkillsBlock(cur.text || '', buildSkillsBlock(all)), cur.stamp);
         } catch (e) { rulesError = e.message; }
       }
-      writeState(root, { installed: all, marketplace: MARKETPLACE, at: new Date().toISOString(), ...(rulesError ? { rulesPending: true } : {}) });
+      writeState(root, { installed: all, marketplace: MARKETPLACE, plugins: all.map(pluginKey), at: new Date().toISOString(), ...(rulesError ? { rulesPending: true } : {}) });
       if (rulesError) return { ok: false, results, installed: all, error: `설치는 했지만 CLAUDE.md에 규칙을 쓰지 못했습니다 (${rulesError})` };
       return { ok: results.every((r) => r.ok), results, installed: all };
     } catch (e) {
@@ -751,7 +818,7 @@ function setupSkills(deps) {
 }
 
 module.exports = {
-  setupSkills, SKILL_CATALOG, PRESETS, MARKETPLACE, SKILLS_BLOCK_START, SKILLS_BLOCK_END,
+  setupSkills, SKILL_CATALOG, PRESETS, MARKETPLACE, marketOf, pluginKey, jevInstalled, listsMarketplace, SKILLS_BLOCK_START, SKILLS_BLOCK_END,
   sanitizeSkillIds, buildSkillsBlock, mergeSkillsBlock, installArgs, marketplaceAddArgs, inspectPlugin,
   inspectRemotePlugin, makeRunner, parseHooks, parseMcp, scanTexts, textHash, verifyInstalledCopy, writeInsideProject, readInsideProject, uninstallArgs, bytesHash,
 };

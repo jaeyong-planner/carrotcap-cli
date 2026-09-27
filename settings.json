@@ -19,6 +19,10 @@
     "grok":   { "command": "grok",   "args": [] },
     "_comment": "역할: claude=코딩, codex=코드 리뷰, grok=이미지·영상 제작. 실행 명령과 인자를 자유롭게 변경하세요. 예: claude.args=[\"--dangerously-skip-permissions\"]"
   },
+  "systemOne": {
+    "clmUrl": "http://127.0.0.1:8700",
+    "_comment": "AI DEV FLOW의 CLM 버튼·scripts/system-one.js가 쓰는 CLM-8B 서버(clm-serve) 주소. http는 이 PC(127.0.0.1/localhost)만, 원격 GPU 서버는 https만 허용. 서버가 꺼져 있으면 Jev(TYPESAFE_API_KEY)로 자동 대체."
+  },
   "defaultShell": "powershell.exe",
   "defaultProjectPath": "",
   "ui": {

@@ -45,8 +45,9 @@
             <button class="btn-cli" data-cli="claude" title="Claude Code — 코딩">CLAUDE</button>
             <button class="btn-cli" data-cli="codex" title="Codex — 코드 리뷰">CODEX</button>
             <button class="btn-cli" data-cli="grok" title="Grok — 이미지·영상 제작">GROK</button>
+            <button class="btn-cli" data-cli="claude" data-skill="jev" title="Jev — Claude를 Jev(TypeSafe) 판단 스킬로 시작">JEV</button>
           </div>
-          <div class="cli-hint muted small">코딩 · 리뷰 · 이미지/영상 — 활성 페인에서 실행</div>
+          <div class="cli-hint muted small">코딩 · 리뷰 · 이미지/영상 · 판단 — 활성 페인에서 실행</div>
         </div>
 
         <div class="side-section">
@@ -58,8 +59,10 @@
             <button class="btn-flow" data-flow="start" title="Claude — agents/supervisor.md 절차로 코딩 시작">START</button>
             <button class="btn-flow" data-flow="review" title="Codex — 최근 변경 코드 리뷰">REVIEW</button>
             <button class="btn-flow" data-flow="media" title="Grok — 이미지·영상 요청 대기">MEDIA</button>
-            <button id="skills-open" class="btn-flow wide" title="이 프로젝트에서 Claude가 쓸 스킬(플러그인)을 고르고 설치">SKILLS</button>
+            <button class="btn-flow" data-flow="clm" title="Claude + CLM-8B 판단 (CLM 서버가 없으면 Jev로 대체) — 먼저 판단할 곳을 찾고 요청 대기">CLM</button>
+            <button id="skills-open" class="btn-flow" title="이 프로젝트에서 Claude가 쓸 스킬(플러그인)을 고르고 설치">SKILLS</button>
           </div>
+          <button id="keys-open" class="btn-ghost full" title="%USERPROFILE%\.carrotcap\keys.env 를 메모장으로 엽니다 (TYPESAFE_API_KEY · CLM_API_KEY)">🔑 API 키 (keys.env)</button>
           <div id="flow-status" class="flow-status muted small">프로젝트 폴더를 선택한 뒤 SETUP을 누르세요</div>
           <!-- 이전 세션 이어하기 (task-013) -->
           <div id="resume-box" class="resume-box hidden">
