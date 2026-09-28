@@ -380,6 +380,19 @@ console.log('-- what a plugin contains (local marketplace copy)');
     check('local scope for this folder (case-insensitive) → installed', sk.jevInstalled(proj, { configDir: tcfg }) === 'local');
     fs.writeFileSync(path.join(tcfg, 'plugins', 'installed_plugins.json'), '{broken');
     check('broken record → not installed, no throw', sk.jevInstalled(proj, { configDir: tcfg }) === null);
+    console.log('-- task-028: which scope any catalog plugin is installed in');
+    const recAny = (key, entries) => fs.writeFileSync(path.join(tcfg, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { [key]: entries } }));
+    const spKey = sk.pluginKey('superpowers');
+    check('the record key comes from the entry own marketplace', spKey === 'superpowers@claude-plugins-official', spKey);
+    recAny(spKey, [{ scope: 'user', installPath: 'x' }]);
+    check('user scope → any catalog id counts as installed, in every project', sk.installedScope('superpowers', proj, { configDir: tcfg }) === 'user');
+    check('another catalog id is not installed by that record', sk.installedScope('typesafe', proj, { configDir: tcfg }) === null);
+    recAny(spKey, [{ scope: 'project', projectPath: other }]);
+    check('project scope for another folder → not here', sk.installedScope('superpowers', proj, { configDir: tcfg }) === null);
+    recAny(spKey, [{ scope: 'project', projectPath: proj.toUpperCase() }]);
+    check('project scope for this folder (case-insensitive) → installed', sk.installedScope('superpowers', proj, { configDir: tcfg }) === 'project');
+    recAny('typesafe@typesafe-ai', [{ scope: 'user', installPath: 'x' }]);
+    check('jevInstalled still answers for typesafe through it', sk.jevInstalled(null, { configDir: tcfg }) === 'user');
     for (const d of [tcfg, proj, other]) fs.rmSync(d, { recursive: true, force: true });
   }
 

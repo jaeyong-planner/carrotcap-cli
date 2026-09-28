@@ -501,16 +501,19 @@ function readInsideProject(root, rel, { safeRealpath, isPathInsideRoot, assertAn
   }
 }
 
-// task-025: typesafe@typesafe-ai installed for the user, or for this project (scope project/local).
-function jevInstalled(root, { configDir = claudeConfigDir(), realpath = (p) => fs.realpathSync.native(p) } = {}) {
+// task-028: which scope a catalog plugin is installed in, read from Claude's own record:
+// 'user' (every project), or 'project'/'local' when it belongs to this project. null = not installed.
+function installedScope(id, root, { configDir = claudeConfigDir(), realpath = (p) => fs.realpathSync.native(p) } = {}) {
   const rec = readJson(path.join(configDir, 'plugins', 'installed_plugins.json'));
-  const key = pluginKey('typesafe');
+  const key = pluginKey(id);
   const list = rec && rec.plugins && Array.isArray(rec.plugins[key]) ? rec.plugins[key] : [];
   const same = (a, b) => { try { return realpath(a).toLowerCase() === realpath(b).toLowerCase(); } catch { return false; } };
   const hit = list.find((x) => x && (x.scope === 'user'
     || ((x.scope === 'project' || x.scope === 'local') && root && typeof x.projectPath === 'string' && same(x.projectPath, root))));
   return hit ? hit.scope : null;
 }
+// task-025: typesafe@typesafe-ai installed for the user, or for this project (scope project/local).
+function jevInstalled(root, opts = {}) { return installedScope('typesafe', root, opts); }
 // `claude plugin marketplace list` names each marketplace on its own line ("  ❯ name" / "  name")
 function listsMarketplace(out, mkt) {
   return String(out).split(/\r?\n/).some((l) => l.replace(/^[\s>❯•*-]+/, '').split(/\s+/)[0] === mkt);
@@ -731,7 +734,13 @@ function setupSkills(deps) {
   });
   handle('skills:status', (_e, projectRoot) => {
     const root = resolveAllowedDir(projectRoot);
-    return root ? readState(root) : null;
+    if (!root) return null;
+    const st = readState(root);
+    // task-028: this app only records its own installs, so a plugin added at user scope (or by the
+    // claude CLI) looked uninstalled. Report those separately; `installed` keeps its old meaning
+    // so the "first run" prompt (needsSetup) is unchanged.
+    const also = SKILL_CATALOG.filter((s) => installedScope(s.id, root)).map((s) => s.id);
+    return { ...(st || {}), installedElsewhere: also };
   });
   // The user chose "don't ask again" for this project.
   handle('skills:skip', (_e, projectRoot) => {
@@ -824,7 +833,7 @@ function setupSkills(deps) {
 }
 
 module.exports = {
-  setupSkills, SKILL_CATALOG, PRESETS, MARKETPLACE, marketOf, pluginKey, jevInstalled, listsMarketplace, SKILLS_BLOCK_START, SKILLS_BLOCK_END,
+  setupSkills, SKILL_CATALOG, PRESETS, MARKETPLACE, marketOf, pluginKey, jevInstalled, installedScope, listsMarketplace, SKILLS_BLOCK_START, SKILLS_BLOCK_END,
   sanitizeSkillIds, buildSkillsBlock, mergeSkillsBlock, installArgs, marketplaceAddArgs, inspectPlugin,
   inspectRemotePlugin, makeRunner, parseHooks, parseMcp, scanTexts, textHash, verifyInstalledCopy, writeInsideProject, readInsideProject, uninstallArgs, bytesHash,
 };

@@ -27,10 +27,12 @@
     if (!catalog) catalog = await api.skillsCatalog();
     return catalog;
   }
+  // task-028: an entry that is already installed is shown ticked but locked, and is never part
+  // of a new install — so it stays out of the picks and out of the third-party consent line.
   function checked() {
-    return [...listEl.querySelectorAll('input[type=checkbox]:checked')].map((c) => c.value);
+    return [...listEl.querySelectorAll('input[type=checkbox]:checked:not([data-installed])')].map((c) => c.value);
   }
-  function renderList(selected, installed) {
+  function renderList(selected, installed, alsoInstalled = []) {
     listEl.textContent = '';
     for (const s of catalog.catalog) {
       const row = document.createElement('label');
@@ -39,6 +41,13 @@
       cb.type = 'checkbox';
       cb.value = s.id;
       cb.checked = selected.includes(s.id);
+      const already = installed.includes(s.id) || alsoInstalled.includes(s.id);
+      if (already) {
+        cb.checked = true;
+        cb.disabled = true;
+        cb.dataset.installed = '1';        // survives setBusy(), which re-enables every input
+        cb.title = '이미 설치되어 있습니다';
+      }
       const body = document.createElement('div');
       const head = document.createElement('div');
       head.className = 'skill-head';
@@ -48,7 +57,7 @@
       maker.className = 'skill-maker' + (s.thirdParty ? ' third' : '');
       maker.textContent = s.maker;
       head.append(name, maker);
-      if (installed.includes(s.id)) {
+      if (already) {
         const done = document.createElement('span');
         done.className = 'skill-done';
         done.textContent = '설치됨';
@@ -88,7 +97,7 @@
         const keep = checked();
         catalog = null;
         await loadCatalog();
-        renderList(keep, current ? current.installed : []);
+        renderList(keep, current ? current.installed : [], current ? current.alsoInstalled : []);
       } else {
         btn.disabled = false;
         btn.textContent = '다시 시도';
@@ -213,7 +222,15 @@
       thirdText.textContent = picked.length ? `외부 제작 항목 ${picked.join(', ')}의 출처, 실행하는 명령, 보안 점검 결과를 확인했고 설치에 동의합니다` : '';
     }
     if (!picked.length) thirdOk.checked = false;
-    installBtn.disabled = (current && current.busy) || (picked.length > 0 && !thirdOk.checked);
+    // task-028: every catalog entry is already installed → there is nothing to pick. The button
+    // must not dead-end on "설치할 스킬을 고르세요"; it confirms what is in place and closes.
+    const reason = current ? current.reason : 'manual';
+    const nothingToInstall = !listEl.querySelector('input[type=checkbox]:not([data-installed])');
+    installBtn.textContent = nothingToInstall
+      ? (reason === 'start' ? '시작' : reason === 'jev' ? 'Jev 시작' : '닫기')
+      : (reason === 'start' ? '설치하고 시작' : reason === 'jev' ? '설치하고 Jev 시작' : '설치');
+    installBtn.disabled = !!(current && current.busy)
+      || (!nothingToInstall && (checked().length === 0 || (picked.length > 0 && !thirdOk.checked)));
   }
   function renderPresets() {
     presetsEl.textContent = '';
@@ -231,7 +248,7 @@
   function setBusy(busy) {
     if (current) current.busy = busy;
     for (const b of [skipBtn, neverBtn, closeBtn]) b.disabled = busy;
-    listEl.querySelectorAll('input').forEach((c) => { c.disabled = busy; });
+    listEl.querySelectorAll('input').forEach((c) => { c.disabled = busy || c.dataset.installed === '1'; });
     renderThirdParty();
   }
   function finish(result) {
@@ -257,7 +274,16 @@
   installBtn.onclick = async () => {
     if (!current || current.busy) return;
     const ids = checked();
-    if (!ids.length) { progressEl.textContent = '설치할 스킬을 고르세요'; return; }
+    if (!ids.length) {
+      // task-028: nothing selectable left — resolve with what is already in place so the caller
+      // (JEV start / AIOps start) proceeds instead of reporting "설치하지 않아 시작하지 않았습니다".
+      if (!listEl.querySelector('input[type=checkbox]:not([data-installed])')) {
+        finish({ action: 'installed', installed: [...listEl.querySelectorAll('input[data-installed]')].map((c) => c.value) });
+        return;
+      }
+      progressEl.textContent = '설치할 스킬을 고르세요';
+      return;
+    }
     progressEl.textContent = '';
     setBusy(true);
     let r;
@@ -294,11 +320,13 @@
     await loadCatalog();
     const st = (await api.skillsStatus(root)) || {};
     const installed = Array.isArray(st.installed) ? st.installed : [];
+    // task-028: installed outside this app (user scope / claude CLI) — badge only, not a tick default
+    const alsoInstalled = Array.isArray(st.installedElsewhere) ? st.installedElsewhere : [];
     renderPresets();
     // task-025: opts.select adds entries to the initial ticks (JEV button → typesafe)
     const extra = Array.isArray(opts.select) ? opts.select.filter((id) => catalog.catalog.some((c) => c.id === id)) : [];
     const base = extra.length ? installed : (installed.length ? installed : catalog.presets.web.ids);
-    renderList([...new Set([...base, ...extra])], installed);
+    renderList([...new Set([...base, ...extra])], installed, alsoInstalled);
     progressEl.textContent = '';
     const reason = opts.reason || 'manual';
     titleNote.textContent = reason === 'start'
@@ -311,7 +339,7 @@
     neverBtn.hidden = reason !== 'start';
     closeBtn.hidden = reason === 'start';
     return new Promise((resolve) => {
-      current = { root, resolve, busy: false, reason, installed };
+      current = { root, resolve, busy: false, reason, installed, alsoInstalled };
       setBusy(false);
       modal.classList.remove('hidden');
       installBtn.focus();
