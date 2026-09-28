@@ -4,7 +4,7 @@
   "description": "CARROTCAP CLI terminal app with split panes, folder sidebar, and quick CLI launchers.",
   "main": "main.js",
   "author": "CarrotCap",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "private": true,
   "scripts": {
     "start": "electron .",

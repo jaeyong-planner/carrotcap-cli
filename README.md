@@ -198,3 +198,7 @@ SETUP이 만드는 문서의 원본은 `templates/aiops/`(supervisor.md · task-
 ## 원칙 (이 프로젝트의 운영 규칙)
 
 이 앱은 **AOR(Agent-Output-Router) + 사용자 운영규칙(CLAUDE.md)** 두 가지 축으로 동작합니다. 자세한 운영 규칙은 `CLAUDE.md`를 확인하세요.
+
+## License
+
+MIT — see [LICENSE](LICENSE). The AOR engine (`AOR/`) is a separate component and is not part of this repository.
