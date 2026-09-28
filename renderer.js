@@ -112,11 +112,74 @@
     }
   }
 
-  function setFlowStatus(text, tone = '') {
+  // `run`: the SETUP/flow run the message belongs to (task-030) — a replaced run's message is dropped
+  function setFlowStatus(text, tone = '', run = null) {
     if (!flowStatus) return;
+    if (run && run !== flowRun) return;
+    // task-030: during a SETUP/flow run a result/warning becomes a note under its step list;
+    // plain progress text ("터미널을 준비하는 중…", folder hints) is already shown by the steps
+    if (flowRun) {
+      if (tone) { flowRun.notes.push({ text, tone }); renderFlowRun(); }
+      return;
+    }
+    flowStatus.classList.remove('steps');
     flowStatus.textContent = text;
     flowStatus.classList.toggle('ok', tone === 'ok');
     flowStatus.classList.toggle('warn', tone === 'warn');
+  }
+
+  // task-030: SETUP·흐름 진행을 단계 목록으로 — ✓ 완료 · → 진행 중 · ○ 대기 · ✕ 멈춤.
+  // 색은 상태마다 고정(성공 green, 진행 cyan, 대기 회색, 멈춤 red, 알림 yellow).
+  const STEP_MARK = { done: '✓', run: '→', todo: '○', fail: '✕' };
+  let flowRun = null;
+  function startFlowRun(title, labels) {
+    flowRun = { title, steps: labels.map((text, i) => ({ text, state: i ? 'todo' : 'run' })), notes: [] };
+    renderFlowRun();
+    return flowRun;
+  }
+  // Marks step i; a finished step starts the next one. A run replaced by a newer one is ignored.
+  function flowStep(run, i, state, text) {
+    if (!run || run !== flowRun || !run.steps[i]) return;
+    run.steps[i].state = state;
+    if (text) run.steps[i].text = text;
+    const next = run.steps[i + 1];
+    if (state === 'done' && next && next.state === 'todo') next.state = 'run';
+    renderFlowRun();
+  }
+  // A run that stopped early shows where: the step in progress becomes ✕ (the reason is a note).
+  function endFlowRun(run) {
+    if (!run || run !== flowRun) return;
+    for (const s of run.steps) if (s.state === 'run') s.state = 'fail';
+    renderFlowRun();
+    flowRun = null;
+  }
+  function renderFlowRun() {
+    const run = flowRun;
+    if (!flowStatus || !run) return;
+    const line = (cls, mark, text) => {
+      const el = document.createElement('div');
+      el.className = cls;
+      const m = document.createElement('span');
+      m.className = 'flow-mark';
+      m.textContent = mark;
+      const t = document.createElement('span');
+      t.textContent = text;
+      el.append(m, t);
+      return el;
+    };
+    const done = run.steps.filter((s) => s.state === 'done').length;
+    const head = line('flow-head', '◆', run.title);
+    const count = document.createElement('span');
+    count.className = 'flow-count';
+    count.textContent = `${done}/${run.steps.length}`;
+    head.append(count);
+    flowStatus.classList.remove('ok', 'warn');
+    flowStatus.classList.add('steps');
+    flowStatus.replaceChildren(
+      head,
+      ...run.steps.map((s) => line(`flow-step ${s.state}`, STEP_MARK[s.state], s.text)),
+      ...run.notes.map((n) => line(`flow-note ${n.tone === 'ok' ? 'ok' : 'warn'}`, n.tone === 'ok' ? '✓' : '!', n.text))
+    );
   }
 
   // ---------- 탭 ----------
@@ -1228,29 +1291,29 @@
   // picked another pane during any wait (shell start, CLI re-check, Jev/CLM check), it is not
   // sent anywhere (review task-027 r5/r6).
   const PANE_CHANGED = '준비하는 동안 다른 페인을 선택해서 실행하지 않았습니다 — 다시 눌러 주세요';
-  function stillTarget(leaf) {
+  function stillTarget(leaf, run = null) {
     if (leaf && (state.activePaneId !== leaf.id || state.panes.get(leaf.id) !== leaf)) {
-      setFlowStatus(PANE_CHANGED, 'warn');
+      setFlowStatus(PANE_CHANGED, 'warn', run);
       return null;
     }
-    const now = activeLeafOrWarn(); // no pane / no shell yet → its own warning
+    const now = activeLeafOrWarn(run); // no pane / no shell yet → its own warning
     return now && (!leaf || now === leaf) ? now : null;
   }
   // the pinned pane once its shell is up (waits while it is still starting)
-  async function activeLeafReady(clickedPaneId = state.activePaneId) {
-    if (state.activePaneId !== clickedPaneId) { setFlowStatus(PANE_CHANGED, 'warn'); return null; }
+  async function activeLeafReady(clickedPaneId = state.activePaneId, run = null) {
+    if (state.activePaneId !== clickedPaneId) { setFlowStatus(PANE_CHANGED, 'warn', run); return null; }
     const leaf = state.panes.get(clickedPaneId);
     if (leaf && leaf.type === 'leaf' && !leaf.ptyId && leaf.spawning) {
       setFlowStatus('터미널을 준비하는 중…');
       try { await leaf.spawning; } catch { /* reported by the pane */ }
     }
-    return stillTarget(leaf && leaf.type === 'leaf' ? leaf : null);
+    return stillTarget(leaf && leaf.type === 'leaf' ? leaf : null, run);
   }
 
-  function activeLeafOrWarn() {
+  function activeLeafOrWarn(run = null) {
     const leaf = state.panes.get(state.activePaneId);
     if (!leaf || leaf.type !== 'leaf' || !leaf.ptyId) {
-      setFlowStatus('활성 터미널 페인이 없습니다', 'warn');
+      setFlowStatus('활성 터미널 페인이 없습니다', 'warn', run);
       return null;
     }
     return leaf;
@@ -1258,11 +1321,11 @@
 
   // task-027: "not found" is checked again before refusing — the CLI may have been installed
   // after the app started (main re-reads the registered PATH)
-  async function cliMissing(key) {
+  async function cliMissing(key, run = null) {
     if (state.cliStatus[key] === false) await refreshCliStatus();
     if (state.cliStatus[key] === false) {
       const cmd = state.settings && state.settings.cli && state.settings.cli[key] ? state.settings.cli[key].command : key;
-      setFlowStatus(`'${cmd}' 명령을 찾을 수 없습니다. 설치 후 PATH를 확인하세요.`, 'warn');
+      setFlowStatus(`'${cmd}' 명령을 찾을 수 없습니다. 설치 후 PATH를 확인하세요.`, 'warn', run);
       return true;
     }
     return false;
@@ -1272,16 +1335,16 @@
   const JEV_SKILL = '/typesafe:typesafe-ai';
   // Plugin installed (user, or this project)? If not, offer the SKILLS window with it ticked.
   // Resolves to { note } when Jev can start, or null when it should not.
-  async function ensureJev() {
+  async function ensureJev(run = null) {
     const root = state.folder.rootPath || null;
     let st = null;
     try { st = await api.jevStatus(root); } catch { st = null; }
-    if (!st) { setFlowStatus('Jev 상태를 확인하지 못했습니다', 'warn'); return null; }
+    if (!st) { setFlowStatus('Jev 상태를 확인하지 못했습니다', 'warn', run); return null; }
     if (!st.installed) {
-      if (!root || !window.CarrotcapSkills) { setFlowStatus('Jev(typesafe 플러그인)가 없습니다 — 프로젝트 폴더를 고른 뒤 SKILLS에서 설치하세요', 'warn'); return null; }
+      if (!root || !window.CarrotcapSkills) { setFlowStatus('Jev(typesafe 플러그인)가 없습니다 — 프로젝트 폴더를 고른 뒤 SKILLS에서 설치하세요', 'warn', run); return null; }
       const r = await window.CarrotcapSkills.open(root, { reason: 'jev', select: ['typesafe'] });
       if (!r || r.action !== 'installed' || !(r.installed || []).includes('typesafe')) {
-        setFlowStatus('Jev(typesafe 플러그인)를 설치하지 않아 시작하지 않았습니다', 'warn');
+        setFlowStatus('Jev(typesafe 플러그인)를 설치하지 않아 시작하지 않았습니다', 'warn', run);
         return null;
       }
     }
@@ -1321,72 +1384,108 @@
     });
   }
 
-  async function setupAiopsWorkflow() {
-    if (!state.folder.rootPath) {
-      setFlowStatus('프로젝트 폴더를 먼저 선택하세요', 'warn');
-      return null;
+  // `run`/`at`: the flow's step list and the index of its setup step (SETUP alone makes its own).
+  async function setupAiopsWorkflow(run = null, at = 0) {
+    const own = !run;
+    if (own) run = startFlowRun('SETUP', ['프로젝트 폴더', '워크플로우 준비 (agents · logs · backlog)']);
+    try {
+      if (!state.folder.rootPath) {
+        setFlowStatus('프로젝트 폴더를 먼저 선택하세요', 'warn', run);
+        return null;
+      }
+      if (own) { flowStep(run, 0, 'done', `프로젝트 폴더 ${state.folder.rootPath.split(/[\\/]/).filter(Boolean).pop()}`); at = 1; }
+      const result = await api.setupAiops(state.folder.rootPath);
+      if (!result || !result.ok) {
+        setFlowStatus((result && result.error) || '워크플로우 세팅 실패', 'warn', run);
+        return null;
+      }
+      await loadFolder(state.folder.rootPath);
+      flowStep(run, at, 'done');
+      if (result.warning) setFlowStatus(result.warning, 'warn', run);
+      else if (own) setFlowStatus('준비 완료 — START로 시작하세요', 'ok', run);
+      return result;
+    } finally {
+      if (own) endFlowRun(run);
     }
-    const result = await api.setupAiops(state.folder.rootPath);
-    if (!result || !result.ok) {
-      setFlowStatus((result && result.error) || '워크플로우 세팅 실패', 'warn');
-      return null;
-    }
-    await loadFolder(state.folder.rootPath);
-    if (result.warning) setFlowStatus(result.warning, 'warn');
-    else setFlowStatus('agents/logs/backlog 워크플로우 준비 완료', 'ok');
-    return result;
   }
 
   async function runAiopsFlow(step) {
     const clickedPaneId = state.activePaneId; // task-027: the flow runs in this pane or nowhere
-    const setup = await setupAiopsWorkflow();
-    if (!setup) return;
+    const flowDef = FLOW_STEPS[step];
+    if (!flowDef) return;
+    const cliRole = flowDef.role || CLI_ROLES[flowDef.cli];
+    // task-030: the steps this run goes through, shown as ✓ / → / ○
+    const run = startFlowRun(step.toUpperCase(), [
+      '워크플로우 준비 (agents · logs · backlog)',
+      '터미널 준비',
+      ...(flowDef.systemOne ? ['판단 백엔드 확인 (CLM → Jev)'] : []),
+      `${flowDef.cli} 시작${cliRole ? ` (${cliRole})` : ''}`
+    ]);
+    try {
+      if (await runAiopsFlowSteps(step, clickedPaneId, run)) {
+        for (let i = 0; i < run.steps.length; i++) if (run.steps[i].state !== 'done') flowStep(run, i, 'done');
+      }
+    } finally {
+      endFlowRun(run);
+    }
+  }
+
+  async function runAiopsFlowSteps(step, clickedPaneId, run) {
+    const current = () => run === flowRun; // false once a newer SETUP/flow replaced this run
+    const setup = await setupAiopsWorkflow(run, 0);
+    if (!setup || !current()) return false;
     // task-023: the first START in a project offers the skills setup (once; "don't ask" sticks)
     if (step === 'start' && window.CarrotcapSkills && state.folder.rootPath) {
       try {
         if (await window.CarrotcapSkills.needsSetup(state.folder.rootPath)) {
           const r = await window.CarrotcapSkills.open(state.folder.rootPath, { reason: 'start' });
-          if (r && r.action === 'installed') setFlowStatus(`스킬 ${r.installed.length}개 설치 — 이 세션부터 적용됩니다`, 'ok');
-          if (r && r.action === 'closed') return;
+          if (r && r.action === 'installed') setFlowStatus(`스킬 ${r.installed.length}개 설치 — 이 세션부터 적용됩니다`, 'ok', run);
+          if ((r && r.action === 'closed') || !current()) return false;
         }
       } catch (e) { console.warn('[carrotcap] skills setup failed:', e && e.message); }
     }
 
     const flow = FLOW_STEPS[step];
-    if (!flow) return;
+    const last = run.steps.length - 1;
     // task-025: CLM-8B server first; when it is not running, Jev (typesafe plugin) instead
     let prompt = flow.prompt;
     let note = '';
     let role = flow.role || CLI_ROLES[flow.cli];
-    const target = await activeLeafReady(clickedPaneId);
-    if (!target || await cliMissing(flow.cli)) return; // before any install offer
+    const target = await activeLeafReady(clickedPaneId, run);
+    if (!target || !current() || await cliMissing(flow.cli, run) || !current()) return false; // before any install offer
+    flowStep(run, 1, 'done');
     if (flow.systemOne) {
       let clm = null;
       try { clm = await api.clmStatus(); } catch { clm = null; }
+      if (!current()) return false;
       if (clm && clm.up) {
         role = `판단 · CLM ${clm.url}`;
+        flowStep(run, 2, 'done', `판단 백엔드: CLM ${clm.url}`);
       } else {
-        const jev = await ensureJev();
-        if (!jev) return;
+        const jev = await ensureJev(run);
+        if (!jev || !current()) return false;
         prompt = `${JEV_SKILL} ${flow.prompt}`;
         role = '판단 · Jev 대체';
-        note = ` — CLM 서버(${(clm && clm.url) || 'settings.json systemOne.clmUrl'})가 꺼져 있어 Jev로 대체했습니다${jev.note}`;
+        note = `CLM 서버(${(clm && clm.url) || 'settings.json systemOne.clmUrl'})가 꺼져 있어 Jev로 대체했습니다${jev.note}`;
+        flowStep(run, 2, 'done', '판단 백엔드: Jev (CLM 서버 꺼짐)');
       }
     }
-    const leaf = stillTarget(target); // after every wait above: still the same pane
-    if (!leaf) return;
+    const leaf = stillTarget(target, run); // after every wait above: still the same pane
+    if (!leaf || !current()) return false;
     // task-012: PowerShell은 `<` 입력 리디렉션을 지원하지 않아 예전 `claude < agents\x.md`는
     // 실행 자체가 실패했다. 규약 파일을 읽으라는 첫 프롬프트로 대화형 CLI를 시작한다.
     const launch = cliCommandLine(flow.cli, prompt);
     if (!launch) {
-      setFlowStatus(`settings.json에 '${flow.cli}' CLI 설정이 없습니다`, 'warn');
-      return;
+      setFlowStatus(`settings.json에 '${flow.cli}' CLI 설정이 없습니다`, 'warn', run);
+      return false;
     }
     api.writePty(leaf.ptyId, inProjectDir(state.folder.rootPath, launch) + '\r');
     leaf.cli = flow.cli;
     if (leaf.term) leaf.term.focus();
     scheduleHistorySave();
-    setFlowStatus(`${step.toUpperCase()}: ${flow.cli} (${role}) 을 활성 페인에서 시작했습니다${note}`, note ? 'warn' : 'ok');
+    flowStep(run, last, 'done', `${flow.cli} 시작 (${role}) — 활성 페인`);
+    if (note) setFlowStatus(note, 'warn', run);
+    return true;
   }
 
   const FLOW_STEPS = {

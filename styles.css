@@ -182,6 +182,22 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 .flow-status { margin-top: 6px; line-height: 1.4; min-height: 30px; }
 .flow-status.ok { color: var(--green); }
 .flow-status.warn { color: var(--yellow); }
+/* task-030: step list — ✓ done · → running · ○ waiting · ✕ stopped · ! note */
+.flow-status.steps { display: grid; gap: 2px; }
+.flow-status.steps > div { display: grid; grid-template-columns: 1.4em 1fr auto; align-items: baseline; }
+.flow-status .flow-mark { font-family: var(--mono); text-align: center; }
+.flow-status .flow-step, .flow-status .flow-note { padding-left: 0.6em; }
+.flow-status .flow-head { color: var(--text); font-weight: 700; }
+.flow-status .flow-head .flow-mark { color: var(--accent); }
+.flow-status .flow-count { color: var(--text-2); font-weight: 400; font-family: var(--mono); }
+.flow-status .flow-step.done { color: var(--text); }
+.flow-status .flow-step.done .flow-mark { color: var(--green); }
+.flow-status .flow-step.run { color: var(--text); }
+.flow-status .flow-step.run .flow-mark { color: var(--accent); }
+.flow-status .flow-step.todo { color: var(--text-2); }
+.flow-status .flow-step.fail { color: var(--red); }
+.flow-status .flow-note.warn { color: var(--yellow); }
+.flow-status .flow-note.ok { color: var(--green); }
 
 .split-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .btn-split {

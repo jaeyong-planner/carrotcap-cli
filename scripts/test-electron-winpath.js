@@ -110,6 +110,33 @@ function shellsUnder(rootPid) {
     await ev(`document.querySelector('.btn-flow[data-flow="review"]').click(), true`);
     check('REVIEW waits, then runs once in that pane', await waitFor(async () => (await countIn('FAKE-REVIEW-RAN')) === 1, { timeoutMs: 20000 }) && (await sleep(1500), (await countIn('FAKE-REVIEW-RAN')) === 1), String(await countIn('FAKE-REVIEW-RAN')));
 
+    check('task-030: REVIEW shows ◆ REVIEW 3/3 with ✓ steps', await waitFor(async () => (await ev(`document.querySelector('#flow-status').textContent`)).startsWith('◆REVIEW3/3✓워크플로우 준비 (agents · logs · backlog)✓터미널 준비✓codex 시작'), { timeoutMs: 5000 }), await ev(`document.querySelector('#flow-status').textContent`));
+    await ev(`document.querySelector('#aiops-setup').click(), true`);
+    check('task-030: SETUP alone shows ◆ SETUP 2/2 and what to do next', await waitFor(async () => /^◆SETUP2\/2✓프로젝트 폴더 .+✓워크플로우 준비.*START로 시작하세요$/.test(await ev(`document.querySelector('#flow-status').textContent`)), { timeoutMs: 5000 }), await ev(`document.querySelector('#flow-status').textContent`));
+
+    console.log('-- task-030: a flow stopped midway marks the step it stopped at (✕) and says why');
+    await sleep(5600);
+    await ev(`document.querySelector('#new-tab').click(), true`);
+    await sleep(300);
+    await ev(`document.querySelector('.btn-flow[data-flow="review"]').click(), true`);
+    await sleep(200);
+    await ev(`document.querySelectorAll('.tab')[0].click(), true`);
+    check('✕ on "터미널 준비", codex step still ○, reason noted', await waitFor(async () => ev(`(() => { const s = [...document.querySelectorAll('#flow-status .flow-step')].map((e) => e.classList[1]); const n = document.querySelector('#flow-status .flow-note.warn'); return s.join(',') === 'done,fail,todo' && !!n && /다른 페인을 선택해서 실행하지 않았습니다/.test(n.textContent); })()`), { timeoutMs: 15000 }), await ev(`document.querySelector('#flow-status').textContent`));
+    await sleep(1500);
+
+    console.log('-- task-030 review: SETUP clicked while REVIEW waits → REVIEW is dropped, SETUP list stays clean');
+    const reviewRuns = async () => ((await ev(`[...document.querySelectorAll('.xterm-rows')].map((r) => r.innerText).join(' | ')`)).split('FAKE-REVIEW-RAN').length - 1);
+    const reviews0 = await reviewRuns();
+    await sleep(5600);
+    await ev(`document.querySelector('#new-tab').click(), true`);
+    await sleep(300);
+    await ev(`document.querySelector('.btn-flow[data-flow="review"]').click(), true`);
+    await sleep(100);
+    await ev(`document.querySelector('#aiops-setup').click(), true`);
+    await sleep(6000);
+    check('the replaced REVIEW never ran', (await reviewRuns()) === reviews0, `${reviews0} → ${await reviewRuns()}`);
+    check('status is the SETUP list only (no REVIEW steps or notes)', /^◆SETUP2\/2✓프로젝트 폴더 .+✓워크플로우 준비[^!]*START로 시작하세요$/.test(await ev(`document.querySelector('#flow-status').textContent`)), await ev(`document.querySelector('#flow-status').textContent`));
+
     console.log('-- another pane picked during the wait: nothing runs anywhere (review r5)');
     const allText = () => ev(`[...document.querySelectorAll('.xterm-rows')].map((r) => r.innerText).join(' | ')`);
     const ranBefore = ((await allText()).split('FAKE-CLI-RAN').length - 1);

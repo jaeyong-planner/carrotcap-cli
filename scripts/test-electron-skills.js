@@ -374,6 +374,9 @@ put('skills/typesafe-ai/SKILL.md', '# Build with TypeSafe');
     check('now Jev counts as installed for this project', (await ev(`window.carrotcap.jevStatus(${JSON.stringify(project)})`)).installed === 'project');
     check('rules block names typesafe@typesafe-ai', /typesafe@typesafe-ai/.test(fs.readFileSync(path.join(project, 'CLAUDE.md'), 'utf8')));
     const fsText = await ev(`document.querySelector('#flow-status').textContent`);
+    const stepsOf = () => ev(`[...document.querySelectorAll('#flow-status .flow-step')].map((e) => e.classList[1] + ':' + e.textContent).join('|')`);
+    const jevSteps = (await stepsOf()).split('|');
+    check('task-030: CLM flow shows its 4 steps, all ✓, Jev noted', jevSteps.length === 4 && jevSteps.every((s) => s.startsWith('done:✓')) && jevSteps[1] === 'done:✓터미널 준비' && jevSteps[2].startsWith('done:✓판단 백엔드: Jev') && jevSteps[3].startsWith('done:✓claude 시작') && fsText.startsWith('◆CLM4/4') && await ev(`!!document.querySelector('#flow-status .flow-note.warn')`), jevSteps.join(' | '));
     check('status says CLM was off, Jev used, and no API key (never a key)', /CLM 서버/.test(fsText) && /Jev로 대체/.test(fsText) && /TYPESAFE_API_KEY/.test(fsText) && /keys.env/.test(fsText), fsText);
     check('the pane got CLM_URL from settings', fs.readFileSync(callLog + '.env', 'utf8').includes(`CLM_URL=http://127.0.0.1:${clmPort}`));
 
@@ -432,6 +435,7 @@ put('skills/typesafe-ai/SKILL.md', '# Build with TypeSafe');
       const nJ = jevCalls();
       await ev(`document.querySelector('.btn-flow[data-flow="clm"]').click(), true`);
       check('claude started with the System One rules, without the Jev skill', await waitFor(async () => soCalls().length === nSo + 1, { timeoutMs: 15000 }) && jevCalls() === nJ && !(await modalOpen()), JSON.stringify(soCalls().slice(-1)));
+      check('task-030: steps say which backend (CLM + URL), all ✓', (await ev(`[...document.querySelectorAll('#flow-status .flow-step')].map((e) => e.classList[1] + ':' + e.textContent).join('|')`)).endsWith(`|done:✓판단 백엔드: CLM http://127.0.0.1:${clmPort}|done:✓claude 시작 (판단 · CLM http://127.0.0.1:${clmPort}) — 활성 페인`) && !(await ev(`!!document.querySelector('#flow-status .flow-note')`)), await ev(`document.querySelector('#flow-status').textContent`));
       check('status names CLM and its URL', new RegExp(`CLM http://127\.0\.0\.1:${clmPort}`).test(await ev(`document.querySelector('#flow-status').textContent`)), await ev(`document.querySelector('#flow-status').textContent`));
     } finally {
       clmSrv.close();
