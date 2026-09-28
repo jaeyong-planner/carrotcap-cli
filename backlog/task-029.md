@@ -21,3 +21,23 @@
 - ICO에 7개 크기가 모두 들어갔는지 확인(`Image.ico.sizes()`)
 - 빌드 로그에서 `application icon is not set` 경고가 사라지는지 확인
 - 설치 후 작업표시줄·시작 메뉴·바탕화면 바로가기 아이콘 확인
+
+## 추가 — exe에 아이콘이 안 박히던 문제
+`build/icon.ico`만 넣었더니 **설치 프로그램에는 박혔는데 앱 exe에는 안 박혔다**. `build.win.signAndEditExecutable: false` 때문에 electron-builder가 exe를 다시 쓰지 않는다.
+
+`true`로 바꿔 시험해 봤더니 빌드가 실패했다 — winCodeSign 툴체인을 풀 때 macOS 심볼릭 링크를 만들지 못한다:
+
+```
+ERROR: Cannot create symbolic link : 클라이언트가 필요한 권한을 가지고 있지 않습니다
+  ...winCodeSign\918572379\darwin\10.12\lib\libcrypto.dylib
+```
+
+Windows는 개발자 모드나 관리자 권한 없이는 심볼릭 링크를 못 만든다. 즉 이 설정이 `false`인 건 임의의 기본값이 아니라 **이 제약에 대한 회피책**이었다(v0.1.0 베이스라인부터 들어와 있었고 문서화는 안 돼 있었음).
+
+그래서 플래그는 `false`로 두고, 같은 캐시 안에 들어 있는 `rcedit`로 패키징 후에 아이콘을 박는다:
+- `scripts/set-exe-icon.js` (새로 만듦) — `%LOCALAPPDATA%\electron-builder\Cache\winCodeSign\*\rcedit-x64.exe`를 찾아 실행. **없으면 경고만 남기고 빌드는 계속**한다(앱은 기본 아이콘, 설치 프로그램 아이콘은 영향 없음)
+- `dist:win` = `prebuild-check` → `electron-builder --win --dir` → `set-exe-icon` → `electron-builder --win nsis --prepackaged release/win-unpacked`
+
+검증: 앱 exe 7/7, 설치 프로그램 7/7 아이콘 엔트리 확인.
+
+대안으로 Windows 개발자 모드를 켜면 `signAndEditExecutable: true`로 이 단계 없이 처리된다. 다만 빌드하는 모든 PC에서 켜야 해서 채택하지 않았다.
