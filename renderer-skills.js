@@ -239,7 +239,8 @@
       b.className = 'btn-ghost';
       b.textContent = p.label;
       b.onclick = () => {
-        listEl.querySelectorAll('input[type=checkbox]').forEach((c) => { c.checked = p.ids.includes(c.value); });
+        // installed rows stay checked and locked (task-028 review)
+        listEl.querySelectorAll('input[type=checkbox]:not([data-installed])').forEach((c) => { c.checked = p.ids.includes(c.value); });
         renderThirdParty();
       };
       presetsEl.appendChild(b);

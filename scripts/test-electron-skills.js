@@ -217,7 +217,12 @@ put('skills/typesafe-ai/SKILL.md', '# Build with TypeSafe');
     await ev(`document.querySelector('#skills-open').click(), true`);
     check('SKILLS opens the window', await waitFor(modalOpen));
     check('installed ones are shown as installed', await ev(`[...document.querySelectorAll('#skills-list .skill-row')].filter((r) => r.querySelector('.skill-done')).length`) === 4);
-    await ev(`document.querySelectorAll('#skills-list input').forEach((c) => { c.checked = c.value === 'frontend-design'; }); document.querySelector('#skills-install').click(); true`);
+    const lockedOk = `[...document.querySelectorAll('#skills-list input[data-installed]')].every((c) => c.checked && c.disabled) && document.querySelectorAll('#skills-list input[data-installed]').length === 4`;
+    check('task-028: installed rows are ticked and locked', await ev(lockedOk));
+    await ev(`document.querySelector('#skills-presets button').click(), true`);
+    check('task-028 review: a preset leaves installed rows ticked', await ev(lockedOk));
+    // real clicks (change events), as a user does: installed rows are locked since task-028
+    await ev(`document.querySelectorAll('#skills-list input:not([data-installed])').forEach((c) => { if (c.checked !== (c.value === 'frontend-design')) c.click(); }); document.querySelector('#skills-install').click(); true`);
     check('single install closes the window', await waitFor(async () => !(await modalOpen()), { timeoutMs: 20000 }));
     check('marketplace added with --scope project', calls().some((l) => / plugin marketplace add anthropics\/claude-plugins-official --scope project$/.test(l)), JSON.stringify(calls().filter((l) => /marketplace/.test(l))));
     fs.rmSync(path.join(tmp, 'no-market'));

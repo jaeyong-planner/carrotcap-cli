@@ -398,7 +398,7 @@ function bytesHash(buf) { return require('crypto').createHash('sha256').update(b
 function verifyInstalledCopy(id, root, { sha, digest }, { configDir = claudeConfigDir(), realpath = (p) => fs.realpathSync.native(p) } = {}) {
   const rec = readJson(path.join(configDir, 'plugins', 'installed_plugins.json'));
   const list = rec && rec.plugins && Array.isArray(rec.plugins[pluginKey(id)]) ? rec.plugins[pluginKey(id)] : [];
-  const same = (a, b) => { try { return realpath(a).toLowerCase() === realpath(b).toLowerCase(); } catch { return false; } };
+  const same = (a, b) => { try { return foldPath(realpath(a)) === foldPath(realpath(b)); } catch { return false; } };
   const e = list.find((x) => x && x.scope === 'project' && typeof x.projectPath === 'string' && same(x.projectPath, root));
   if (!e) return '설치 기록을 찾을 수 없습니다';
   // local marketplace copies may have no commit to compare; their files are compared below
@@ -507,11 +507,25 @@ function installedScope(id, root, { configDir = claudeConfigDir(), realpath = (p
   const rec = readJson(path.join(configDir, 'plugins', 'installed_plugins.json'));
   const key = pluginKey(id);
   const list = rec && rec.plugins && Array.isArray(rec.plugins[key]) ? rec.plugins[key] : [];
-  const same = (a, b) => { try { return realpath(a).toLowerCase() === realpath(b).toLowerCase(); } catch { return false; } };
+  const same = (a, b) => { try { return foldPath(realpath(a)) === foldPath(realpath(b)); } catch { return false; } };
   const hit = list.find((x) => x && (x.scope === 'user'
-    || ((x.scope === 'project' || x.scope === 'local') && root && typeof x.projectPath === 'string' && same(x.projectPath, root))));
+    || ((x.scope === 'project' || x.scope === 'local') && root && typeof x.projectPath === 'string' && same(x.projectPath, root)))
+    && installedCopyPresent(x, configDir, realpath));
   return hit ? hit.scope : null;
 }
+// task-028 review: a record alone is not an install — its copy must still be in Claude's plugin
+// cache with a manifest, and not marked orphaned (a stale record would lock the row / start Jev)
+function installedCopyPresent(rec, configDir, realpath) {
+  if (!rec || typeof rec.installPath !== 'string') return false;
+  try {
+    const dir = realpath(rec.installPath);
+    const rel = path.relative(realpath(path.join(configDir, 'plugins', 'cache')), dir);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return false;
+    return fs.statSync(path.join(dir, '.claude-plugin', 'plugin.json')).isFile() && !fs.existsSync(path.join(dir, '.orphaned_at'));
+  } catch { return false; }
+}
+// task-028 review: case-insensitive only where the file system is (Windows)
+function foldPath(p) { return process.platform === 'win32' ? p.toLowerCase() : p; }
 // task-025: typesafe@typesafe-ai installed for the user, or for this project (scope project/local).
 function jevInstalled(root, opts = {}) { return installedScope('typesafe', root, opts); }
 // `claude plugin marketplace list` names each marketplace on its own line ("  ❯ name" / "  name")

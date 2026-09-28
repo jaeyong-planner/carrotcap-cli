@@ -29,5 +29,13 @@
 - 동작 시뮬레이션 5종: 모두 설치됨 × (jev / start / manual), 설치 가능 있음 × (미선택 / 선택) — 라벨·활성 상태·클릭 결과 모두 기대와 일치
 
 ## 남은 것
-- E2E(`test:skills`)는 electron 필요 — 의존물 있는 환경에서 돌려야 함
-- Codex 리뷰 미진행 (`logs/review/task-028_*.md` 없음)
+- ~~E2E(`test:skills`)는 electron 필요 — 의존물 있는 환경에서 돌려야 함~~ → 2026-09-28 다른 PC에서 실행(아래)
+- ~~Codex 리뷰 미진행~~ → 아래
+
+## 리뷰·E2E (2026-09-28, 다른 PC에서 합친 뒤 · 0.2.6)
+- E2E `test:skills` 첫 실행 5건 실패: 테스트가 체크박스를 `.checked =`로만 바꿔 `change`가 안 나고, 이번 변경으로 "고른 것이 없으면 설치 버튼 비활성"이 되어 클릭이 무시됨 → 테스트를 실제 클릭으로 수정(앱 동작은 맞음)
+- Codex r1 조건부 승인 (logs/review/task-028_skills-installed-state.md)
+  - Major: 설치 기록만 있으면 설치됨으로 봄 → 기록의 `installPath`가 Claude 플러그인 캐시 안에 있고 `.claude-plugin/plugin.json`이 있으며 `.orphaned_at` 표시가 없을 때만 인정(`installedCopyPresent`). 이 PC의 실제 기록 8개는 모두 조건 충족 확인
+  - Major: 경로 대소문자 무시를 모든 OS에서 함 → Windows에서만(`foldPath`), `verifyInstalledCopy`도 같게
+  - Minor: 프리셋이 잠긴(설치된) 행의 체크를 풂 → 잠긴 행은 건너뜀
+- 테스트 추가: unit(오래된 기록·installPath 없음·캐시 밖·manifest 없음·orphaned·뒤의 정상 기록, 대소문자 구분 FS) · E2E(설치된 행은 체크+잠금, 프리셋 뒤에도 유지 — 수정을 끈 변이 실행에서 실패 확인)
