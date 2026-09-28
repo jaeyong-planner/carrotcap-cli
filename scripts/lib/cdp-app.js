@@ -79,7 +79,7 @@ async function launchApp(userDataDir, { port = 9400 + Math.floor(Math.random() *
     await app.send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk, modifiers });
   };
   return {
-    send: app.send, ev: app.ev, key, port, log: () => log,
+    send: app.send, ev: app.ev, key, port, log: () => log, pid: child.pid,
     // Connect to another target (e.g. the browser-mode BrowserView) matching pred(target).
     connect: async (pred, timeoutMs = 15000) => {
       let t;
